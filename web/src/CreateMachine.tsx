@@ -7,7 +7,7 @@ import {Icon} from './icons'
 import {osLook} from './screens/Machines'
 import {Sheet, SheetHeader, bytes, haptic} from './ui'
 
-// Per-OS starting specs and floors, taken from umbrelOS's own create-machine form.
+// Per-OS starting specs and floors.
 type Spec = {cores: number; memoryGb: number; diskSizeGb: number; minCores: number; minMemoryGb: number; minDiskSizeGb: number}
 const spec = (cores: number, memoryGb: number, diskSizeGb: number, minCores: number, minMemoryGb: number, minDiskSizeGb: number): Spec => ({
 	cores,
@@ -25,6 +25,7 @@ const SPECS: Record<string, Spec> = {
 	'fedora:Server': spec(2, 2, 20, 1, 1, 5),
 	'debian:Desktop': spec(2, 4, 25, 1, 1, 10),
 	'debian:Server': spec(2, 2, 15, 1, 1, 4),
+	'arch:Server': spec(2, 2, 20, 1, 1, 4),
 	alpine: spec(2, 1, 8, 1, 1, 2),
 	android: spec(4, 8, 40, 2, 4, 25),
 	omarchy: spec(4, 8, 40, 2, 4, 25),
@@ -95,7 +96,7 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 					{caps.data && !caps.data.libvirtAvailable && (
 						<div className="error">
 							<Icon name="alert" size={18} />
-							Virtual machines aren’t available on this Umbrel.
+							Virtual machines aren’t available on this server.
 						</div>
 					)}
 					<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '0 20px 20px'}}>
@@ -151,7 +152,7 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 							})}
 						</div>
 						<p className="footer-note" style={{textAlign: 'left'}}>
-							To install from your own ISO or disk image, use Machines in the umbrelOS dashboard.
+							Installing from your own ISO or disk image arrives in a coming update.
 						</p>
 					</div>
 				</>
@@ -169,7 +170,7 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 	const profile = specFor(os)
 	const threads = cpu.data?.threads ?? 4
 	const totalGb = mem.data ? Math.floor(mem.data.size / 1024 ** 3) : 8
-	// Leave the larger of 2 GB or what the host is using now, like umbrelOS.
+	// Leave the host the larger of 2 GB or what it is using now.
 	const maxMemoryGb = Math.max(1, Math.floor((mem.data ? mem.data.size - Math.max(2e9, mem.data.totalUsed) : 6e9) / 1024 ** 3)) || totalGb
 	const baseName = `${os.name}${os.variantName ? ` ${os.variantName}` : ''}`
 	const taken = new Set((machines.data ?? []).map((m) => m.name.toLowerCase()))
@@ -262,7 +263,7 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 							<div className="field">
 								<label htmlFor="vm-pass">Password in the machine</label>
 								<input id="vm-pass" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-								<span className="hint">Used to sign in to {os.name}. It isn’t stored by UmbrelOS Touch.</span>
+								<span className="hint">Used to sign in to {os.name}. It isn’t stored by Omarchy Server.</span>
 							</div>
 						)}
 					</>

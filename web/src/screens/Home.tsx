@@ -71,7 +71,7 @@ export function Home({onOpenApp, go, onTerminal}: {onOpenApp: (app: UserApp) => 
 			? `${problems.length} app${problems.length > 1 ? 's need' : ' needs'} attention`
 			: list.length
 				? 'Everything is running smoothly.'
-				: 'Your Umbrel is ready for its first app.'
+				: 'Your server is ready for its first app.'
 
 	const open = (app: UserApp) => {
 		haptic(6)

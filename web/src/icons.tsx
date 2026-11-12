@@ -1,4 +1,4 @@
-// Tabler icons: the same open-source icon family umbrelOS itself uses.
+// Tabler icons: the same open-source icon family Omarchy Server itself uses.
 import {
 	IconPresentation,
 	IconTypography,

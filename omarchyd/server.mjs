@@ -1,20 +1,27 @@
 // omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
 import {readFile, realpath} from 'node:fs/promises'
+import {randomBytes} from 'node:crypto'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import {extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
 import {createFiles} from './files.mjs'
+import {createMachines} from './machines.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
+import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.1.0'
+export const OMARCHYD_VERSION = '0.2.0'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir()}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), machineOptions = {}}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
+	const machines = createMachines({dataDir, ...machineOptions})
+	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
+	const tickets = new Map()
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
@@ -44,9 +51,17 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'user.set': {kind: 'mutation', run: async (input, {auth}) => (await accounts.updateUser(auth.userId, input), true)},
 		'user.changePassword': {kind: 'mutation', run: async (input, {auth}) => (await accounts.setPassword(auth.userId, input ?? {}), true)},
 		'user.getHttpApiToken': {kind: 'query', run: (_i, {auth}) => accounts.issueUrlToken(auth)},
-		'user.createWebSocketTicket': {kind: 'mutation', run: () => {
-			throw new RpcError('NOT_FOUND', 'Consoles arrive in a later Omarchy Server release')
-		}},
+		'user.createWebSocketTicket': {
+			kind: 'mutation',
+			run: (input, {auth}) => {
+				if (input?.target !== 'machines') throw new RpcError('NOT_FOUND', 'The terminal arrives in a coming Omarchy Server update')
+				const now = Date.now()
+				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
+				const ticket = randomBytes(24).toString('base64url')
+				tickets.set(ticket, {userId: auth.userId, target: 'machines', expires: now + 30_000})
+				return ticket
+			},
+		},
 
 		// ---- system ---------------------------------------------------------------------------
 		'system.uptime': {kind: 'query', run: () => Math.round(os.uptime())},
@@ -65,12 +80,12 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'apps.recentlyOpened': {kind: 'query', run: () => []},
 		'appStore.registry': {kind: 'query', run: () => []},
 		'appStore.repositories': {kind: 'query', run: () => []},
-		'machines.list': {kind: 'query', run: () => []},
 		'notifications.get': {kind: 'query', run: () => []},
 		'wifi.connected': {kind: 'query', run: () => ({status: 'disconnected'})},
 		'wifi.networks': {kind: 'query', run: () => []},
 
 		...files.procedures,
+		...machines.procedures,
 	}
 
 	// The web app's wallpaper is the current Omarchy theme background.
@@ -108,6 +123,39 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		} catch (error) {
 			if (!res.headersSent) sendError(res, error)
 			else res.destroy()
+		}
+	})
+	// VM screens: /machines/console?machineId=…&ticket=… (subprotocol "binary") <-> the machine's
+	// VNC unix socket. Only reachable on localhost, and only with a fresh ticket.
+	const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024})
+	server.on('upgrade', async (req, socket, head) => {
+		const refuse = (status) => {
+			socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
+			socket.destroy()
+		}
+		try {
+			const url = new URL(req.url ?? '/', 'http://localhost')
+			if (url.pathname !== '/machines/console') return refuse('404 Not Found')
+			const t = tickets.get(url.searchParams.get('ticket') ?? '')
+			tickets.delete(url.searchParams.get('ticket') ?? '')
+			if (!t || t.expires < Date.now() || t.target !== 'machines') return refuse('401 Unauthorized')
+			const path = await machines.vncSocket(url.searchParams.get('machineId') ?? '').catch(() => null)
+			if (!path) return refuse('409 Conflict')
+			const vnc = net.connect(path)
+			vnc.once('error', () => refuse('502 Bad Gateway'))
+			vnc.once('connect', () => {
+				vnc.removeAllListeners('error')
+				wss.handleUpgrade(req, socket, head, (ws) => {
+					vnc.on('data', (d) => ws.readyState === ws.OPEN && ws.send(d, {binary: true}))
+					ws.on('message', (d) => vnc.write(d))
+					vnc.on('close', () => ws.close(1000))
+					vnc.on('error', () => ws.terminate())
+					ws.on('close', () => vnc.destroy())
+					ws.on('error', () => vnc.destroy())
+				})
+			})
+		} catch {
+			refuse('500 Internal Server Error')
 		}
 	})
 	await new Promise((resolve, reject) => {

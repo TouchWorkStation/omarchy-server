@@ -14,7 +14,7 @@ watchStandaloneGap()
 const client = new QueryClient({
 	defaultOptions: {
 		queries: {
-			// Don't hammer umbreld with retries for auth or permission errors.
+			// Don't hammer omarchyd with retries for auth or permission errors.
 			retry: (count, error) => !(error instanceof ApiError && error.status >= 400 && error.status < 500) && count < 2,
 			refetchOnWindowFocus: true,
 			staleTime: 2000,

@@ -1,6 +1,6 @@
 // Full-screen VM console.
 //
-// Picture: noVNC, over a WebSocket bridged by the Touch server to umbreld.
+// Picture: noVNC, over a WebSocket bridged by the Touch server to omarchyd.
 // Input: our own gesture layer on top of the picture (noVNC never sees touches),
 // modelled on RustDesk / RDP / RealVNC mobile clients:
 //
@@ -27,7 +27,7 @@ const SUPERSEDED = 4001
 type Scale = 'fit' | 'actual' | 'remote'
 const readScale = (): Scale => {
 	try {
-		const v = localStorage.getItem('umbrel-touch:console-scale')
+		const v = localStorage.getItem('omarchy-server:console-scale')
 		return v === 'actual' || v === 'remote' ? v : 'fit'
 	} catch {
 		return 'fit'
@@ -69,7 +69,7 @@ const HINT: Record<Mode, string> = {
 
 const readMode = (): Mode => {
 	try {
-		return localStorage.getItem('umbrel-touch:console-mode') === 'mouse' ? 'mouse' : 'touch'
+		return localStorage.getItem('omarchy-server:console-mode') === 'mouse' ? 'mouse' : 'touch'
 	} catch {
 		return 'touch'
 	}
@@ -112,7 +112,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		setModeState(m)
 		toast(HINT[m])
 		try {
-			localStorage.setItem('umbrel-touch:console-mode', m)
+			localStorage.setItem('omarchy-server:console-mode', m)
 		} catch {
 			/* not saved */
 		}
@@ -133,7 +133,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			if (disposed) return
 			if (!check?.ok) {
 				const body = await check?.json().catch(() => null)
-				setMessage(body?.error?.message ?? 'Can’t reach your Umbrel right now.')
+				setMessage(body?.error?.message ?? 'Can’t reach your server right now.')
 				setState('error')
 				return
 			}
@@ -164,8 +164,8 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 					}, 600)
 				}
 				try {
-					if (!deskUi && !localStorage.getItem('umbrel-touch:console-hint')) {
-						localStorage.setItem('umbrel-touch:console-hint', '1')
+					if (!deskUi && !localStorage.getItem('omarchy-server:console-hint')) {
+						localStorage.setItem('omarchy-server:console-hint', '1')
 						toast(HINT[readMode()])
 					}
 				} catch {
@@ -209,7 +209,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 	const setScale = (sc: Scale) => {
 		setScaleState(sc)
 		try {
-			localStorage.setItem('umbrel-touch:console-scale', sc)
+			localStorage.setItem('omarchy-server:console-scale', sc)
 		} catch {
 			/* not saved */
 		}

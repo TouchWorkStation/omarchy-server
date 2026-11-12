@@ -20,16 +20,14 @@ die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
 if ! command -v pacman >/dev/null; then
 	found=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$ID}") || uname -s)
-	if [ -d /home/umbrel ] || grep -qi umbrel /etc/os-release 2>/dev/null; then
-		die "This is umbrelOS ($found), not Omarchy. Run this inside your Omarchy VM: open its console (or SSH into the VM) and run the command there."
-	fi
 	die "This installer is for Omarchy (Arch Linux), but this machine runs $found. Run it on your Omarchy machine."
 fi
 command -v systemctl >/dev/null || die "systemd is required."
 
-# 1. Packages (the only step that uses sudo).
+# 1. Packages (the only step that uses sudo). Machines: QEMU + libvirt (per-user session),
+#    passt for their networking, xorriso (libisoburn) for cloud-init seeds.
 need=()
-for pkg in nodejs npm git; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl qemu-base libvirt passt libisoburn; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 if [ ${#need[@]} -gt 0 ]; then
 	say "Installing ${need[*]} (sudo needed)"
 	sudo pacman -S --needed --noconfirm "${need[@]}"
@@ -89,7 +87,7 @@ After=omarchyd.service
 Wants=omarchyd.service
 
 [Service]
-ExecStart=$NODE $APP/server/cli.mjs --port $PORT --data $BASE/web --umbrel http://127.0.0.1:2021
+ExecStart=$NODE $APP/server/cli.mjs --port $PORT --data $BASE/web --backend http://127.0.0.1:2021
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
@@ -109,6 +107,16 @@ if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Sta
 	fi
 fi
 
+# Machine port forwards live in 40000-49999. Nothing listens there until you add a forward to a
+# machine, so opening the range only lets forwards you create be reached from your network.
+if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+	if ! sudo ufw status | grep -qE "^40000:49999/tcp +ALLOW"; then
+		say "Allowing machine port forwards (40000-49999) through the firewall"
+		sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
+		sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
+	fi
+fi
+
 # Keep the services running when you're not logged in (needs sudo once).
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
 	say "Letting Omarchy Server run while you're logged out (sudo needed)"
@@ -125,10 +133,8 @@ if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --
 		case "$ip" in 10.*) ;; *) private_only=no ;; esac
 	done
 	if [ "$private_only" = yes ] && [ -n "$ips" ]; then
-		printf '\n    This machine only has a private address, so it is probably a VM inside umbrelOS\n'
-		printf '    (Machines). Your other devices cannot open that address directly. In UmbrelOS Touch,\n'
-		printf '    open this machine -> Port forwarding -> "Omarchy Server", then open\n'
-		printf '    http://<your-umbrel-ip>:47780 instead.\n\n'
+		printf '\n    This machine only has a private address, so it is probably a VM behind NAT. Your other\n'
+		printf '    devices cannot open that address directly: on the VM host, forward a port to %s.\n\n' "$PORT"
 	fi
 	printf '    Logs: journalctl --user -u omarchyd -u omarchy-server-web -f\n'
 else

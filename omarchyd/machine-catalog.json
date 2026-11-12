@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "about": "Operating systems Omarchy Server can create machines from. Each image is downloaded from its publisher and checked against the publisher's own checksum file before use. No hashes are stored here, so entries that track 'latest' stay valid as publishers update them.",
+  "images": [
+    {
+      "id": "ubuntu-24.04-server-amd64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Server",
+      "version": "24.04 LTS",
+      "arch": "amd64",
+      "platform": "linux",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 600,
+      "adminGroup": "sudo"
+    },
+    {
+      "id": "ubuntu-24.04-server-arm64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Server",
+      "version": "24.04 LTS",
+      "arch": "arm64",
+      "platform": "linux",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 580,
+      "adminGroup": "sudo"
+    },
+    {
+      "id": "debian-13-server-amd64",
+      "familyId": "debian",
+      "name": "Debian",
+      "variantName": "Server",
+      "version": "13",
+      "arch": "amd64",
+      "platform": "linux",
+      "kind": "cloud",
+      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
+      "sizeMb": 420,
+      "adminGroup": "sudo"
+    },
+    {
+      "id": "debian-13-server-arm64",
+      "familyId": "debian",
+      "name": "Debian",
+      "variantName": "Server",
+      "version": "13",
+      "arch": "arm64",
+      "platform": "linux",
+      "kind": "cloud",
+      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
+      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
+      "sizeMb": 400,
+      "adminGroup": "sudo"
+    },
+    {
+      "id": "arch-server-amd64",
+      "familyId": "arch",
+      "name": "Arch Linux",
+      "variantName": "Server",
+      "version": "latest",
+      "arch": "amd64",
+      "platform": "linux",
+      "kind": "cloud",
+      "url": "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
+      "checksums": {"url": "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256", "algorithm": "sha256"},
+      "sizeMb": 520,
+      "adminGroup": "wheel"
+    }
+  ]
+}

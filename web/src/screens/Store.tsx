@@ -99,7 +99,7 @@ export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp
 				)}
 				<div>
 					<h1 className="title">App Store</h1>
-					<p className="subtitle">{registry.isLoading ? 'Loading the catalog…' : `${all.length} apps for your Umbrel`}</p>
+					<p className="subtitle">{registry.isLoading ? 'Loading the catalog…' : `${all.length} apps for your server`}</p>
 				</div>
 				<button className="btn small stores-btn" style={{marginLeft: 'auto'}} aria-label="Community app stores" title="Community app stores" onClick={() => (haptic(5), setStores(true))}>
 					<Icon name="store" size={17} />
@@ -212,12 +212,11 @@ export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp
 }
 
 // ---- community app stores ------------------------------------------------------------------------
-const OFFICIAL_STORE = 'https://github.com/getumbrel/umbrel-apps.git'
 const SUGGESTED_STORES = [
 	{
 		url: 'https://github.com/TouchWorkStation/app-store',
 		name: 'TouchWorkStation',
-		blurb: 'Google Chrome and Brave browsers that run on your Umbrel and stream to any device.',
+		blurb: 'Google Chrome and Brave browsers that run on your server and stream to any device.',
 	},
 ]
 type Repo = {url: string; meta: {id: string; name: string}}
@@ -251,7 +250,7 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 		},
 		onError: (e) => toast((e as Error).message, true),
 	})
-	const community = (repos.data ?? []).filter((r) => !sameRepo(r.url, OFFICIAL_STORE))
+	const community = repos.data ?? []
 	const suggestions = SUGGESTED_STORES.filter((s) => !(repos.data ?? []).some((r) => sameRepo(r.url, s.url)))
 	const valid = /^https:\/\/[\w.-]+\/[\w.\-/]+$/.test(url.trim())
 	return (
@@ -268,7 +267,7 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 			/>
 			<div className="screen">
 				<p className="prose" style={{margin: '0 0 14px'}}>
-					Community stores aren’t reviewed by the Umbrel team. Their apps run on your Umbrel like any other app, so only add stores from developers you trust.
+					Community stores aren’t reviewed. Their apps run on your server like any other app, so only add stores from developers you trust.
 				</p>
 				{repos.isLoading && (
 					<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', borderRadius: 18}}>
@@ -339,7 +338,7 @@ function CommunityStores({onClose}: {onClose: () => void}) {
 						autoCapitalize="off"
 						autoCorrect="off"
 						spellCheck={false}
-						placeholder="https://github.com/someone/umbrel-app-store"
+						placeholder="https://github.com/someone/app-store"
 						value={url}
 						onChange={(e) => setUrl(e.target.value)}
 						aria-label="Community app store link"
@@ -387,7 +386,7 @@ function StoreSheet({
 		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {})}, done: `${app.name} installed`})
 		setReviewing(false)
 	}
-	const liveUrl = live ? appUrl(live, boot.umbrel!.host) : null
+	const liveUrl = live ? appUrl(live, boot.server!.host) : null
 
 	return (
 		<Sheet open onClose={onClose} label={app.name}>
@@ -397,7 +396,7 @@ function StoreSheet({
 				<div className="screen">
 					<h3 style={{margin: '0 0 6px', fontSize: 18, fontWeight: 680}}>Before you install</h3>
 					<p className="prose" style={{margin: '0 0 16px'}}>
-						{app.name} will be installed on your Umbrel{app.installSize ? ` (${bytes(app.installSize)} download)` : ''}.
+						{app.name} will be installed on your server{app.installSize ? ` (${bytes(app.installSize)} download)` : ''}.
 					</p>
 					{review.isLoading && (
 						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
@@ -486,7 +485,7 @@ function StoreSheet({
 					) : incompatible ? (
 						<div className="error">
 							<Icon name="alert" size={18} />
-							This app needs a newer version of umbrelOS.
+							This app needs a newer version of Omarchy Server.
 						</div>
 					) : missingDeps.length ? (
 						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>

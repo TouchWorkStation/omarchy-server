@@ -379,7 +379,7 @@ export function Providers({children}: {children: ReactNode}) {
 // ---- appearance ---------------------------------------------------------------
 // ids stay stable (they're saved); only the names are shown.
 export const THEMES = [
-	{id: 'umbrel', name: 'Horizon', bg: '#111', fg: '#fff', dots: [] as string[]},
+	{id: 'horizon', name: 'Horizon', bg: '#111', fg: '#fff', dots: [] as string[]},
 	{id: 'custom', name: 'Your photo', bg: '#111', fg: '#fff', dots: [] as string[]},
 	{id: 'mocha', name: 'Midnight', bg: '#1e1e2e', fg: '#cdd6f4', dots: ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8']},
 	{id: 'tokyo', name: 'Neon', bg: '#1a1b26', fg: '#c0caf5', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']},
@@ -395,8 +395,8 @@ export type Prefs = {
 	customBrandHsl?: string | null
 	backgroundVersion?: number | null
 }
-const DEFAULT_PREFS: Prefs = {theme: 'umbrel', accent: 'wallpaper'}
-const LOCAL_KEY = 'umbrel-touch:prefs'
+const DEFAULT_PREFS: Prefs = {theme: 'horizon', accent: 'wallpaper'}
+const LOCAL_KEY = 'omarchy-server:prefs'
 
 function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
@@ -411,7 +411,7 @@ export function readPrefs(): Prefs {
 	}
 }
 
-const FALLBACK_BRAND = '24 90% 50%' // umbrelOS's default wallpaper colour
+const FALLBACK_BRAND = '24 90% 50%' // Omarchy Server's default wallpaper colour
 export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	const root = document.documentElement
 	root.dataset.theme = p.theme
@@ -436,7 +436,7 @@ export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 }
 
 // Appearance is cached on the phone for an instant first paint, and saved on the
-// Touch server per umbrelOS account so every phone you sign in on gets it.
+// Touch server per Omarchy Server account so every phone you sign in on gets it.
 export function usePrefs(brandHsl: string | null | undefined, signedIn: boolean) {
 	const [prefs, setLocal] = useState<Prefs>(readPrefs)
 	const loaded = useRef(false)
@@ -476,7 +476,7 @@ function savePrefs(p: Prefs) {
 	return fetch('/api/prefs', {
 		method: 'POST',
 		credentials: 'same-origin',
-		headers: {'content-type': 'application/json', 'x-umbrel-touch': '1'},
+		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
 		body: JSON.stringify({theme: p.theme, accent: p.accent, customBrandHsl: p.customBrandHsl ?? null}),
 	}).catch(() => {})
 }
@@ -531,13 +531,13 @@ function rgbToHsl(r: number, g: number, b: number) {
 }
 
 // ---- backdrop -----------------------------------------------------------------
-export const wallpaperUrl = (w?: Wallpaper | null) => (w?.id ? `/api/umbrel-wallpaper/${w.id}` : null)
+export const wallpaperUrl = (w?: Wallpaper | null) => (w?.id ? `/api/wallpaper/${w.id}` : null)
 
 export const customBackgroundUrl = (version?: number | null) => (version ? `/api/background?v=${version}` : null)
 
 export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; prefs: Prefs}) {
 	const url =
-		prefs.theme === 'umbrel' ? wallpaperUrl(wallpaper) : prefs.theme === 'custom' ? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper)) : null
+		prefs.theme === 'horizon' ? wallpaperUrl(wallpaper) : prefs.theme === 'custom' ? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper)) : null
 	const [ready, setReady] = useState<string | null>(null)
 	useEffect(() => {
 		if (!url) return
@@ -584,7 +584,7 @@ export function StoreIcon({size = 56}: {size?: number}) {
 // Stored per device (a phone and a PC signed into the same account want different layouts).
 // Auto picks the desktop on a wide screen with a mouse or trackpad.
 export type LayoutPref = 'auto' | 'desktop' | 'phone'
-const LAYOUT_KEY = 'umbrel-touch:layout'
+const LAYOUT_KEY = 'omarchy-server:layout'
 const WIDE = '(min-width: 1000px) and (min-height: 600px) and (pointer: fine)'
 function readLayoutPref(): LayoutPref {
 	try {

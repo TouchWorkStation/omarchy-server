@@ -202,7 +202,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 		setUploading(true)
 		try {
 			const {blob, hsl} = await preparePhoto(file)
-			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-umbrel-touch': '1'}, body: blob})
+			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1'}, body: blob})
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
 			setPrefs({...prefs, theme: 'custom', customBrandHsl: hsl, backgroundVersion: body.prefs.backgroundVersion})
@@ -215,9 +215,9 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 		}
 	}
 	const removePhoto = async () => {
-		const res = await fetch('/api/background', {method: 'DELETE', credentials: 'same-origin', headers: {'x-umbrel-touch': '1'}}).catch(() => null)
+		const res = await fetch('/api/background', {method: 'DELETE', credentials: 'same-origin', headers: {'x-omarchy-server': '1'}}).catch(() => null)
 		if (!res?.ok) return toast('Couldn’t remove the photo', true)
-		setPrefs({...prefs, theme: prefs.theme === 'custom' ? 'umbrel' : prefs.theme, customBrandHsl: null, backgroundVersion: null})
+		setPrefs({...prefs, theme: prefs.theme === 'custom' ? 'horizon' : prefs.theme, customBrandHsl: null, backgroundVersion: null})
 		toast('Photo removed')
 	}
 
@@ -227,7 +227,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 			<div className="themes" role="radiogroup" aria-label="Theme">
 				{THEMES.map((t) => {
 					const on = prefs.theme === t.id
-					const isWall = t.id === 'umbrel'
+					const isWall = t.id === 'horizon'
 					const isPhoto = t.id === 'custom'
 					const bg = isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
 					return (
@@ -321,11 +321,11 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 
 	const power = async (kind: 'restart' | 'shutdown') => {
 		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your Umbrel?' : 'Shut down your Umbrel?',
+			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
 			body:
 				kind === 'restart'
-					? 'All apps and machines stop, then come back once umbrelOS has restarted. This takes a few minutes.'
-					: 'All apps and machines stop. You’ll need to turn the Umbrel back on yourself (for a VM, from FygoNAS).',
+					? 'All apps and machines stop, then come back once Omarchy Server has restarted. This takes a few minutes.'
+					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
 			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
 			danger: true,
 			icon: kind === 'restart' ? 'restart' : 'power',
@@ -333,13 +333,13 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 		if (!ok) return
 		try {
 			await mutate(`system.${kind}`)
-			toast(kind === 'restart' ? 'Your Umbrel is restarting' : 'Your Umbrel is shutting down')
+			toast(kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down')
 		} catch (e) {
 			toast((e as Error).message, true)
 		}
 	}
 	const signOut = async () => {
-		const ok = await confirm({title: 'Sign out?', body: 'This phone is signed out and removed from your Umbrel’s devices.', confirm: 'Sign out', icon: 'signout'})
+		const ok = await confirm({title: 'Sign out?', body: 'This phone is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'})
 		if (!ok) return
 		await logout().catch(() => {})
 		qc.clear()
@@ -374,7 +374,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 			<div>
 				<h1 className="title">System</h1>
 				<p className="subtitle">
-					{boot.umbrel?.device ?? 'Umbrel'} · {boot.umbrel?.name ?? boot.umbrel?.version}
+					{boot.server?.device ?? 'server'} · {boot.server?.name ?? boot.server?.version}
 				</p>
 			</div>
 			<div>
@@ -383,26 +383,26 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 			</div>
 			<section>
 				<div className="section-head">
-					<h2>Your Umbrel</h2>
+					<h2>Your server</h2>
 				</div>
 				<KV
 					rows={[
-						['Device', boot.umbrel?.device ?? '–'],
-						['Address', boot.umbrel?.host ?? '–'],
-						['umbrelOS', boot.umbrel?.version ?? '–'],
+						['Device', boot.server?.device ?? '–'],
+						['Address', boot.server?.host ?? '–'],
+						['Omarchy Server', boot.server?.version ?? '–'],
 						['Software update', update.data ? (update.data.available ? `${update.data.name} available` : 'Up to date') : '–'],
 						['Signed in as', `${user.data?.name ?? '–'}${user.data?.role ? ` (${user.data.role})` : ''}`],
 					]}
 				/>
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
 					<Row icon="settings" color="#8e8e93" label="Settings" onClick={onSettings} />
-					<Row icon="open" color="var(--blue)" label="Open umbrelOS" href={boot.umbrel?.url} />
-					<Row icon="restart" color="var(--peach)" label="Restart Umbrel" onClick={() => power('restart')} />
-					<Row icon="power" color="var(--red)" label="Shut down Umbrel" onClick={() => power('shutdown')} />
+					<Row icon="open" color="var(--blue)" label="Open Omarchy Server" href={boot.server?.url} />
+					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />
+					<Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />
 					<Row icon="signout" color="#8e8e93" label="Sign out of this device" onClick={signOut} />
 				</div>
 			</section>
-			<p className="footer-note">UmbrelOS Touch {boot.touch.version} · Not affiliated with Umbrel</p>
+			<p className="footer-note">Omarchy Server {boot.touch.version}</p>
 		</div>
 	)
 }

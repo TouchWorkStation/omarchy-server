@@ -1,11 +1,11 @@
-/* UmbrelOS Touch — umbrelOS's wallpaper + glass language, rebuilt for one hand. */
+/* Omarchy Server — Omarchy Server's wallpaper + glass language, rebuilt for one hand. */
 @import '@fontsource-variable/inter';
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/600.css';
 
 /* ---- Themes -------------------------------------------------------------- */
 :root,
-[data-theme='umbrel'],
+[data-theme='horizon'],
 [data-theme='custom'] {
 	--bg: #0c0c10;
 	--bg-solid: #16161b;
@@ -209,7 +209,7 @@ img {
 	font-variant-numeric: tabular-nums;
 }
 
-/* ---- Backdrop: the account's umbrelOS wallpaper --------------------------- */
+/* ---- Backdrop: the account's Omarchy Server wallpaper --------------------------- */
 .backdrop {
 	position: fixed;
 	inset: 0;
@@ -518,7 +518,7 @@ h1.title {
 .ring .track {
 	stroke: var(--faint, rgba(255, 255, 255, 0.1));
 }
-[data-theme]:not([data-theme='umbrel']):not([data-theme='custom']) .ring .track {
+[data-theme]:not([data-theme='horizon']):not([data-theme='custom']) .ring .track {
 	stroke: var(--line-2);
 }
 .ring .value {

@@ -8,12 +8,12 @@ import WebSocket from 'ws'
 
 import {createApp} from '../server/app.mjs'
 import {createStore} from '../server/store.mjs'
-import {startFakeUmbreld} from './fake-umbreld.mjs'
+import {startFakeserverd} from './fake-omarchyd.mjs'
 
-async function startTouch({umbrelUrl, appHosts} = {}) {
+async function startTouch({backendUrl, appHosts} = {}) {
 	const dir = await mkdtemp(join(tmpdir(), 'touch-'))
 	const store = await createStore(dir)
-	if (umbrelUrl) await store.setConfig({umbrelUrl})
+	if (backendUrl) await store.setConfig({backendUrl})
 	if (appHosts) await store.setConfig({appHosts})
 	const app = createApp({store, relayPortBase: 0, relayHost: '127.0.0.1'})
 	const server = await new Promise((r) => {
@@ -27,7 +27,7 @@ async function startTouch({umbrelUrl, appHosts} = {}) {
 			method,
 			headers: {
 				...(body !== undefined ? {'content-type': 'application/json'} : {}),
-				...(method !== 'GET' ? {'x-umbrel-touch': '1'} : {}),
+				...(method !== 'GET' ? {'x-omarchy-server': '1'} : {}),
 				...(cookie ? {cookie} : {}),
 				...headers,
 			},
@@ -40,11 +40,11 @@ async function startTouch({umbrelUrl, appHosts} = {}) {
 	return {dir, store, base, req, getCookie: () => cookie, close: () => (app.closeRelays(), new Promise((r) => server.close(r)))}
 }
 
-describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
+describe('Omarchy Server server against an omarchyd stand-in', () => {
 	let fake
 	let touch
 	before(async () => {
-		fake = await startFakeUmbreld({accessTtlMs: 60 * 60 * 1000})
+		fake = await startFakeserverd({accessTtlMs: 60 * 60 * 1000})
 		touch = await startTouch()
 	})
 	after(async () => {
@@ -52,7 +52,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		await fake.close()
 	})
 
-	test('unconfigured server asks to connect, setup verifies the address is umbrelOS', async () => {
+	test('unconfigured server asks to connect, setup verifies the address is Omarchy Server', async () => {
 		let r = await touch.req('GET', '/api/bootstrap')
 		assert.equal(r.body.configured, false)
 		r = await touch.req('POST', '/api/setup', {url: 'http://127.0.0.1:1'})
@@ -61,19 +61,19 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(r.status, 200)
 		assert.equal(r.body.version, '2.0.0')
 		r = await touch.req('GET', '/api/bootstrap')
-		assert.equal(r.body.umbrel.reachable, true)
-		// a loopback Umbrel address is reported as the address the phone used to reach Touch
-		assert.equal(r.body.umbrel.host, '127.0.0.1')
-		assert.equal(r.body.umbrel.url, 'http://127.0.0.1')
+		assert.equal(r.body.server.reachable, true)
+		// a loopback Server address is reported as the address the phone used to reach Touch
+		assert.equal(r.body.server.host, '127.0.0.1')
+		assert.equal(r.body.server.url, 'http://127.0.0.1')
 		// before sign-in nothing identifies the accounts; only the backdrop wallpaper is shared
 		assert.deepEqual(r.body.accounts, [{userId: '', name: '', avatar: null, wallpaper: {id: '23', brandColorHsl: '24 90% 50%'}}])
 		assert.equal(r.body.session, null)
 	})
 
-	test('wallpaper route only serves numeric umbrelOS wallpaper ids', async () => {
-		const bad = await fetch(`${touch.base}/api/umbrel-wallpaper/..%2F..%2Fetc`)
+	test('wallpaper route only serves numeric Omarchy Server wallpaper ids', async () => {
+		const bad = await fetch(`${touch.base}/api/wallpaper/..%2F..%2Fetc`)
 		assert.equal(bad.status, 404)
-		const missing = await fetch(`${touch.base}/api/umbrel-wallpaper/999`)
+		const missing = await fetch(`${touch.base}/api/wallpaper/999`)
 		assert.equal(missing.status, 404)
 	})
 
@@ -82,7 +82,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(r.status, 401)
 	})
 
-	test('wrong password surfaces umbreld’s message', async () => {
+	test('wrong password surfaces omarchyd’s message', async () => {
 		// username and password are both required, and a wrong one of either reads the same
 		let r = await touch.req('POST', '/api/auth/login', {password: 'correct horse'})
 		assert.equal(r.status, 400)
@@ -101,7 +101,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.match(r.setCookie, /HttpOnly/)
 		assert.match(r.setCookie, /SameSite=Strict/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'umbrel-touch', platform: 'ios', deviceClass: 'phone', appVersion: '0.15.1', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.2.0', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -154,7 +154,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(bad, 400)
 	})
 
-	test('creates a machine through umbreld', async () => {
+	test('creates a machine through omarchyd', async () => {
 		const r = await touch.req('POST', '/api/rpc/machines.create', {input: {name: 'Dev box', osId: 'debian-server-amd64', cores: 2, memoryGb: 2, diskSizeGb: 15, arch: 'amd64', username: 'chris', password: 'pw'}})
 		assert.equal(r.status, 200)
 		assert.equal(r.body.data.state, 'installing')
@@ -186,7 +186,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 
 	test('custom background upload accepts JPEG only and is private', async () => {
 		const send = (body) =>
-			fetch(`${touch.base}/api/background`, {method: 'POST', headers: {'content-type': 'image/jpeg', 'x-umbrel-touch': '1', cookie: touch.getCookie()}, body})
+			fetch(`${touch.base}/api/background`, {method: 'POST', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1', cookie: touch.getCookie()}, body})
 		assert.equal((await send(Buffer.from('<svg onload=alert(1)>'))).status, 400)
 		const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(100)])
 		const up = await send(jpeg)
@@ -217,7 +217,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 			})
 		const shell = await open('cols=80&rows=24')
 		assert.ok(shell.ok)
-		assert.match(shell.out, /Welcome to umbrelOS/)
+		assert.match(shell.out, /Welcome to Omarchy Server/)
 		const appShell = await open('appId=immich&cols=60&rows=20')
 		assert.ok(appShell.ok)
 		assert.deepEqual(fake.terminals.at(-1), {appId: 'immich', cols: 60, rows: 20})
@@ -231,7 +231,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.ok(list.body.data.files.some((f) => f.name === 'Notes.txt'))
 		const up = await fetch(`${touch.base}/api/files/upload?path=${encodeURIComponent('/Home/Documents/hello.txt')}`, {
 			method: 'POST',
-			headers: {cookie: touch.getCookie(), 'x-umbrel-touch': '1', 'content-type': 'application/octet-stream'},
+			headers: {cookie: touch.getCookie(), 'x-omarchy-server': '1', 'content-type': 'application/octet-stream'},
 			body: 'uploaded from the phone',
 		})
 		assert.equal(up.status, 200)
@@ -269,7 +269,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 	test('file viewer: saves edits in place, extracts archives, asks for renditions', async () => {
 		const save = await fetch(`${touch.base}/api/files/upload?path=${encodeURIComponent('/Home/Documents/Notes.txt')}&collision=replace`, {
 			method: 'POST',
-			headers: {cookie: touch.getCookie(), 'x-umbrel-touch': '1', 'content-type': 'application/octet-stream'},
+			headers: {cookie: touch.getCookie(), 'x-omarchy-server': '1', 'content-type': 'application/octet-stream'},
 			body: 'edited in the viewer',
 		})
 		assert.equal(save.status, 200)
@@ -283,7 +283,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(typeof th.body.data, 'string')
 	})
 
-	test('non-allowlisted procedures are refused without reaching umbreld', async () => {
+	test('non-allowlisted procedures are refused without reaching omarchyd', async () => {
 		const before = fake.calls.length
 		const r = await touch.req('POST', '/api/rpc/user.deleteUser', {input: {userId: 'x'}})
 		assert.equal(r.status, 404)
@@ -303,7 +303,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(fake.calls.length, before)
 	})
 
-	test('desktop windows may frame only the Umbrel host, and the Host header can’t inject CSP', async () => {
+	test('desktop windows may frame only the server host, and the Host header can’t inject CSP', async () => {
 		const {request} = await import('node:http')
 		const cspFor = (host) =>
 			new Promise((resolve, reject) => {
@@ -321,30 +321,30 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.doesNotMatch(evil, /frame-src/)
 	})
 
-	test('app windows: reports whether the browser’s umbrelOS app session is valid, never the session itself', async () => {
+	test('app windows: reports whether the browser’s Omarchy Server app session is valid, never the session itself', async () => {
 		const ask = (app, extra) => touch.req('GET', `/api/app-access?app=${app}`, undefined, {cookie: `${touch.getCookie()}${extra}`})
 		// a malformed cookie from another app on the same host must not break anything
 		let r = await ask('nextcloud', '; junk=%E0%A4%A')
 		assert.equal(r.status, 200)
 		assert.deepEqual(r.body, {state: 'signin'})
-		r = await ask('nextcloud', '; UMBREL_APP_SESSION=expired')
+		r = await ask('nextcloud', '; OMARCHY_APP_SESSION=expired')
 		assert.deepEqual(r.body, {state: 'signin'})
-		r = await ask('nextcloud', '; UMBREL_APP_SESSION=good-app-session')
+		r = await ask('nextcloud', '; OMARCHY_APP_SESSION=good-app-session')
 		assert.deepEqual(r.body, {state: 'ok'})
-		r = await ask('private-notes', '; UMBREL_APP_SESSION=good-app-session')
+		r = await ask('private-notes', '; OMARCHY_APP_SESSION=good-app-session')
 		assert.deepEqual(r.body, {state: 'not-shared'})
 		const check = fake.appAuthChecks.at(-1)
 		assert.equal(check.app, 'private-notes')
-		assert.equal(check.cookie, 'UMBREL_APP_SESSION=good-app-session') // only the app cookie is forwarded
+		assert.equal(check.cookie, 'OMARCHY_APP_SESSION=good-app-session') // only the app cookie is forwarded
 		assert.equal((await touch.req('GET', '/api/app-access?app=../../x')).status, 400)
-		const out = await fetch(`${touch.base}/api/app-access?app=nextcloud`, {headers: {cookie: 'UMBREL_APP_SESSION=good-app-session'}})
+		const out = await fetch(`${touch.base}/api/app-access?app=nextcloud`, {headers: {cookie: 'OMARCHY_APP_SESSION=good-app-session'}})
 		assert.equal(out.status, 401) // needs a Touch session too
 	})
 
-	test('desktop: every app opens in a window through a relay, using Touch’s own umbrelOS app session', async () => {
+	test('desktop: every app opens in a window through a relay, using Touch’s own Omarchy Server app session', async () => {
 		const r = await touch.req('GET', '/api/app-frame?apps=immich,nextcloud,home-assistant,../x')
 		assert.equal(r.status, 200)
-		assert.equal(r.body.sso, true) // the sign-in kept umbrelOS's app session server-side
+		assert.equal(r.body.sso, true) // the sign-in kept Omarchy Server's app session server-side
 		assert.deepEqual(r.body.results, {immich: 'window', nextcloud: 'window', 'home-assistant': 'window'})
 		assert.deepEqual(r.body.relay, {immich: true, nextcloud: true, 'home-assistant': true})
 		const open = await touch.req('GET', '/api/app-open?app=nextcloud')
@@ -352,8 +352,8 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		const url = new URL(open.body.url)
 		const via = (path, cookie) => fetch(new URL(path, url), {headers: cookie ? {cookie} : {}, redirect: 'manual'})
 		// only browsers signed in to Touch get through
-		assert.equal((await via('/', 'UMBREL_APP_SESSION=good-app-session')).status, 401)
-		// no umbrelOS app sign-in needed in the browser: Touch supplies its own app session
+		assert.equal((await via('/', 'OMARCHY_APP_SESSION=good-app-session')).status, 401)
+		// no Omarchy Server app sign-in needed in the browser: Touch supplies its own app session
 		const page = await via('/', touch.getCookie())
 		assert.equal(page.status, 200)
 		assert.match(await page.text(), /Nextcloud/)
@@ -369,7 +369,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(new URL(imr.headers.get('location'), im.body.url).port, new URL(im.body.url).port)
 		// Touch's own cookie never reaches an app
 		assert.ok(fake.appRequests.length > 0)
-		assert.ok(!fake.appRequests.some((c) => c.includes('umbrel_touch_sid')))
+		assert.ok(!fake.appRequests.some((c) => c.includes('omarchy_server_sid')))
 		assert.equal((await via('/__touch/ping.gif')).headers.get('content-type'), 'image/gif')
 		assert.equal((await touch.req('GET', '/api/app-open?app=../x')).status, 400)
 		assert.equal((await fetch(`${touch.base}/api/app-frame?apps=immich`)).status, 401)
@@ -377,7 +377,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 
 	test('remote access: app subdomains get a one-time hand-over, then a per-app cookie', async () => {
 		const {request} = await import('node:http')
-		const touch2 = await startTouch({umbrelUrl: fake.url, appHosts: '{app}-touch.example.com'})
+		const touch2 = await startTouch({backendUrl: fake.url, appHosts: '{app}-touch.example.com'})
 		try {
 			await touch2.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})
 			const u = new URL(touch2.base)
@@ -424,7 +424,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 	})
 
 	test('cross-site POSTs are refused', async () => {
-		let r = await touch.req('POST', '/api/rpc/apps.stop', {input: {appId: 'jellyfin'}}, {'x-umbrel-touch': ''})
+		let r = await touch.req('POST', '/api/rpc/apps.stop', {input: {appId: 'jellyfin'}}, {'x-omarchy-server': ''})
 		assert.equal(r.status, 403)
 		r = await touch.req('POST', '/api/rpc/apps.stop', {input: {appId: 'jellyfin'}}, {origin: 'http://evil.example'})
 		assert.equal(r.status, 403)
@@ -442,13 +442,13 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 	test('re-pointing the server needs a signed-in session', async () => {
 		const anon = await fetch(`${touch.base}/api/setup`, {
 			method: 'POST',
-			headers: {'content-type': 'application/json', 'x-umbrel-touch': '1'},
+			headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
 			body: JSON.stringify({url: 'http://192.0.2.1'}),
 		})
 		assert.equal(anon.status, 403)
 	})
 
-	test('revoking the device in umbrelOS signs the phone out', async () => {
+	test('revoking the device in Omarchy Server signs the phone out', async () => {
 		fake.revokeAllDevices()
 		const r = await touch.req('GET', '/api/rpc/apps.list')
 		assert.equal(r.status, 401)
@@ -457,7 +457,7 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 		assert.equal(b.body.session, null)
 	})
 
-	test('logout revokes the umbrelOS session', async () => {
+	test('logout revokes the Omarchy Server session', async () => {
 		await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})
 		const r = await touch.req('POST', '/api/auth/logout')
 		assert.equal(r.status, 200)
@@ -466,10 +466,10 @@ describe('UmbrelOS Touch server against an umbreld 2.0 stand-in', () => {
 	})
 })
 
-describe('older umbrelOS without native login', () => {
+describe('older Omarchy Server without native login', () => {
 	test('falls back to user.login bearer tokens', async () => {
-		const fake = await startFakeUmbreld({legacy: true})
-		const touch = await startTouch({umbrelUrl: fake.url})
+		const fake = await startFakeserverd({legacy: true})
+		const touch = await startTouch({backendUrl: fake.url})
 		try {
 			const r = await touch.req('POST', '/api/auth/login', {username: 'Chris', password: 'correct horse'})
 			assert.equal(r.status, 200)

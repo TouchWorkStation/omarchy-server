@@ -18,8 +18,8 @@ export const WALLPAPERS = [
 	{id: 'tower', name: "Tower", by: "Viktor Forgacs", hsl: '189 45% 55%'},
 ] as const
 export type BuiltinWallpaper = (typeof WALLPAPERS)[number]['id']
-// 'umbrel' = your umbrelOS wallpaper (what the phone shows); 'photo' = the photo you uploaded.
-export type WallpaperId = BuiltinWallpaper | 'umbrel' | 'photo'
+// 'server' = your Omarchy Server wallpaper (what the phone shows); 'photo' = the photo you uploaded.
+export type WallpaperId = BuiltinWallpaper | 'server' | 'photo'
 export const wallpaperSrc = (id: string, thumb = false) => `/wallpapers/${id}${thumb ? '-thumb' : ''}.jpg`
 
 export type DeskStyle = 'yaru' | 'glass' | 'graphite' | 'daylight'
@@ -64,7 +64,7 @@ export const PRESETS: {id: string; name: string; wallpaper: BuiltinWallpaper; st
 	{id: 'skyline', name: 'Skyline', wallpaper: 'tower', style: 'daylight', accent: 'teal'},
 ]
 
-const KEY = 'umbrel-touch:desktop-config'
+const KEY = 'omarchy-server:desktop-config'
 export const DEFAULT_CONFIG: DeskConfig = {
 	v: 1,
 	preset: 'yosemite',
@@ -84,11 +84,11 @@ function clean(raw: unknown): DeskConfig {
 	const c = (raw && typeof raw === 'object' ? raw : {}) as Partial<DeskConfig>
 	const d = DEFAULT_CONFIG
 	const dock = {...d.dock, ...(c.dock ?? {})}
-	const okWall = (w: unknown): w is WallpaperId => w === 'umbrel' || w === 'photo' || WALLPAPERS.some((x) => x.id === w)
+	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || WALLPAPERS.some((x) => x.id === w)
 	// Pins from the first desktop release move into the dock.
 	let legacyPins: string[] = []
 	try {
-		legacyPins = JSON.parse(localStorage.getItem('umbrel-touch:desktop-pins') ?? '[]').map((id: string) => `app:${id}`)
+		legacyPins = JSON.parse(localStorage.getItem('omarchy-server:desktop-pins') ?? '[]').map((id: string) => `app:${id}`)
 	} catch {
 		/* none */
 	}

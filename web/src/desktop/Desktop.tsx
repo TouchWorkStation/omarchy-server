@@ -186,7 +186,7 @@ function save(key: string, v: unknown) {
 		/* storage full or private mode */
 	}
 }
-const STORE_KEY = 'umbrel-touch:desktop'
+const STORE_KEY = 'omarchy-server:desktop'
 
 function useViewport() {
 	const [vp, setVp] = useState({w: window.innerWidth, h: window.innerHeight})
@@ -329,10 +329,10 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const api = useMemo<DesktopApi>(() => {
 		const launch = (app: UserApp) => {
 			mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
-			const url = appUrl(app, boot.umbrel!.host)
+			const url = appUrl(app, boot.server!.host)
 			const verdict = framesRef.current?.results[app.id]
 			if (url && (cfgRef.current.appsOpenIn === 'tab' || app.requiresHttps || verdict === 'tab')) {
-				// Same as the umbrelOS dashboard: the app gets its own browser tab.
+				// Same as Omarchy Server: the app gets its own browser tab.
 				setOverview(null)
 				setMenu(null)
 				window.open(url, '_blank', 'noopener')
@@ -383,7 +383,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			pin: (key) => setCfg((c) => (c.dock.items.includes(key) ? c : {...c, dock: {...c.dock, items: [...c.dock.items, key]}})),
 			unpin: (key) => setCfg((c) => ({...c, dock: {...c.dock, items: c.dock.items.filter((k) => k !== key)}})),
 		}
-	}, [open, close, appList, machineList, setCfg, toast, boot.umbrel])
+	}, [open, close, appList, machineList, setCfg, toast, boot.server])
 
 	// Clicking into an app's iframe doesn't reach our handlers; notice the focus moving to it.
 	useEffect(() => {
@@ -447,7 +447,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		const mine = winsOf(key)
 		const items: MenuItem[] = [{label: mine.length && where === 'dock' && !key.startsWith('folder:') ? 'Show' : 'Open', icon: 'open', onClick: () => (mine.length && where === 'dock' ? dockClick(key) : api.openItem(key))}]
 		if (key === 'files' || key === 'terminal') items.push({label: 'New window', icon: 'plus', onClick: () => (key === 'terminal' ? api.openTerminal() : open('files', undefined, {newWindow: true}))})
-		if (app && appUrl(app, boot.umbrel!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.umbrel!.host)!, '_blank', 'noopener')})
+		if (app && appUrl(app, boot.server!.host)) items.push({label: 'Open in a browser tab', icon: 'open', onClick: () => window.open(appUrl(app, boot.server!.host)!, '_blank', 'noopener')})
 		if (machine && machine.state === 'running')
 			items.push({
 				label: 'Shut down',
@@ -471,11 +471,11 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const power = async (kind: 'restart' | 'shutdown') => {
 		setTopMenu(null)
 		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your Umbrel?' : 'Shut down your Umbrel?',
+			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
 			body:
 				kind === 'restart'
-					? 'All apps and machines stop, then come back once umbrelOS has restarted. This takes a few minutes.'
-					: 'All apps and machines stop. You’ll need to turn the Umbrel back on yourself (for a VM, from FygoNAS).',
+					? 'All apps and machines stop, then come back once Omarchy Server has restarted. This takes a few minutes.'
+					: 'All apps and machines stop. You’ll need to turn the server back on yourself (for a VM, from its host).',
 			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
 			danger: true,
 			icon: kind === 'restart' ? 'restart' : 'power',
@@ -483,14 +483,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 		if (!ok) return
 		try {
 			await mutate(`system.${kind}`)
-			toast(kind === 'restart' ? 'Your Umbrel is restarting' : 'Your Umbrel is shutting down')
+			toast(kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down')
 		} catch (e) {
 			toast((e as Error).message, true)
 		}
 	}
 	const signOut = async () => {
 		setTopMenu(null)
-		if (!(await confirm({title: 'Sign out?', body: 'This browser is signed out and removed from your Umbrel’s devices.', confirm: 'Sign out', icon: 'signout'}))) return
+		if (!(await confirm({title: 'Sign out?', body: 'This browser is signed out and removed from your server’s devices.', confirm: 'Sign out', icon: 'signout'}))) return
 		await logout().catch(() => {})
 		qc.clear()
 		onSignedOut()
@@ -568,7 +568,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 						setTopMenu(null)
 					}}
 					empty={wins.length === 0}
-					deviceName={boot.umbrel?.device ?? 'Umbrel'}
+					deviceName={boot.server?.device ?? 'server'}
 				/>
 
 				{wins.map((w) => (
@@ -1063,7 +1063,7 @@ function useClock() {
 }
 
 const NOTIFICATION_TEXT: Record<string, string> = {
-	'update-available': 'A new version of umbrelOS is available',
+	'update-available': 'A new version of Omarchy Server is available',
 	migration: 'Your data migration finished',
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -1168,8 +1168,8 @@ function TopBar(p: {
 					<div className="sys-head">
 						<span className="dot live" />
 						<span>
-							<b>{p.boot.umbrel?.device ?? 'Umbrel'}</b>
-							<span className="mono muted">{p.boot.umbrel?.host}</span>
+							<b>{p.boot.server?.device ?? 'server'}</b>
+							<span className="mono muted">{p.boot.server?.host}</span>
 						</span>
 					</div>
 					<div className="sys-user muted">Signed in as {user.data?.name ?? 'you'}</div>
@@ -1397,7 +1397,7 @@ function WindowFrame({
 	const app = win.kind === 'app' ? appList.find((a) => a.id === win.payload?.appId) : undefined
 	const machine = win.kind === 'console' ? machineList.find((m) => m.id === win.payload?.machineId) : undefined
 	const boot = useBootstrap()
-	const url = app ? appUrl(app, boot.umbrel!.host) : null
+	const url = app ? appUrl(app, boot.server!.host) : null
 
 	const toggleMax = () => onUpdate(win.id, {snap: win.snap ? null : 'max'})
 
@@ -1624,7 +1624,7 @@ function RelayedFrame({app}: {app: UserApp}) {
 	)
 }
 
-// An Umbrel app in a window. umbrelOS asks each browser to sign in before it opens apps, and its
+// An Omarchy Server app in a window. Omarchy Server asks each browser to sign in before it opens apps, and its
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
 // The session it creates covers all of this browser's apps (7 days); the window then loads.
 function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
@@ -1715,8 +1715,8 @@ function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClo
 				<b>{waiting ? 'Waiting for you to sign in…' : `Sign in to open ${name}`}</b>
 				<span>
 					{waiting
-						? `Sign in to umbrelOS in the tab that opened. ${name} then loads here by itself; you can close that tab.`
-						: 'umbrelOS asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 7 days.'}
+						? `Sign in to Omarchy Server in the tab that opened. ${name} then loads here by itself; you can close that tab.`
+						: 'Omarchy Server asks each browser to sign in once before it opens your apps. Its sign-in page can’t be shown inside a window, so it opens in a new tab. Afterwards every app opens here for the next 7 days.'}
 				</span>
 				<div className="app-gate-actions">
 					<button
@@ -1745,7 +1745,7 @@ function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClo
 				<AppIcon src={app.icon} name={name} size={64} />
 				<b>{name} opens in a browser tab</b>
 				<span>
-					{name} doesn’t allow itself to be shown inside other pages (one of its own security settings), so it opens in its own tab, just like from the umbrelOS
+					{name} doesn’t allow itself to be shown inside other pages (one of its own security settings), so it opens in its own tab, just like from the Omarchy Server
 					dashboard. From now on it goes straight there.
 				</span>
 				<div className="app-gate-actions">
@@ -1768,7 +1768,7 @@ function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClo
 			<div className="win-empty app-gate">
 				<AppIcon src={app.icon} name={name} size={64} dim />
 				<b>{name} isn’t shared with you</b>
-				<span>Ask the Umbrel’s owner to share it with your account in umbrelOS.</span>
+				<span>Ask the server’s owner to share it with your account in Omarchy Server.</span>
 			</div>
 		)
 	return (
@@ -1813,7 +1813,7 @@ const WindowContent = memo(
 				case 'personalize':
 					return <Personalize tab={win.payload?.tab} prefs={prefs} setPrefs={setPrefs} />
 				case 'terminal':
-					return owner ? <TerminalScreen embedded app={win.payload?.term} onClose={close} /> : <div className="win-empty">Only the Umbrel’s owner can open a terminal.</div>
+					return owner ? <TerminalScreen embedded app={win.payload?.term} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
 					return <ConsoleWindow machineId={win.payload!.machineId!} onClose={close} />
 				default:

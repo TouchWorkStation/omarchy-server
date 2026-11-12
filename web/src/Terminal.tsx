@@ -1,5 +1,5 @@
-// Full-screen terminal: a shell on the Umbrel, or inside one app's container.
-// umbreld streams a PTY over a WebSocket (bridged by the Touch server). Its size is
+// Full-screen terminal: a shell on the server, or inside one app's container.
+// omarchyd streams a PTY over a WebSocket (bridged by the Touch server). Its size is
 // fixed when the shell starts, so on rotate we resize the font, not the shell.
 import {useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
@@ -167,7 +167,7 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 			if (disposed) return
 			if (!check?.ok) {
 				const body = await check?.json().catch(() => null)
-				setMessage(body?.error?.message ?? 'Can’t reach your Umbrel right now.')
+				setMessage(body?.error?.message ?? 'Can’t reach your server right now.')
 				setState('error')
 				return
 			}
@@ -328,7 +328,7 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 					<b>{title}</b>
 					<span>
 						<i className={`dot ${live ? 'live' : state === 'connecting' ? '' : 'down'}`} />
-						{live ? (app ? 'App shell' : 'umbrelOS shell') : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
+						{live ? (app ? 'App shell' : 'Omarchy Server shell') : state === 'connecting' ? 'Connecting…' : 'Disconnected'}
 					</span>
 				</div>
 				<button className="round-btn" aria-label="Paste" onClick={paste} disabled={!live}>

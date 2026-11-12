@@ -1,4 +1,4 @@
-// Talks only to the UmbrelOS Touch server (same origin). Shapes mirror umbreld 2.0.
+// Talks only to the Omarchy Server server (same origin). Shapes mirror omarchyd.
 
 export class ApiError extends Error {
 	code: string
@@ -24,7 +24,7 @@ async function handle<T>(res: Response): Promise<T> {
 const post = <T>(path: string, body?: unknown) =>
 	fetch(path, {
 		method: 'POST',
-		headers: {'content-type': 'application/json', 'x-umbrel-touch': '1'},
+		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
 		body: JSON.stringify(body ?? {}),
 		credentials: 'same-origin',
 	}).then((r) => handle<T>(r))
@@ -43,7 +43,7 @@ export async function mutate<T = unknown>(path: string, input?: unknown): Promis
 export type Bootstrap = {
 	touch: {version: string}
 	configured: boolean
-	umbrel: null | {
+	server: null | {
 		url: string
 		host: string
 		reachable: boolean
@@ -63,7 +63,7 @@ export const login = (body: {username: string; password: string; totpToken?: str
 	post<{ok: true; accountId: string}>('/api/auth/login', body)
 export const logout = () => post('/api/auth/logout')
 
-// ---- umbreld shapes ---------------------------------------------------------
+// ---- omarchyd shapes ---------------------------------------------------------
 
 export type Wallpaper = {id: string; brandColorHsl: string | null}
 export type User = {userId: string; name: string; role: 'owner' | 'member'; avatarUrl?: string; wallpaper?: Wallpaper; sambaUsername?: string}
@@ -127,6 +127,8 @@ export type RegistryApp = {
 }
 export type Registry = {meta: {id: string; name: string}; apps: RegistryApp[]}[]
 
+export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number}
+
 export type Machine = {
 	id: string
 	name: string
@@ -138,6 +140,8 @@ export type Machine = {
 	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'suspended' | 'error'
 	installProgress?: number
 	errorMessage?: string
+	networkMode?: 'nat' | 'bridged'
+	portForwards?: PortForward[]
 }
 
 export type InstallReview = {

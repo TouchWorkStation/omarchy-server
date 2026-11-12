@@ -8,7 +8,7 @@ export class RpcError extends Error {
 		this.code = code
 	}
 }
-const HTTP = {BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, CONFLICT: 409, TOO_MANY_REQUESTS: 429, METHOD_NOT_SUPPORTED: 405}
+const HTTP = {BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, CONFLICT: 409, PRECONDITION_FAILED: 412, TOO_MANY_REQUESTS: 429, METHOD_NOT_SUPPORTED: 405}
 
 export function sendJson(res, status, body, headers = {}) {
 	const text = JSON.stringify(body)

@@ -130,7 +130,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
 	const photo = customBackgroundUrl(prefs.backgroundVersion)
-	const umbrelWall = wallpaperUrl(user.data?.wallpaper)
+	const serverWall = wallpaperUrl(user.data?.wallpaper)
 	const pick = (id: DeskConfig['wallpaper']) => {
 		haptic(6)
 		setCfg((c) => ({...c, preset: null, wallpaper: id}))
@@ -140,7 +140,7 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 		setUploading(true)
 		try {
 			const {blob, hsl} = await preparePhoto(file)
-			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-umbrel-touch': '1'}, body: blob})
+			const res = await fetch('/api/background', {method: 'POST', credentials: 'same-origin', headers: {'content-type': 'image/jpeg', 'x-omarchy-server': '1'}, body: blob})
 			const body = await res.json().catch(() => null)
 			if (!res.ok) throw new Error(body?.error?.message ?? 'Upload failed')
 			// Only the photo is stored; the phone keeps its own theme unless you choose "Your photo" there.
@@ -170,11 +170,11 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 			</Section>
 			<Section title="Your own">
 				<div className="pz-grid walls">
-					<button className={`pz-card wall-card${cfg.wallpaper === 'umbrel' ? ' on' : ''}`} onClick={() => pick('umbrel')}>
-						<span className="pz-thumb" style={{backgroundImage: umbrelWall ? `url(${umbrelWall})` : undefined}}>
-							{cfg.wallpaper === 'umbrel' && <Icon name="check" size={16} stroke={3} className="pz-check" />}
+					<button className={`pz-card wall-card${cfg.wallpaper === 'server' ? ' on' : ''}`} onClick={() => pick('server')}>
+						<span className="pz-thumb" style={{backgroundImage: serverWall ? `url(${serverWall})` : undefined}}>
+							{cfg.wallpaper === 'server' && <Icon name="check" size={16} stroke={3} className="pz-check" />}
 						</span>
-						<b>umbrelOS wallpaper</b>
+						<b>Omarchy Server wallpaper</b>
 					</button>
 					{photo && (
 						<button className={`pz-card wall-card${cfg.wallpaper === 'photo' ? ' on' : ''}`} onClick={() => pick('photo')}>
@@ -297,8 +297,8 @@ function DesktopSettings({cfg, setCfg}: P) {
 	return (
 		<>
 			<Section
-				title="Opening Umbrel apps"
-				note="Some apps (Forgejo, Nextcloud, Home Assistant and others) don’t allow being shown inside another page. Those always open in their own browser tab, like in the umbrelOS dashboard."
+				title="Opening apps"
+				note="Some apps (Forgejo, Nextcloud, Home Assistant and others) don’t allow being shown inside another page. Those always open in their own browser tab, like in Omarchy Server."
 			>
 				<div className="glass group pz-rows">
 					<div className="row static">
@@ -354,7 +354,7 @@ function ItemPicker({keys, info, selected, onPick, actionLabel}: {keys: string[]
 	const groups: [string, (k: string) => boolean][] = [
 		['Folders', (k) => k.startsWith('folder:')],
 		['System', (k) => !k.includes(':')],
-		['Umbrel apps', (k) => k.startsWith('app:')],
+		['Apps', (k) => k.startsWith('app:')],
 		['Machines', (k) => k.startsWith('machine:')],
 	]
 	return (

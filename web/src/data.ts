@@ -58,7 +58,7 @@ export const useInstallReview = (appId: string | null) =>
 		retry: false,
 	})
 
-// Run an umbreld mutation with optimistic state, a toast, and a refresh.
+// Run an omarchyd mutation with optimistic state, a toast, and a refresh.
 export function useAction() {
 	const qc = useQueryClient()
 	const toast = useToast()

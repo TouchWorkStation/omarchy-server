@@ -1,12 +1,12 @@
-// Settings → Storage: drives, the RAID pool, and USB drives, through the same umbreld calls
-// umbrelOS's own Storage Manager uses (hardware.internalStorage / hardware.raid / files).
+// Settings → Storage: drives, the RAID pool, and USB drives, through the same omarchyd calls
+// Omarchy Server's own Storage Manager uses (hardware.internalStorage / hardware.raid / files).
 //
-// What umbrelOS supports, and so what this page offers:
-//  - Every Umbrel: list internal drives with health (SMART, temperature, SSD wear) and USB drives.
-//  - With a storage pool (created during umbrelOS setup): add a drive, add a mirror pair, add an
+// What Omarchy Server supports, and so what this page offers:
+//  - Every server: list internal drives with health (SMART, temperature, SSD wear) and USB drives.
+//  - With a storage pool (created during Omarchy Server setup): add a drive, add a mirror pair, add an
 //    SSD accelerator, replace a failed drive, turn one SSD into FailSafe, and check for errors.
-//  - Without a pool: nothing to combine drives into. umbrelOS only creates pools during setup.
-//    hardware.raid.setup exists but is dev-only, and on a running Umbrel the next boot would
+//  - Without a pool: nothing to combine drives into. Omarchy Server only creates pools during setup.
+//    hardware.raid.setup exists but is dev-only, and on a running server the next boot would
 //    mount the new, empty pool as your data drive, so this app never calls it.
 import {useMemo, useState, type CSSProperties, type ReactNode} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
@@ -174,7 +174,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 		const names = plan.drives.map((d) => `${d.name} (${tb(d.size)}, ${d.serial})`).join(' and ')
 		const ok = await confirm({
 			title: plan.title,
-			body: `${plan.body} Everything on ${names} will be erased.${plan.restarts ? ' Your Umbrel restarts during this.' : ''} Keep it powered on until it finishes.`,
+			body: `${plan.body} Everything on ${names} will be erased.${plan.restarts ? ' Your server restarts during this.' : ''} Keep it powered on until it finishes.`,
 			confirm: plan.confirm,
 			danger: true,
 			icon: 'disk',
@@ -194,7 +194,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 		}
 	}
 
-	// ---- actions offered for a spare drive, following umbrelOS's own rules ----
+	// ---- actions offered for a spare drive, following Omarchy Server's own rules ----
 	const actionsFor = (d: StorageDevice): {label: string; plan?: Plan; pickSecond?: () => void; note?: string}[] => {
 		if (!pool || !d.id) return []
 		if (!canChange) return [{label: '', note: op ? `Wait for ${op.label.toLowerCase()} to finish.` : 'Your storage needs attention before drives can be added.'}]
@@ -248,7 +248,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 						title: `Add ${d.name} to your storage?`,
 						body:
 							pool.raidType === 'failsafe'
-								? `The pool expands onto this drive. ${d.roundedSize && d.roundedSize > memberSize ? 'Only as much space as your smallest drive is used. ' : ''}Expansion can take many hours; your Umbrel keeps working meanwhile.`
+								? `The pool expands onto this drive. ${d.roundedSize && d.roundedSize > memberSize ? 'Only as much space as your smallest drive is used. ' : ''}Expansion can take many hours; your server keeps working meanwhile.`
 								: 'Your capacity grows by this drive. In Storage mode, if any drive fails, the data on all of them is lost.',
 						confirm: 'Add drive',
 						path: 'hardware.raid.addDevice',
@@ -319,7 +319,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 		return {fits, start: (n: StorageDevice) => run({
 			kind: 'replace',
 			title: `Replace ${own?.name ?? 'the failed drive'}?`,
-			body: `Your data is rebuilt onto ${n.name}. Rebuilding can take hours; your Umbrel keeps working meanwhile.`,
+			body: `Your data is rebuilt onto ${n.name}. Rebuilding can take hours; your server keeps working meanwhile.`,
 			confirm: 'Replace drive',
 			path: 'hardware.raid.replaceDevice',
 			input: {oldDevice: m.id, newDevice: n.id},
@@ -328,7 +328,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 	}
 
 	const scrub = async () => {
-		if (!(await confirm({title: 'Check your storage for errors?', body: 'umbrelOS reads every block and repairs what it can. It runs in the background and can take hours.', confirm: 'Start check', icon: 'shield'}))) return
+		if (!(await confirm({title: 'Check your storage for errors?', body: 'Omarchy Server reads every block and repairs what it can. It runs in the background and can take hours.', confirm: 'Start check', icon: 'shield'}))) return
 		try {
 			await mutate('hardware.raid.scrub')
 			toast('Checking your storage')
@@ -358,9 +358,9 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 
 			{unsupported ? (
 				<div className="glass card">
-					<b>This umbrelOS doesn’t report drives</b>
+					<b>This Omarchy Server doesn’t report drives</b>
 					<p className="muted" style={{margin: '6px 0 0', fontSize: 14}}>
-						Drive and RAID management arrived in umbrelOS 2.0. Update umbrelOS to manage drives here.
+						Drive management arrives in a coming Omarchy Server update.
 					</p>
 				</div>
 			) : (
@@ -376,7 +376,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 								<span className="muted" style={{fontSize: 13.5}}>
 									{pool
 										? `${pool.devices?.length ?? 0} drive${pool.devices?.length === 1 ? '' : 's'}${pool.accelerator?.exists ? ' + SSD acceleration' : ''}`
-										: (systemDrives[0]?.name ?? boot.umbrel?.device ?? 'Boot drive')}
+										: (systemDrives[0]?.name ?? boot.server?.device ?? 'Boot drive')}
 								</span>
 							</span>
 							{look && (
@@ -420,7 +420,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 						{configuredButMissing && (
 							<div className="error" style={{marginTop: 12}}>
 								<Icon name="alert" size={18} />
-								umbrelOS is set up for a storage pool it can’t find. Check that every drive is connected, then restart.
+								Omarchy Server is set up for a storage pool it can’t find. Check that every drive is connected, then restart.
 							</div>
 						)}
 					</div>
@@ -432,8 +432,8 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 								pool.scrub
 									? pool.scrub.state === 'scrubbing'
 										? undefined
-										: `Last error check ${pool.scrub.state === 'finished' ? 'finished' : 'stopped'}${pool.scrub.errors ? ` and repaired ${pool.scrub.errors} error${pool.scrub.errors > 1 ? 's' : ''}` : ' with no errors'}. umbrelOS checks automatically every month.`
-									: 'umbrelOS checks your storage for errors automatically every month.'
+										: `Last error check ${pool.scrub.state === 'finished' ? 'finished' : 'stopped'}${pool.scrub.errors ? ` and repaired ${pool.scrub.errors} error${pool.scrub.errors > 1 ? 's' : ''}` : ' with no errors'}. Omarchy Server checks automatically every month.`
+									: 'Omarchy Server checks your storage for errors automatically every month.'
 							}
 						>
 							{(pool.topology === 'mirror' && pool.mirrors?.length ? pool.mirrors.flat() : (pool.devices ?? []).map((m) => m.id)).map((id) => {
@@ -490,7 +490,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 						right={devicesQ.isFetching ? <span className="spinner" style={{width: 14, height: 14}} /> : undefined}
 						footer={
 							!pool && spare.length > 0
-								? 'Your Umbrel uses a single-drive setup, which can’t add drives. umbrelOS only combines drives into RAID during setup: back up, reinstall umbrelOS on a separate boot drive with these drives connected, choose them during setup, then restore your backup.'
+								? 'Your server uses a single-drive setup, which can’t add drives. Omarchy Server only combines drives into RAID during setup: back up, reinstall Omarchy Server on a separate boot drive with these drives connected, choose them during setup, then restore your backup.'
 								: spare.length === 0
 									? 'No unused internal drives. Connect a drive, then tap Scan drives.'
 									: undefined
@@ -503,7 +503,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 					</Section>
 
 					{systemDrives.length > 0 && (
-						<Section title="Boot drive" footer="umbrelOS runs from this drive. It’s never offered for storage.">
+						<Section title="Boot drive" footer="Omarchy Server runs from this drive. It’s never offered for storage.">
 							{systemDrives.map((d) => (
 								<DriveRow key={d.id ?? d.device} d={d} onClick={() => setDetail({d})} />
 							))}
@@ -519,8 +519,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 					)}
 
 					<p className="footer-note storage-note">
-						Running umbrelOS in a VM? umbrelOS only lists disks attached as SATA, NVMe or (umbrelOS 2.1) SAS. Disks attached as VirtIO don’t show up here; reattach them as SATA in your hypervisor, then scan.
-					</p>
+						Running Omarchy Server in a VM? Disks passed through as VirtIO may not report health; attach them as SATA or pass the whole controller through.</p>
 				</>
 			)}
 
@@ -557,10 +556,10 @@ function activeOperation(r?: RaidStatus): {label: string; progress: number; hint
 	if (!r?.exists) return undefined
 	const f = r.failsafeTransitionStatus
 	if (f && f.state !== 'complete' && f.state !== 'error')
-		return {label: f.state === 'rebooting' ? 'Restarting into FailSafe' : 'Turning on FailSafe', progress: f.progress, hint: 'Your Umbrel restarts during this. Keep it powered on.'}
-	if (r.replace && (r.replace.state === 'rebuilding' || r.replace.state === 'expanding')) return {label: 'Rebuilding onto the new drive', progress: r.replace.progress, hint: 'Your Umbrel keeps working while this runs.'}
-	if (r.rebuild?.state === 'rebuilding') return {label: 'Rebuilding', progress: r.rebuild.progress, hint: 'Your Umbrel keeps working while this runs.'}
-	if (r.expansion?.state === 'expanding') return {label: 'Expanding onto the new drive', progress: r.expansion.progress, hint: 'This can take many hours. Your Umbrel keeps working meanwhile.'}
+		return {label: f.state === 'rebooting' ? 'Restarting into FailSafe' : 'Turning on FailSafe', progress: f.progress, hint: 'Your server restarts during this. Keep it powered on.'}
+	if (r.replace && (r.replace.state === 'rebuilding' || r.replace.state === 'expanding')) return {label: 'Rebuilding onto the new drive', progress: r.replace.progress, hint: 'Your server keeps working while this runs.'}
+	if (r.rebuild?.state === 'rebuilding') return {label: 'Rebuilding', progress: r.rebuild.progress, hint: 'Your server keeps working while this runs.'}
+	if (r.expansion?.state === 'expanding') return {label: 'Expanding onto the new drive', progress: r.expansion.progress, hint: 'This can take many hours. Your server keeps working meanwhile.'}
 	if (r.scrub?.state === 'scrubbing') return {label: 'Checking for errors', progress: r.scrub.progress, hint: 'Reading every block and repairing what it can.'}
 	return undefined
 }

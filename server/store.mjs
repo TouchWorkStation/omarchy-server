@@ -1,5 +1,5 @@
 // Small JSON-file persistence for config and device sessions. Files are written
-// atomically with mode 0600 because sessions hold umbrelOS device credentials.
+// atomically with mode 0600 because sessions hold Omarchy Server device credentials.
 
 import {createHash, randomBytes} from 'node:crypto'
 import {chmod, mkdir, readFile, rename, writeFile} from 'node:fs/promises'

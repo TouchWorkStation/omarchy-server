@@ -21,7 +21,7 @@ const TEXT_EXT = new Set(
     "py rb go rs java kt c h cpp hpp cc cs php pl lua swift sql html htm css scss less xml svg vtt srt nfo " +
     "gitignore dockerfile makefile properties service gradle r dart vue svelte tf hcl nix lock").split(" "),
 );
-// Formats umbrelOS turns into a viewable picture for us (browsers can't decode these from the file).
+// Formats Omarchy Server turns into a viewable picture for us (browsers can't decode these from the file).
 const RENDERED_EXT = new Set("heic heif tif tiff psd dng cr2 cr3 nef arw raf orf rw2 raw".split(" "));
 export function viewKind(f: FileEntry): ViewKind {
   const t = f.type;
@@ -109,12 +109,12 @@ function useParsed<T>(f: FileEntry, parse: (buf: ArrayBuffer) => Promise<T>, cle
   return { value: state.value, error: error ?? state.error, loading: !error && !state.error && state.value === undefined };
 }
 
-// Overwrite the file in place with new contents (the same upload umbrelOS's own editor uses).
+// Overwrite the file in place with new contents (the same upload Omarchy Server's own editor uses).
 async function saveFile(f: FileEntry, body: Blob) {
   const r = await fetch(`/api/files/upload?path=${enc(f.path)}&collision=replace`, {
     method: "POST",
     credentials: "same-origin",
-    headers: { "x-umbrel-touch": "1", "content-type": "application/octet-stream" },
+    headers: { "x-omarchy-server": "1", "content-type": "application/octet-stream" },
     body,
   });
   if (!r.ok) {
@@ -333,7 +333,7 @@ function ImageView(b: BodyProps) {
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ d: number; s: number; x: number; y: number; cx: number; cy: number } | null>(null);
   const lastTap = useRef(0);
-  // Ask umbrelOS for a large rendition when the browser can't draw the original.
+  // Ask Omarchy Server for a large rendition when the browser can't draw the original.
   const rendition = async () => {
     for (const input of [{ path: f.path, variant: "preview-1280-webp-v2" }, { path: f.path }]) {
       try {

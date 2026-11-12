@@ -24,7 +24,7 @@ function ErrorBox({message, k}: {message: string; k: number}) {
 	)
 }
 
-export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?: Bootstrap['umbrel']}) {
+export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?: Bootstrap['server']}) {
 	const [url, setUrl] = useState(unreachable?.url ?? '')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState('')
@@ -47,28 +47,28 @@ export function Connect({onDone, unreachable}: {onDone: () => void; unreachable?
 	return (
 		<main className="auth center screen">
 			<Logo />
-			<h1>{unreachable ? 'Can’t reach your Umbrel' : 'Connect your Umbrel'}</h1>
+			<h1>{unreachable ? 'Can’t reach your server' : 'Connect your server'}</h1>
 			<p className="lead">
 				{unreachable
-					? `UmbrelOS Touch couldn’t reach ${unreachable.url}. Check that it’s on and on this network, or enter its new address.`
-					: 'Enter the address you use to open umbrelOS. Nothing on your Umbrel is changed.'}
+					? `Omarchy Server couldn’t reach ${unreachable.url}. Check that it’s on and on this network, or enter its new address.`
+					: 'Enter the address you use to open Omarchy Server. Nothing on your server is changed.'}
 			</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
 				<div className="field">
-					<label htmlFor="url">Umbrel address</label>
+					<label htmlFor="url">Server address</label>
 					<input
 						id="url"
 						inputMode="url"
 						autoCapitalize="off"
 						autoCorrect="off"
 						spellCheck={false}
-						placeholder="192.168.1.50 or umbrel.local"
+						placeholder="192.168.1.50 or omarchy.local"
 						value={url}
 						onChange={(e) => setUrl(e.target.value)}
 						required
 					/>
-					<span className="hint">An IP address is the most reliable. umbrel.local works on most home networks.</span>
+					<span className="hint">An IP address is the most reliable. omarchy.local works on most home networks.</span>
 				</div>
 				<button className="btn primary block" disabled={busy || !url.trim()}>
 					{busy ? <span className="spinner" /> : <Icon name="link" size={20} />}
@@ -113,7 +113,7 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 		<main className="auth center screen">
 			<Logo />
 			<h1>Sign in</h1>
-			<p className="lead">Use your umbrelOS username and password.</p>
+			<p className="lead">Use your Omarchy Server username and password.</p>
 			<form onSubmit={submit}>
 				{error && <ErrorBox message={error} k={tries} />}
 				<div className="field">
@@ -175,15 +175,15 @@ export function Login({boot, onDone}: {boot: Bootstrap; userId?: string; setUser
 			<div className="glass device-card" style={{marginTop: 28, marginBottom: 0}}>
 				<span className="dot live" />
 				<div style={{flex: 1, minWidth: 0}}>
-					<div style={{fontWeight: 600, fontSize: 14}}>{boot.umbrel?.device ?? 'Umbrel'}</div>
+					<div style={{fontWeight: 600, fontSize: 14}}>{boot.server?.device ?? 'server'}</div>
 					<div className="muted" style={{fontSize: 12.5, marginTop: 2}}>
-						{boot.umbrel?.host} · {boot.umbrel?.name ?? `umbrelOS ${boot.umbrel?.version}`}
+						{boot.server?.host} · {boot.server?.name ?? `Omarchy Server ${boot.server?.version}`}
 					</div>
 				</div>
 				<Icon name="shield" size={20} className="muted" />
 			</div>
 			<p className="footer-note" style={{marginTop: 14}}>
-				Shows up as its own device in umbrelOS, so you can sign it out from there.
+				Shows up as its own device in Omarchy Server, so you can sign it out from there.
 			</p>
 		</main>
 	)

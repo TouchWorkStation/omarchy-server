@@ -1,7 +1,7 @@
 {
-  "name": "umbrel-touch",
-  "version": "0.15.1",
-  "description": "A touch-first, phone-first interface for umbrelOS, running beside your Umbrel and talking to its real API.",
+  "name": "omarchy-server",
+  "version": "0.2.0",
+  "description": "Your Omarchy machine as a home server you open in a browser.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "bin": {
-    "umbrel-touch": "server/cli.mjs"
+    "omarchy-server": "server/cli.mjs"
   },
   "scripts": {
     "dev": "vite",

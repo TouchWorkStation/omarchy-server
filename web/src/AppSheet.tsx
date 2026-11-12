@@ -23,7 +23,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const status = appStatus(app.state, !!update)
 	const busy = isAppBusy(app.state) || action.isPending
 	const stopped = app.state === 'stopped'
-	const url = appUrl(app, boot.umbrel!.host)
+	const url = appUrl(app, boot.server!.host)
 	const name = app.name ?? app.id
 
 	const run = (path: string, optimisticState: UserApp['state'], done: string) => {
@@ -71,7 +71,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const uninstall = async () => {
 		const ok = await confirm({
 			title: `Uninstall ${name}?`,
-			body: `${name} and all of its data will be permanently removed from your Umbrel. This can’t be undone.`,
+			body: `${name} and all of its data will be permanently removed from your server. This can’t be undone.`,
 			confirm: `Uninstall ${name}`,
 			danger: true,
 			icon: 'trash',

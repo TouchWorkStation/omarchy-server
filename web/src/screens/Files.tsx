@@ -1,4 +1,4 @@
-// Files: the Umbrel as a NAS. Browse, preview, upload, download, organise, share on the network.
+// Files: the server as a NAS. Browse, preview, upload, download, organise, share on the network.
 import {
   Fragment,
   useEffect,
@@ -237,7 +237,7 @@ function uploadOne(
     const target = `${dir}/${item.rel ?? item.file.name}`;
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api/files/upload?path=${enc(target)}&collision=keep-both`);
-    xhr.setRequestHeader("x-umbrel-touch", "1");
+    xhr.setRequestHeader("x-omarchy-server", "1");
     xhr.setRequestHeader("content-type", "application/octet-stream");
     xhr.upload.onprogress = (e) => onProgress(e.loaded);
     xhr.onload = () => {
@@ -360,11 +360,11 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   const act = useFileAction();
   const disk = useDisk();
   const [path, setPath] = useState<string | null>(() =>
-    initialPath ?? sessionStorage.getItem("umbrel-touch:files-path"),
+    initialPath ?? sessionStorage.getItem("omarchy-server:files-path"),
   );
   const [sort, setSort] = useState<"name" | "modified" | "size">("name");
   const [grid, setGrid] = useState(
-    () => localStorage.getItem("umbrel-touch:files-grid") === "1",
+    () => localStorage.getItem("omarchy-server:files-grid") === "1",
   );
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -389,8 +389,8 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   const { uploads, start: upload, clear: clearUploads } = useUploads(refresh);
 
   useEffect(() => {
-    if (path) sessionStorage.setItem("umbrel-touch:files-path", path);
-    else sessionStorage.removeItem("umbrel-touch:files-path");
+    if (path) sessionStorage.setItem("omarchy-server:files-path", path);
+    else sessionStorage.removeItem("omarchy-server:files-path");
     setSelected(new Set());
   }, [path]);
 
@@ -440,7 +440,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   };
   const inTrash = !!path && (path === "/Trash" || path.startsWith("/Trash/"));
   const selecting = selected.size > 0;
-  // Where uploads go: the folder you're in (if umbrelOS says it's writable), or Home from the start page.
+  // Where uploads go: the folder you're in (if Omarchy Server says it's writable), or Home from the start page.
   const writableHere =
     !!path && !path.startsWith("::") && !inTrash && listing.data?.operations?.includes("writable") !== false && !listing.error;
   const uploadDir = path === null ? "/Home" : writableHere ? path : null;
@@ -664,7 +664,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
             onClick={() => {
               haptic(5);
               setGrid((g) => {
-                localStorage.setItem("umbrel-touch:files-grid", g ? "0" : "1");
+                localStorage.setItem("omarchy-server:files-grid", g ? "0" : "1");
                 return !g;
               });
             }}
@@ -965,7 +965,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
                     <span className="main">
                       <b>{s.name}</b>
                       <span className="mono">
-                        smb://{boot.umbrel?.host}/{s.sharename}
+                        smb://{boot.server?.host}/{s.sharename}
                       </span>
                     </span>
                     <Icon name="chevron" size={18} className="chev" />
@@ -1266,7 +1266,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       {shareInfo && (
         <ShareInfo
           share={shareInfo}
-          host={boot.umbrel?.host ?? ""}
+          host={boot.server?.host ?? ""}
           username={user.data?.sambaUsername}
           onClose={() => setShareInfo(null)}
         />

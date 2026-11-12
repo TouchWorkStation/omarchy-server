@@ -1,14 +1,14 @@
-// TEST-ONLY stand-in for umbreld. It reproduces the tRPC v11 wire format and the
-// auth rules of umbrelOS 2.0 (native access tokens that expire, device-token
+// TEST-ONLY stand-in for omarchyd. It reproduces the tRPC v11 wire format and the
+// auth rules of Omarchy Server 2.0 (native access tokens that expire, device-token
 // refresh, owner-only procedures) so the server can be tested without a real
-// Umbrel. It is never shipped or used by the app itself.
+// server. It is never shipped or used by the app itself.
 
 import http from 'node:http'
 import {readFile, readdir} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import {WebSocketServer} from 'ws'
 
-export async function startFakeUmbreld({
+export async function startFakeserverd({
 	port = 0,
 	accessTtlMs = 60 * 60 * 1000,
 	legacy = false,
@@ -32,14 +32,14 @@ export async function startFakeUmbreld({
 		['/Home/Movies', {type: 'directory'}],
 		['/Home/Downloads', {type: 'directory'}],
 		['/Home/Documents/Budget 2026.xlsx', {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 48210}],
-		['/Home/Documents/Notes.txt', {type: 'text/plain', data: Buffer.from('Hello from your Umbrel.\nThis is a text file.\n')}],
+		['/Home/Documents/Notes.txt', {type: 'text/plain', data: Buffer.from('Hello from your server.\nThis is a text file.\n')}],
 		['/Home/Documents/Service manual.pdf', {type: 'application/pdf', size: 3_400_000}],
 		['/Home/Photos/Sunset.jpg', {type: 'image/jpeg', wallpaper: 9}],
 		['/Home/Photos/Mountains.jpg', {type: 'image/jpeg', wallpaper: 12}],
 		['/Home/Photos/Lake.jpg', {type: 'image/jpeg', wallpaper: 17}],
 		['/Home/Photos/Coast.jpg', {type: 'image/jpeg', wallpaper: 20}],
 		['/Home/Movies/Trip.mp4', {type: 'video/mp4', size: 812_000_000}],
-		['/Home/Downloads/umbrelos.iso', {type: 'application/x-iso9660-image', size: 1_900_000_000}],
+		['/Home/Downloads/omarchy.iso', {type: 'application/x-iso9660-image', size: 1_900_000_000}],
 		['/Home/backup.zip', {type: 'application/zip', size: 22_000_000}],
 		['/Apps', {type: 'directory'}],
 		['/Apps/immich', {type: 'directory'}],
@@ -49,7 +49,7 @@ export async function startFakeUmbreld({
 		['/Trash/old-notes.txt', {type: 'text/plain', data: Buffer.from('old')}],
 	])
 	let updateStatus = {running: false, progress: 0, description: '', error: false}
-	const OFFICIAL_STORE = 'https://github.com/getumbrel/umbrel-apps.git'
+	const OFFICIAL_STORE = 'https://example.com/sample-store.git'
 	const communityStores = []
 	// Optional real sample files (FAKE_SAMPLES_DIR) for exercising the file viewer.
 	const MIME = {pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', csv: 'text/csv', md: 'text/markdown', json: 'application/json', txt: 'text/plain', py: 'text/x-python', zip: 'application/zip', mp3: 'audio/mpeg', mp4: 'video/mp4', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', ttf: 'font/ttf', key: 'application/vnd.apple.keynote', heic: 'image/heic', iso: 'application/x-iso9660-image', gz: 'application/gzip'}
@@ -105,7 +105,7 @@ export async function startFakeUmbreld({
 			throw e
 		}
 	}
-	const settings = {twoFactor: false, channel: 'stable', hostname: 'umbrel', externalDns: true, tor: false}
+	const settings = {twoFactor: false, channel: 'stable', hostname: 'omarchy', externalDns: true, tor: false}
 	let lastCreate = null
 	const keys = [] // keysyms typed into the fake VM console
 	const terminals = []
@@ -117,7 +117,7 @@ export async function startFakeUmbreld({
 		{id: 'home-assistant', name: 'Home Assistant', version: '2024.12.1', port: 8123, path: '', state: 'ready'},
 	].map((a) => ({
 		...a,
-		icon: `https://getumbrel.github.io/umbrel-apps-gallery/${a.id}/icon.svg`,
+		icon: `/icons/${a.id}.svg`,
 		progress: 0,
 		autoStart: true,
 		credentials: {defaultUsername: '', defaultPassword: '', hideBeforeOpen: false, showBeforeOpen: false},
@@ -134,8 +134,8 @@ export async function startFakeUmbreld({
 	]
 	let notifications = ['update-available']
 
-	// Each app gets a tiny web server standing in for umbrelOS's app gateway + the app:
-	// no app session -> redirect to the sign-in on port 2000 (like umbreld's gateway);
+	// Each app gets a tiny web server standing in for Omarchy Server's app gateway + the app:
+	// no app session -> redirect to the sign-in on port 2000 (like omarchyd's gateway);
 	// signed in -> the app, which may forbid embedding the way real apps do.
 	const APP_HEADERS = {
 		nextcloud: {'x-frame-options': 'SAMEORIGIN'}, // like Nextcloud / Forgejo
@@ -151,7 +151,7 @@ export async function startFakeUmbreld({
 				new Promise((resolve) => {
 					const srv = http.createServer((req, res) => {
 						appRequests.push(req.headers.cookie ?? '')
-						const token = /(?:^|;\s*)UMBREL_APP_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+						const token = /(?:^|;\s*)OMARCHY_APP_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
 						if (!appSessionTokens.has(token)) {
 							res.writeHead(302, {location: `http://${req.headers.host?.split(':')[0]}:2000/app-auth?origin=host&app=${a.id}&path=${encodeURIComponent(req.url)}`})
 							return res.end()
@@ -181,7 +181,7 @@ export async function startFakeUmbreld({
 	}
 
 	const procedures = {
-		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'umbrelOS 2.0'})},
+		'system.version': {kind: 'query', public: true, run: () => ({version: '2.0.0', name: 'Omarchy Server 2.0'})},
 		'system.discoveryInfo': {kind: 'query', public: true, run: () => ({id: 'abc', device: 'Linux VM', version: '2.0.0', onboarded: true})},
 		'user.listAccounts': {kind: 'query', public: true, run: () => [{userId: 'owner', name: 'Chris', language: 'en', wallpaper}]},
 		'user.loginNative': {
@@ -217,18 +217,18 @@ export async function startFakeUmbreld({
 				browser.set(accessToken, cookie)
 				const appTok = newToken()
 				appSessionTokens.add(appTok)
-				res.setHeader('set-cookie', [`UMBREL_APP_SESSION=${appTok}; Path=/; HttpOnly`, `UMBREL_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Lax`])
+				res.setHeader('set-cookie', [`OMARCHY_APP_SESSION=${appTok}; Path=/; HttpOnly`, `OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Lax`])
 				return accessToken
 			},
 		},
-		// Like umbreld: tickets are only issued to browser sessions (dashboard token + cookie), never native ones.
+		// Like omarchyd: tickets are only issued to browser sessions (dashboard token + cookie), never native ones.
 		'user.createWebSocketTicket': {
 			kind: 'mutation',
 			run: (input, auth, _res, req) => {
 				const token = req.headers.authorization?.split(' ')[1]
 				const cookie = browser.get(token)
 				if (!cookie || legacy) return {error: ['FORBIDDEN', 'Browser session required']}
-				if (!String(req.headers.cookie ?? '').includes(`UMBREL_BROWSER_SESSION=${cookie}`)) return {error: ['UNAUTHORIZED', 'Invalid token']}
+				if (!String(req.headers.cookie ?? '').includes(`OMARCHY_BROWSER_SESSION=${cookie}`)) return {error: ['UNAUTHORIZED', 'Invalid token']}
 				const ticket = `${input.target}:${newToken()}`
 				tickets.add(ticket)
 				return ticket
@@ -243,7 +243,7 @@ export async function startFakeUmbreld({
 				return true
 			},
 		},
-		'user.get': {kind: 'query', run: () => ({userId: 'owner', name: 'Chris', role: 'owner', wallpaper, sambaUsername: 'umbrel'})},
+		'user.get': {kind: 'query', run: () => ({userId: 'owner', name: 'Chris', role: 'owner', wallpaper, sambaUsername: 'chris'})},
 		'apps.recentlyOpened': {kind: 'query', run: () => ['immich', 'home-assistant']},
 		'system.uptime': {kind: 'query', run: () => 1_234_567},
 		'system.cpuTemperature': {kind: 'query', run: () => ({warning: 'normal', temperature: 52})},
@@ -272,9 +272,9 @@ export async function startFakeUmbreld({
 				const shot = (n) => `${baseUrl}/assets/wallpapers/${n}.jpg`
 				const app = (id, name, category, tagline, gallery = [], extra = {}) => ({
 					id, name, category, tagline, version: '1.0.0', icon: '', developer: `${name} team`, gallery, dependencies: [],
-					description: `${name} on your Umbrel. ${tagline}.`, installSize: 250e6, compatible: true, ...extra,
+					description: `${name} on your server. ${tagline}.`, installSize: 250e6, compatible: true, ...extra,
 				})
-				return [{url: OFFICIAL_STORE, meta: {id: 'umbrel-app-store', name: 'Umbrel App Store'}, apps: [
+				return [{url: OFFICIAL_STORE, meta: {id: 'sample-store', name: 'Sample store'}, apps: [
 					app('immich', 'Immich', 'files', 'Your photos and videos, on your terms', [shot(5), shot(9)]),
 					app('nextcloud', 'Nextcloud', 'files', 'Productivity platform that keeps you in control', [shot(12)]),
 					app('vaultwarden', 'Vaultwarden', 'files', 'Unofficial Bitwarden-compatible password manager'),
@@ -290,7 +290,7 @@ export async function startFakeUmbreld({
 				]}, ...communityStores.map((r) => ({...r, apps: r.apps.map((a) => app(...a))}))]
 			},
 		},
-		'appStore.repositories': {kind: 'query', run: () => [{url: OFFICIAL_STORE, meta: {id: 'umbrel-app-store', name: 'Umbrel App Store'}}, ...communityStores.map(({url, meta}) => ({url, meta}))]},
+		'appStore.repositories': {kind: 'query', run: () => [{url: OFFICIAL_STORE, meta: {id: 'sample-store', name: 'Sample store'}}, ...communityStores.map(({url, meta}) => ({url, meta}))]},
 		'appStore.addRepository': {
 			kind: 'mutation',
 			run: fsOp(({url}) => {
@@ -302,9 +302,9 @@ export async function startFakeUmbreld({
 					meta: tws ? {id: 'touchworkstation', name: 'TouchWorkStation'} : {id: 'community', name: 'Community'},
 					apps: tws
 						? [
-								['touchworkstation-chrome', 'Google Chrome', 'networking', 'Google Chrome, running on your Umbrel and streamed to any device'],
-								['touchworkstation-brave', 'Brave', 'networking', 'Brave, running on your Umbrel and streamed to any device'],
-								['touchworkstation-brave-secure', 'Brave (HTTPS)', 'networking', 'Brave on your Umbrel, for use through HTTPS and Cloudflare tunnels'],
+								['touchworkstation-chrome', 'Google Chrome', 'networking', 'Google Chrome, running on your server and streamed to any device'],
+								['touchworkstation-brave', 'Brave', 'networking', 'Brave, running on your server and streamed to any device'],
+								['touchworkstation-brave-secure', 'Brave (HTTPS)', 'networking', 'Brave on your server, for use through HTTPS and Cloudflare tunnels'],
 							]
 						: [],
 				})
@@ -330,7 +330,7 @@ export async function startFakeUmbreld({
 			},
 		},
 		'machines.list': {kind: 'query', run: () => machines},
-		'system.checkUpdate': {kind: 'query', run: () => (process.env.FAKE_UPDATE_FAIL ? {available: true, version: '2.1.0', name: 'umbrelOS 2.1'} : {available: false, version: '2.0.0', name: 'umbrelOS 2.0'})},
+		'system.checkUpdate': {kind: 'query', run: () => (process.env.FAKE_UPDATE_FAIL ? {available: true, version: '2.1.0', name: 'Omarchy Server 2.1'} : {available: false, version: '2.0.0', name: 'Omarchy Server 2.0'})},
 		'apps.uninstall': {kind: 'mutation', run: ({appId}) => (apps.splice(apps.findIndex((a) => a.id === appId), 1), true)},
 		'machines.start': {kind: 'mutation', run: ({id}) => ((machines.find((m) => m.id === id).state = 'running'), true)},
 		'notifications.get': {kind: 'query', run: () => notifications},
@@ -361,13 +361,13 @@ export async function startFakeUmbreld({
 		'user.set': {kind: 'mutation', run: (input) => (Object.assign(settings, input), input.wallpaper && (wallpaper.id = input.wallpaper), true)},
 		'user.changePassword': {kind: 'mutation', run: (input) => (input.oldPassword === password ? ((password = input.newPassword), true) : {error: ['UNAUTHORIZED', 'Incorrect password']})},
 		'user.is2faEnabled': {kind: 'query', public: true, run: () => settings.twoFactor},
-		'user.generateTotpUri': {kind: 'query', run: () => 'otpauth://totp/Umbrel:umbrel.local?secret=JBSWY3DPEHPK3PXP&issuer=Umbrel'},
+		'user.generateTotpUri': {kind: 'query', run: () => 'otpauth://totp/server:omarchy.local?secret=JBSWY3DPEHPK3PXP&issuer=server'},
 		'user.enable2fa': {kind: 'mutation', run: (input) => (input.totpToken === '123456' ? ((settings.twoFactor = true), true) : {error: ['UNAUTHORIZED', 'Incorrect 2FA code']})},
 		'user.disable2fa': {kind: 'mutation', run: (input) => (input.totpToken === '123456' ? ((settings.twoFactor = false), true) : {error: ['UNAUTHORIZED', 'Incorrect 2FA code']})},
 		'user.listSessions': {
 			kind: 'query',
 			run: () => [
-				{id: 'a'.repeat(32), createdAt: Date.now() - 6e6, lastSeenAt: Date.now(), client: {type: 'native', id: 'umbrel-touch', platform: 'ios', deviceClass: 'phone', appVersion: '0.4.0', appBuild: '1', osVersion: 'web'}, current: true},
+				{id: 'a'.repeat(32), createdAt: Date.now() - 6e6, lastSeenAt: Date.now(), client: {type: 'native', id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.4.0', appBuild: '1', osVersion: 'web'}, current: true},
 				{id: 'b'.repeat(32), createdAt: Date.now() - 9e7, lastSeenAt: Date.now() - 4e6, client: {type: 'browser', userAgent: 'Chrome on Windows'}, current: false},
 			],
 		},
@@ -377,9 +377,9 @@ export async function startFakeUmbreld({
 		'system.update': {
 			kind: 'mutation',
 			run: () => {
-				// FAKE_UPDATE_FAIL: fail the way umbreld reports it, through the status.
+				// FAKE_UPDATE_FAIL: fail the way omarchyd reports it, through the status.
 				updateStatus = process.env.FAKE_UPDATE_FAIL
-					? {running: false, progress: 0, description: '', error: "umbrelOS 2.1.0 doesn't include an update for this device"}
+					? {running: false, progress: 0, description: '', error: "Omarchy Server 2.1.0 doesn't include an update for this device"}
 					: {running: true, progress: 40, description: 'Downloading update', error: false}
 				return !process.env.FAKE_UPDATE_FAIL
 			},
@@ -514,7 +514,7 @@ export async function startFakeUmbreld({
 		'system.logs': {kind: 'query', run: ({type}) => `${type} log line 1\n${type} log line 2\n`},
 	}
 
-	// Storage hardware. Default: a single-drive Umbrel (no pool) with two spare disks attached.
+	// Storage hardware. Default: a single-drive server (no pool) with two spare disks attached.
 	// FAKE_RAID=1: an SSD FailSafe (raidz) pool with one failed member and a spare SSD.
 	const ssd = (id, name, size, extra = {}) => ({type: 'ssd', transport: 'sata', device: id.slice(-3), id, name, model: name, serial: `S${id.length}${id.slice(-4).toUpperCase()}`, size, roundedSize: size, temperature: 36, smartStatus: 'healthy', ...extra})
 	const hdd = (id, name, size, extra = {}) => ({type: 'hdd', transport: 'sata', device: id.slice(-3), id, name, model: name, serial: `W${id.slice(-4).toUpperCase()}`, size, roundedSize: size, temperature: 33, smartStatus: 'healthy', ...extra})
@@ -532,7 +532,7 @@ export async function startFakeUmbreld({
 			]
 	const raid = process.env.FAKE_RAID
 		? {
-				name: 'umbrelos-1a2b3c4d',
+				name: 'omarchy-1a2b3c4d',
 				exists: true,
 				raidType: 'failsafe',
 				topology: 'raidz',
@@ -562,14 +562,14 @@ export async function startFakeUmbreld({
 		}
 		const url = new URL(req.url, 'http://x')
 		if (url.pathname.startsWith('/api/files/')) return fileApi(req, res, url)
-		// umbreld's app gateway sign-in check (/app-auth/v1/account/session). The fake
+		// omarchyd's app gateway sign-in check (/app-auth/v1/account/session). The fake
 		// accepts the session token "good-app-session"; the app "private-notes" isn't shared.
 		if (url.pathname === '/app-auth/v1/account/session') {
 			appAuthChecks.push({app: url.searchParams.get('app'), cookie: req.headers.cookie ?? ''})
-			const token = /(?:^|;\s*)UMBREL_APP_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+			const token = /(?:^|;\s*)OMARCHY_APP_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
 			if (!appSessionTokens.has(token)) return send(401, {error: {code: -32001, message: 'Unauthorized'}})
 			if (url.searchParams.get('app') === 'private-notes') return send(403, {error: {code: -32003, message: 'This app has not been shared with this account'}})
-			return send(200, {url: 'http://x/umbrel_/api/v1/auth/handoff', params: {r: '/', handoff: 'h'}})
+			return send(200, {url: 'http://x/omarchy_/api/v1/auth/handoff', params: {r: '/', handoff: 'h'}})
 		}
 		const wp = url.pathname.match(/^\/assets\/wallpapers\/(\d+)\.jpg$/)
 		if (wp) {
@@ -609,8 +609,8 @@ export async function startFakeUmbreld({
 		send(200, {result: {data: out}})
 	})
 
-	// /api/files/*: like umbreld, reads need the browser cookie + URL token; uploads need Bearer + cookie.
-	const cookieOf = (req) => /UMBREL_BROWSER_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
+	// /api/files/*: like omarchyd, reads need the browser cookie + URL token; uploads need Bearer + cookie.
+	const cookieOf = (req) => /OMARCHY_BROWSER_SESSION=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
 	async function fileApi(req, res, url) {
 		const end = (status, body, headers = {}) => {
 			res.writeHead(status, headers)
@@ -641,7 +641,7 @@ export async function startFakeUmbreld({
 		if (!data && v.wallpaper && wallpaperDir) data = await readFile(`${wallpaperDir}/${v.wallpaper}.jpg`).catch(() => null)
 		if (!data) data = Buffer.alloc(Math.min(sizeOf(v), 1024))
 		if (kind === 'download' && (paths.length > 1 || v.type === 'directory')) {
-			return end(200, Buffer.from('PK fake zip'), {'content-type': 'application/zip', 'content-disposition': `attachment; filename*=UTF-8''umbrel-files.zip`})
+			return end(200, Buffer.from('PK fake zip'), {'content-type': 'application/zip', 'content-disposition': `attachment; filename*=UTF-8''backend-files.zip`})
 		}
 		const headers = {'content-type': v.type === 'directory' ? 'application/octet-stream' : kind === 'thumbnail' && v.type === 'image/heic' ? 'image/jpeg' : v.type, 'content-length': String(data.length)}
 		if (kind === 'download') headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(baseName(paths[0]))}`
@@ -649,7 +649,7 @@ export async function startFakeUmbreld({
 	}
 
 	// /machines/console: single-use ticket in the query, then a raw VNC (RFB 3.8) stream,
-	// as umbreld bridges from QEMU. This minimal server draws one test frame and records keys.
+	// as omarchyd bridges from QEMU. This minimal server draws one test frame and records keys.
 	const wss = new WebSocketServer({noServer: true})
 	server.on('upgrade', (req, socket, head) => {
 		const url = new URL(req.url, 'http://x')
@@ -692,11 +692,11 @@ export async function startFakeUmbreld({
 	})
 }
 
-// A tiny line-based shell standing in for umbreld's PTY: echoes input, answers a few commands.
+// A tiny line-based shell standing in for omarchyd's PTY: echoes input, answers a few commands.
 function shellServer(ws, appId, log) {
-	const prompt = appId ? '$ ' : '\x1b[1;32mumbrel@umbrel\x1b[0m:\x1b[1;34m~\x1b[0m$ '
+	const prompt = appId ? '$ ' : '\x1b[1;32momarchy@server\x1b[0m:\x1b[1;34m~\x1b[0m$ '
 	let line = ''
-	ws.send(appId ? '' : 'Welcome to umbrelOS (test shell)\r\n\r\n')
+	ws.send(appId ? '' : 'Welcome to Omarchy Server (test shell)\r\n\r\n')
 	ws.send(prompt)
 	ws.on('message', (data) => {
 		for (const ch of data.toString()) {
@@ -704,7 +704,7 @@ function shellServer(ws, appId, log) {
 			if (ch === '\r') {
 				ws.send('\r\n')
 				const cmd = line.trim()
-				if (cmd === 'uname -a') ws.send('Linux umbrel 6.12.0-umbrel x86_64 GNU/Linux\r\n')
+				if (cmd === 'uname -a') ws.send('Linux backend 6.12.0-backend x86_64 GNU/Linux\r\n')
 				else if (cmd === 'docker ps') ws.send('CONTAINER ID   IMAGE                  NAMES\r\na1b2c3d4e5f6   ghcr.io/immich:v1.120   immich_server_1\r\n')
 				else if (cmd) ws.send(`${cmd.split(' ')[0]}: ran\r\n`)
 				line = ''
@@ -801,10 +801,10 @@ function rfbServer(ws, keys) {
 	})
 }
 
-// `node test/fake-umbreld.mjs 7781` runs it standalone for UI development.
+// `node test/fake-omarchyd.mjs 7781` runs it standalone for UI development.
 if (import.meta.url === `file://${process.argv[1]}`) {
-	const fake = await startFakeUmbreld({port: Number(process.argv[2] ?? 7781)})
-	console.log(`fake umbreld (TEST ONLY) at ${fake.url}, password "correct horse"`)
+	const fake = await startFakeserverd({port: Number(process.argv[2] ?? 7781)})
+	console.log(`fake omarchyd (TEST ONLY) at ${fake.url}, password "correct horse"`)
 	// Lets a browser test read which keys reached the fake VM.
 	process.on('SIGUSR2', () => console.log('KEYS ' + JSON.stringify(fake.keys)))
 }

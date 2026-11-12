@@ -34,7 +34,7 @@ const tabFromHash = (): Tab => {
 export function App() {
 	const qc = useQueryClient()
 	const boot = useQuery({queryKey: ['bootstrap'], queryFn: getBootstrap, retry: 1, refetchOnWindowFocus: false})
-	const signedIn = !!boot.data?.session && !!boot.data?.umbrel?.reachable
+	const signedIn = !!boot.data?.session && !!boot.data?.server?.reachable
 	const user = useQuery({queryKey: ['user.get'], queryFn: () => query<User>('user.get'), enabled: signedIn, staleTime: 5 * 60_000})
 	const [loginId, setLoginId] = useState<string>()
 	const account = boot.data?.accounts.find((a) => a.userId === (signedIn ? boot.data?.session?.accountId : loginId)) ?? boot.data?.accounts[0]
@@ -63,15 +63,15 @@ export function App() {
 	} else if (boot.error || !b) {
 		content = (
 			<main className="auth center screen">
-				<h1>UmbrelOS Touch is offline</h1>
-				<p className="lead">The UmbrelOS Touch server isn’t answering. Is it still running?</p>
+				<h1>Omarchy Server is offline</h1>
+				<p className="lead">The Omarchy Server server isn’t answering. Is it still running?</p>
 				<button className="btn primary block" onClick={refresh}>
 					Try again
 				</button>
 			</main>
 		)
 	} else if (!b.configured) content = <Connect onDone={refresh} />
-	else if (!b.umbrel?.reachable) content = <Connect onDone={refresh} unreachable={b.umbrel} />
+	else if (!b.server?.reachable) content = <Connect onDone={refresh} unreachable={b.server} />
 	else if (!b.session) content = <Login boot={b} userId={loginId} setUserId={setLoginId} onDone={refresh} />
 	else
 		content = (
@@ -95,7 +95,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 	const [bellOpen, setBellOpen] = useState(false)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}} | null>(null)
 	const user = useUser()
-	// umbreld only gives the owner a shell.
+	// omarchyd only gives the owner a shell.
 	const openTerminal = user.data?.role === 'member' ? undefined : (app?: {id: string; name?: string; icon?: string}) => {
 		haptic(8)
 		setAppId(null)
@@ -133,8 +133,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 				<header className="topbar">
 					<span className="device">
 						<span className={`dot ${online ? 'live' : 'down'}`} />
-						{boot.umbrel?.device ?? 'Umbrel'}
-						<span className="mono">{boot.umbrel?.host}</span>
+						{boot.server?.device ?? 'server'}
+						<span className="mono">{boot.server?.host}</span>
 					</span>
 					<span className="spacer-x" />
 					<button
@@ -159,7 +159,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 				{!online && (
 					<div className="error" role="alert">
 						<Icon name="alert" size={18} />
-						Lost contact with your Umbrel. Retrying…
+						Lost contact with your server. Retrying…
 					</div>
 				)}
 				<main key={tab} className="screen">
@@ -190,7 +190,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 }
 
 const NOTIFICATION_TEXT: Record<string, string> = {
-	'update-available': 'A new version of umbrelOS is available',
+	'update-available': 'A new version of Omarchy Server is available',
 	migration: 'Your data migration finished',
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
@@ -199,7 +199,7 @@ function NotificationsSheet({open, notes, onClose}: {open: boolean; notes: strin
 	const action = useAction()
 	return (
 		<Sheet open={open} onClose={onClose} label="Notifications">
-			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length} from umbrelOS` : undefined} onClose={onClose} />
+			<SheetHeader title="Notifications" subtitle={notes.length ? `${notes.length} from Omarchy Server` : undefined} onClose={onClose} />
 			{notes.length === 0 ? (
 				<div className="empty" style={{paddingTop: 20}}>
 					<span className="big">

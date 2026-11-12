@@ -1,10 +1,10 @@
 import http from 'node:http'
-// UmbrelOS Touch server: a same-origin backend for the PWA.
+// Omarchy Server server: a same-origin backend for the PWA.
 //
-// Why it exists: umbreld's browser login binds its token to an HttpOnly cookie on
-// umbreld's own origin and sends no CORS headers, so a separately hosted page
-// cannot call it from the browser. umbreld's *native* login (user.loginNative,
-// the path Umbrel's own iOS/macOS apps use) returns bearer credentials instead.
+// Why it exists: omarchyd's browser login binds its token to an HttpOnly cookie on
+// omarchyd's own origin and sends no CORS headers, so a separately hosted page
+// cannot call it from the browser. omarchyd's *native* login (user.loginNative,
+// the path server's own iOS/macOS apps use) returns bearer credentials instead.
 // This server performs that login, keeps the credentials server-side, refreshes
 // the 1-hour access token, and forwards only an explicit allowlist of calls.
 // The phone only ever holds an opaque HttpOnly cookie for this server.
@@ -16,15 +16,15 @@ import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
-import {createUmbrelClient, UmbrelError} from './umbrel.mjs'
+import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.15.1'
-const COOKIE = 'umbrel_touch_sid'
+export const VERSION = '0.2.0'
+const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
 
-// Every umbreld procedure the UI may reach, with its tRPC kind. Anything else
+// Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
 export const ALLOWED = {
 	'system.version': 'query',
@@ -70,6 +70,7 @@ export const ALLOWED = {
 	'machines.osImages': 'query',
 	'machines.create': 'mutation',
 	'machines.uninstall': 'mutation',
+	'machines.updateSettings': 'mutation',
 	// Settings: account
 	'user.set': 'mutation',
 	'user.changePassword': 'mutation',
@@ -97,7 +98,7 @@ export const ALLOWED = {
 	'wifi.connected': 'query',
 	'wifi.connect': 'mutation',
 	'wifi.disconnect': 'mutation',
-	// Settings: advanced (umbreld itself re-checks the password for factory reset)
+	// Settings: advanced (omarchyd itself re-checks the password for factory reset)
 	'system.logs': 'query',
 	'system.factoryReset': 'mutation',
 	// Files (NAS)
@@ -124,8 +125,8 @@ export const ALLOWED = {
 	'files.unmountExternalDevice': 'mutation',
 	'files.getThumbnail': 'mutation',
 	'files.unarchive': 'mutation',
-	// Storage: the same calls umbrelOS's Storage Manager makes. hardware.raid.setup is
-	// deliberately absent: umbreld marks it dev-only, and on a running Umbrel it writes a RAID
+	// Storage: the same calls Omarchy Server's Storage Manager makes. hardware.raid.setup is
+	// deliberately absent: omarchyd marks it dev-only, and on a running server it writes a RAID
 	// config the next boot mounts as the data drive, i.e. an empty pool in place of your data.
 	'hardware.internalStorage.getDevices': 'query',
 	'hardware.raid.getStatus': 'query',
@@ -137,7 +138,7 @@ export const ALLOWED = {
 	'hardware.raid.scrub': 'mutation',
 }
 
-// Long-running mutations: umbreld answers when the operation finishes.
+// Long-running mutations: omarchyd answers when the operation finishes.
 const SLOW = new Set(['files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
@@ -168,10 +169,10 @@ function nativeClientFor(userAgent = '') {
 				: /mac os/.test(ua)
 					? 'macos'
 					: 'web'
-	return {id: 'umbrel-touch', platform, deviceClass, appVersion: VERSION, appBuild: '1', osVersion: 'web'}
+	return {id: 'omarchy-server', platform, deviceClass, appVersion: VERSION, appBuild: '1', osVersion: 'web'}
 }
 
-// umbreld returns {id, brandColorHsl} (e.g. "259 100% 59%"); pass through only safe values.
+// omarchyd returns {id, brandColorHsl} (e.g. "259 100% 59%"); pass through only safe values.
 export function wallpaperOf(w) {
 	if (!w || typeof w !== 'object') return null
 	const id = /^\d{1,3}$/.test(String(w.id)) ? String(w.id) : null
@@ -181,9 +182,9 @@ export function wallpaperOf(w) {
 
 const isLoopback = (hostname) => hostname === 'localhost' || hostname === '::1' || hostname === '[::1]' || /^127\./.test(hostname)
 
-export function normalizeUmbrelUrl(input) {
+export function normalizeBackendUrl(input) {
 	let value = String(input ?? '').trim()
-	if (!value) throw new Error('Enter your Umbrel’s address')
+	if (!value) throw new Error('Enter your server’s address')
 	if (!/^https?:\/\//i.test(value)) value = `http://${value}`
 	const url = new URL(value)
 	if (url.username || url.password) throw new Error('The address must not contain a username or password')
@@ -197,13 +198,13 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	let client = null
 	const getClient = () => {
-		const {umbrelUrl} = store.getConfig()
-		if (!umbrelUrl) return null
-		if (!client || client.baseUrl !== umbrelUrl) client = createUmbrelClient({baseUrl: umbrelUrl, fetchImpl})
+		const {backendUrl} = store.getConfig()
+		if (!backendUrl) return null
+		if (!client || client.baseUrl !== backendUrl) client = createBackendClient({baseUrl: backendUrl, fetchImpl})
 		return client
 	}
 
-	// Desktop mode opens Umbrel apps in windows, i.e. frames of http(s)://<umbrel host>:<app port>.
+	// Desktop mode opens Apps in windows, i.e. frames of http(s)://<backend host>:<app port>.
 	// Allow exactly that host (any port) and nothing else. The Host header is client-controlled,
 	// so only a plain hostname or IP makes it into the policy.
 	const frameHost = (req) => {
@@ -237,7 +238,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// CSRF: state-changing calls must come from our own page.
 		if (req.method !== 'GET') {
 			const origin = req.headers.origin
-			if (req.headers['x-umbrel-touch'] !== '1' || (origin && new URL(origin).host !== req.headers.host)) {
+			if (req.headers['x-omarchy-server'] !== '1' || (origin && new URL(origin).host !== req.headers.host)) {
 				return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Cross-site request refused'}})
 			}
 		}
@@ -245,11 +246,11 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	})
 
 	const sendError = (res, error) => {
-		if (error instanceof UmbrelError) {
+		if (error instanceof BackendError) {
 			return res.status(error.status >= 400 ? error.status : 502).json({error: {code: error.code, message: error.message}})
 		}
-		console.error('[umbrel-touch]', error)
-		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in UmbrelOS Touch'}})
+		console.error('[omarchy-server]', error)
+		return res.status(500).json({error: {code: 'INTERNAL', message: 'Something went wrong in Omarchy Server'}})
 	}
 
 	// Secure when asked for, or when the request arrived over HTTPS (e.g. through a Cloudflare
@@ -284,17 +285,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	}
 
 	async function authedCall(req, path, kind, input) {
-		const umbrel = getClient()
-		if (!umbrel) throw new UmbrelError('UmbrelOS Touch is not connected to an Umbrel yet', {code: 'NOT_CONFIGURED', status: 409})
+		const backend = getClient()
+		if (!backend) throw new BackendError('The Omarchy Server backend (omarchyd) isn’t set up yet', {code: 'NOT_CONFIGURED', status: 409})
 		const session = store.getSession(req.sid)
-		if (!session) throw new UmbrelError('Signed out', {code: 'UNAUTHORIZED', status: 401})
+		if (!session) throw new BackendError('Signed out', {code: 'UNAUTHORIZED', status: 401})
 		const timeout = SLOW.has(path) ? 30 * 60 * 1000 : 20_000
 		const run = async (token) =>
-			kind === 'mutation' ? umbrel.mutation(path, input, {token, timeout}) : umbrel.query(path, input, {token, timeout})
+			kind === 'mutation' ? backend.mutation(path, input, {token, timeout}) : backend.query(path, input, {token, timeout})
 		try {
 			return await run(await accessTokenFor(req.sid, session))
 		} catch (error) {
-			if (!(error instanceof UmbrelError) || error.code !== 'UNAUTHORIZED') throw error
+			if (!(error instanceof BackendError) || error.code !== 'UNAUTHORIZED') throw error
 			if (session.mode === 'legacy') {
 				await store.deleteSession(req.sid)
 				throw error
@@ -304,8 +305,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			try {
 				token = await accessTokenFor(req.sid, store.getSession(req.sid) ?? session, {force: true})
 			} catch (refreshError) {
-				if (refreshError instanceof UmbrelError && refreshError.code === 'UNAUTHORIZED') {
-					await store.deleteSession(req.sid) // session revoked in umbrelOS Settings
+				if (refreshError instanceof BackendError && refreshError.code === 'UNAUTHORIZED') {
+					await store.deleteSession(req.sid) // session revoked in Omarchy Server Settings
 				}
 				throw refreshError
 			}
@@ -315,29 +316,29 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 
 	// ---- Bootstrap / setup ---------------------------------------------------
 	api.get('/bootstrap', async (req, res) => {
-		const umbrel = getClient()
+		const backend = getClient()
 		const session = store.getSession(req.sid)
 		const out = {
 			touch: {version: VERSION},
-			configured: !!umbrel,
-			umbrel: null,
+			configured: !!backend,
+			server: null,
 			accounts: [],
 			session: session ? {accountId: session.accountId, mode: session.mode, console: !!session.console} : null,
 		}
-		if (!umbrel) return res.json(out)
-		// When Touch runs on the Umbrel itself it talks to 127.0.0.1; the phone must
+		if (!backend) return res.json(out)
+		// When Touch runs on the server itself it talks to 127.0.0.1; the phone must
 		// use the address it reached us on instead.
-		const upstream = new URL(umbrel.baseUrl)
+		const upstream = new URL(backend.baseUrl)
 		const local = isLoopback(upstream.hostname)
 		const host = local ? req.hostname : upstream.hostname
-		const publicUrl = local ? `http://${req.hostname}` : umbrel.baseUrl
+		const publicUrl = local ? `http://${req.hostname}` : backend.baseUrl
 		try {
 			const [version, discovery, accounts] = await Promise.all([
-				umbrel.query('system.version'),
-				umbrel.query('system.discoveryInfo').catch(() => null),
-				umbrel.query('user.listAccounts').catch(() => []),
+				backend.query('system.version'),
+				backend.query('system.discoveryInfo').catch(() => null),
+				backend.query('user.listAccounts').catch(() => []),
 			])
-			out.umbrel = {
+			out.server = {
 				url: publicUrl,
 				host,
 				reachable: true,
@@ -349,56 +350,56 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const mapped = (accounts ?? []).map((a) => ({
 				userId: a.userId,
 				name: a.name,
-				avatar: a.avatarUrl?.startsWith('/api/accounts/') ? `/api/umbrel-avatar?path=${encodeURIComponent(a.avatarUrl)}` : null,
+				avatar: a.avatarUrl?.startsWith('/api/accounts/') ? `/api/account-avatar?path=${encodeURIComponent(a.avatarUrl)}` : null,
 				wallpaper: wallpaperOf(a.wallpaper),
 			}))
 			// Before sign-in, say nothing about who has an account here: the sign-in page asks for
 			// a username and a password. Only the wallpaper (for the backdrop) is shared.
 			out.accounts = session ? mapped : mapped.slice(0, 1).map((a) => ({userId: '', name: '', avatar: null, wallpaper: a.wallpaper}))
 		} catch (error) {
-			out.umbrel = {url: publicUrl, host, reachable: false, error: error.message}
+			out.server = {url: publicUrl, host, reachable: false, error: error.message}
 		}
 		res.json(out)
 	})
 
 	api.post('/setup', async (req, res) => {
-		const configured = !!store.getConfig().umbrelUrl
+		const configured = !!store.getConfig().backendUrl
 		// Repointing an already-configured server needs a signed-in session, so nobody
 		// on the network can aim it at a look-alike to collect passwords.
 		if (configured && !store.getSession(req.sid)) {
-			return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Sign in first to change the Umbrel address'}})
+			return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Sign in first to change the server address'}})
 		}
 		let url
 		try {
-			url = normalizeUmbrelUrl(req.body?.url)
+			url = normalizeBackendUrl(req.body?.url)
 		} catch (error) {
 			return res.status(400).json({error: {code: 'BAD_REQUEST', message: error.message}})
 		}
 		try {
-			const probe = createUmbrelClient({baseUrl: url, fetchImpl, timeoutMs: 8000})
+			const probe = createBackendClient({baseUrl: url, fetchImpl, timeoutMs: 8000})
 			const version = await probe.query('system.version')
-			if (!version?.version) throw new UmbrelError('That address answered, but not like umbrelOS', {status: 502})
-			if (configured && url !== store.getConfig().umbrelUrl) await store.clearSessions()
-			await store.setConfig({umbrelUrl: url})
+			if (!version?.version) throw new BackendError('That address answered, but not like Omarchy Server', {status: 502})
+			if (configured && url !== store.getConfig().backendUrl) await store.clearSessions()
+			await store.setConfig({backendUrl: url})
 			res.json({ok: true, url, version: version.version, name: version.name})
 		} catch (error) {
 			sendError(res, error)
 		}
 	})
 
-	// The account's own umbrelOS wallpaper, served from the user's Umbrel. umbrelOS
+	// The account's own Omarchy Server wallpaper, served from the user's server. Omarchy Server
 	// ships an AVIF and a JPEG of each; the id is validated so only those can be read.
-	api.get('/umbrel-wallpaper/:id', async (req, res) => {
-		const umbrel = getClient()
+	api.get('/wallpaper/:id', async (req, res) => {
+		const backend = getClient()
 		const id = req.params.id
-		if (!umbrel || !/^\d{1,3}$/.test(id)) return res.status(404).end()
+		if (!backend || !/^\d{1,3}$/.test(id)) return res.status(404).end()
 		const tier = req.query.size === 'thumb' ? 'thumbnails' : 'medium'
 		for (const [path, type] of [
 			[`/assets/wallpapers/generated-avif/${tier}/${id}.avif`, 'image/avif'],
 			[`/assets/wallpapers/${id}.jpg`, 'image/jpeg'],
 		]) {
 			try {
-				const upstream = await fetchImpl(`${umbrel.baseUrl}${path}`, {signal: AbortSignal.timeout(10_000)})
+				const upstream = await fetchImpl(`${backend.baseUrl}${path}`, {signal: AbortSignal.timeout(10_000)})
 				if (!upstream.ok || !(upstream.headers.get('content-type') ?? '').startsWith('image/')) continue
 				res.set({'Content-Type': type, 'Cache-Control': 'public, max-age=604800, immutable'})
 				return res.send(Buffer.from(await upstream.arrayBuffer()))
@@ -409,12 +410,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.status(404).end()
 	})
 
-	api.get('/umbrel-avatar', async (req, res) => {
-		const umbrel = getClient()
+	api.get('/account-avatar', async (req, res) => {
+		const backend = getClient()
 		const path = String(req.query.path ?? '')
-		if (!umbrel || !/^\/api\/accounts\/[\w.\-/]+$/.test(path) || path.includes('..')) return res.status(404).end()
+		if (!backend || !/^\/api\/accounts\/[\w.\-/]+$/.test(path) || path.includes('..')) return res.status(404).end()
 		try {
-			const upstream = await fetchImpl(`${umbrel.baseUrl}${path}`, {signal: AbortSignal.timeout(8000)})
+			const upstream = await fetchImpl(`${backend.baseUrl}${path}`, {signal: AbortSignal.timeout(8000)})
 			if (!upstream.ok) return res.status(404).end()
 			const type = upstream.headers.get('content-type') ?? ''
 			if (!type.startsWith('image/')) return res.status(404).end()
@@ -428,8 +429,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// ---- Auth ----------------------------------------------------------------
 	const attempts = new Map()
 	api.post('/auth/login', async (req, res) => {
-		const umbrel = getClient()
-		if (!umbrel) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your Umbrel first'}})
+		const backend = getClient()
+		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
 		const now = Date.now()
 		const recent = (attempts.get(ip) ?? []).filter((t) => now - t < 5 * 60 * 1000)
@@ -445,7 +446,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// Every sign-in needs the account's name and its password. The name is matched here, on
 		// the server, and a wrong name and a wrong password give the same answer.
 		const WRONG = {error: {code: 'UNAUTHORIZED', message: 'Incorrect username or password'}}
-		const known = await umbrel.query('user.listAccounts').catch(() => null)
+		const known = await backend.query('user.listAccounts').catch(() => null)
 		let userId
 		if (Array.isArray(known) && known.length) {
 			const wanted = username.trim().toLowerCase()
@@ -461,7 +462,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const credentials = {password, ...(totpToken ? {totpToken: String(totpToken)} : {}), ...(userId ? {userId} : {})}
 		let session
 		try {
-			const result = await umbrel.mutation('user.loginNative', {...credentials, client: nativeClient}, {userAgent})
+			const result = await backend.mutation('user.loginNative', {...credentials, client: nativeClient}, {userAgent})
 			session = {
 				mode: 'native',
 				accountId: result.accountId,
@@ -471,23 +472,23 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				client: nativeClient,
 			}
 		} catch (error) {
-			// umbrelOS before 2.0 has no native login; its user.login returns a bearer JWT.
-			if (error instanceof UmbrelError && /incorrect password/i.test(error.message)) return res.status(401).json(WRONG)
-			if (!(error instanceof UmbrelError) || error.code !== 'NOT_FOUND') return sendError(res, error)
+			// Omarchy Server before 2.0 has no native login; its user.login returns a bearer JWT.
+			if (error instanceof BackendError && /incorrect password/i.test(error.message)) return res.status(401).json(WRONG)
+			if (!(error instanceof BackendError) || error.code !== 'NOT_FOUND') return sendError(res, error)
 			try {
-				const token = await umbrel.mutation('user.login', credentials, {userAgent})
-				if (typeof token !== 'string') throw new UmbrelError('Unsupported umbrelOS version', {status: 502})
+				const token = await backend.mutation('user.login', credentials, {userAgent})
+				if (typeof token !== 'string') throw new BackendError('Unsupported Omarchy Server version', {status: 502})
 				session = {mode: 'legacy', accountId: userId ?? 'owner', accessToken: token}
 			} catch (legacyError) {
-				if (legacyError instanceof UmbrelError && /incorrect password/i.test(legacyError.message)) return res.status(401).json(WRONG)
+				if (legacyError instanceof BackendError && /incorrect password/i.test(legacyError.message)) return res.status(401).json(WRONG)
 				return sendError(res, legacyError)
 			}
 		}
-		// The VM console needs a WebSocket ticket, which umbreld only issues to browser
+		// The VM console needs a WebSocket ticket, which omarchyd only issues to browser
 		// sessions (not native ones). Hold a second, browser-style session server-side
 		// for that single purpose. Failing to get one only disables the console.
 		if (session.mode === 'native') {
-			session.console = await openConsoleSession(umbrel, credentials, userAgent).catch(() => null)
+			session.console = await openConsoleSession(backend, credentials, userAgent).catch(() => null)
 		}
 		attempts.delete(ip)
 		const sid = newSessionId()
@@ -504,7 +505,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				.catch(() => {})
 		}
 		if (session) {
-			// Revoke the umbrelOS session too, so it disappears from Settings › Devices.
+			// Revoke the Omarchy Server session too, so it disappears from Settings › Devices.
 			await authedCall(req, 'user.logout', 'mutation').catch(() => {})
 			await store.deleteSession(req.sid)
 		}
@@ -512,8 +513,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.json({ok: true})
 	})
 
-	// ---- Saved appearance (per umbrelOS account, shared by all its phones) -------
-	const THEME_IDS = ['umbrel', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
+	// ---- Saved appearance (per Omarchy Server account, shared by all its phones) -------
+	const THEME_IDS = ['horizon', 'mocha', 'tokyo', 'gruvbox', 'latte', 'custom', 'omarchy']
 	const ACCENT_IDS = ['wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink']
 	const HSL = /^\d{1,3}(\.\d+)? \d{1,3}(\.\d+)?% \d{1,3}(\.\d+)?%$/
 	const accountKey = (accountId) => hashId(`account:${accountId}`).slice(0, 32)
@@ -587,43 +588,43 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const prefs = await savePrefs(session.accountId, {
 			backgroundVersion: null,
 			customBrandHsl: null,
-			...(current.theme === 'custom' ? {theme: 'umbrel'} : {}),
+			...(current.theme === 'custom' ? {theme: 'horizon'} : {}),
 		})
 		res.json({prefs})
 	})
 
 	// ---- VM console ------------------------------------------------------------
-	async function openConsoleSession(umbrel, credentials, userAgent) {
-		const {data: token, cookies} = await umbrel.mutation('user.login', credentials, {userAgent, withCookies: true})
+	async function openConsoleSession(backend, credentials, userAgent) {
+		const {data: token, cookies} = await backend.mutation('user.login', credentials, {userAgent, withCookies: true})
 		const cookie = cookies.filter((c) => /BROWSER_SESSION/.test(c)).join('; ')
 		if (typeof token !== 'string' || !cookie) return null
-		// The same login also returns umbrelOS's app-gateway session (UMBREL_APP_SESSION). Touch
-		// keeps it server-side so app windows open without umbrelOS's separate app sign-in.
-		const appCookie = cookies.find((c) => /^UMBREL_APP_SESSION=/.test(c)) ?? null
+		// The same login also returns Omarchy Server's app-gateway session (OMARCHY_APP_SESSION). Touch
+		// keeps it server-side so app windows open without Omarchy Server's separate app sign-in.
+		const appCookie = cookies.find((c) => /^OMARCHY_APP_SESSION=/.test(c)) ?? null
 		return {token, cookie, appCookie, renewedAt: Date.now()}
 	}
 
-	// The server-held browser-style session: dashboard token + browser cookie. umbreld
+	// The server-held browser-style session: dashboard token + browser cookie. omarchyd
 	// requires it for WebSocket tickets and the file HTTP API; native sessions can't use those.
 	async function browserAuth(sid) {
-		const umbrel = getClient()
+		const backend = getClient()
 		const session = store.getSession(sid)
-		if (!umbrel || !session) throw new UmbrelError('Signed out', {code: 'UNAUTHORIZED', status: 401})
+		if (!backend || !session) throw new BackendError('Signed out', {code: 'UNAUTHORIZED', status: 401})
 		if (!session.console) {
-			throw new UmbrelError('Sign out and back in to use this', {code: 'CONSOLE_SESSION_REQUIRED', status: 409})
+			throw new BackendError('Sign out and back in to use this', {code: 'CONSOLE_SESSION_REQUIRED', status: 409})
 		}
 		const auth = {token: session.console.token, cookie: session.console.cookie}
 		// Browser sessions last 7 days from their last renewal; keep ours fresh.
 		if (Date.now() - session.console.renewedAt > 24 * 60 * 60 * 1000) {
-			await umbrel.mutation('user.renewToken', undefined, auth).catch(() => {})
+			await backend.mutation('user.renewToken', undefined, auth).catch(() => {})
 			await store.updateSession(sid, {console: {...session.console, renewedAt: Date.now()}})
 		}
 		return auth
 	}
 	const lostBrowserSession = async (sid, error) => {
-		if (error instanceof UmbrelError && error.code === 'UNAUTHORIZED') {
+		if (error instanceof BackendError && error.code === 'UNAUTHORIZED') {
 			await store.updateSession(sid, {console: null})
-			return new UmbrelError('Sign out and back in to use this', {code: 'CONSOLE_SESSION_REQUIRED', status: 409})
+			return new BackendError('Sign out and back in to use this', {code: 'CONSOLE_SESSION_REQUIRED', status: 409})
 		}
 		return error
 	}
@@ -638,7 +639,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	}
 
 	// ---- Files: downloads, previews, thumbnails and uploads ---------------------
-	// umbreld serves file bytes over plain HTTP, authorised by the browser cookie plus
+	// omarchyd serves file bytes over plain HTTP, authorised by the browser cookie plus
 	// a session-wide URL token. We fetch both server-side and stream the bytes through.
 	const urlTokens = new Map() // sid -> {token, at}
 	async function fileUrlToken(sid) {
@@ -725,7 +726,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				body = {}
 			}
 			if (!upstream.ok) {
-				const message = upstream.status === 507 ? 'Not enough free space on your Umbrel' : upstream.status === 409 ? 'A file with that name already exists' : (body.error ?? `Upload failed (HTTP ${upstream.status})`)
+				const message = upstream.status === 507 ? 'Not enough free space on your server' : upstream.status === 409 ? 'A file with that name already exists' : (body.error ?? `Upload failed (HTTP ${upstream.status})`)
 				return res.status(upstream.status === 401 ? 409 : upstream.status).json({error: {code: 'UPLOAD_FAILED', message}})
 			}
 			res.json({ok: true, path: body.path ?? path})
@@ -734,13 +735,13 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		}
 	})
 
-	// Desktop app windows: is this browser signed in to umbrelOS's app gateway for this app?
-	// umbrelOS protects every app with its own sign-in (port 2000, /app-auth), whose page refuses
+	// Desktop app windows: is this browser signed in to Omarchy Server's app gateway for this app?
+	// Omarchy Server protects every app with its own sign-in (port 2000, /app-auth), whose page refuses
 	// to be shown inside another site's frame. The resulting session cookie is per host, not per
-	// port, so the browser also sends it to Touch. We only ask umbrelOS whether it is valid for
-	// the app (the same check umbrelOS's own sign-in page makes) and answer yes/no. The cookie
+	// port, so the browser also sends it to Touch. We only ask Omarchy Server whether it is valid for
+	// the app (the same check Omarchy Server's own sign-in page makes) and answer yes/no. The cookie
 	// itself is never stored, logged or returned, and this can't sign anyone in.
-	const APP_COOKIES = ['UMBREL_APP_SESSION', '__Host-UMBREL_APP_SESSION_HTTPS']
+	const APP_COOKIES = ['OMARCHY_APP_SESSION', '__Host-OMARCHY_APP_SESSION_HTTPS']
 	api.get('/app-access', async (req, res) => {
 		res.set('Cache-Control', 'no-store')
 		if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
@@ -752,8 +753,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		try {
 			const url = new URL(`${getClient().baseUrl}/app-auth/v1/account/session`)
 			url.search = new URLSearchParams({app: appId, origin: 'host', path: '/'}).toString()
-			// umbreld is reached over plain HTTP here, so it reads the plain-HTTP cookie name.
-			const r = await fetch(url, {headers: {cookie: `UMBREL_APP_SESSION=${encodeURIComponent(token)}`, accept: 'application/json'}, redirect: 'manual', signal: AbortSignal.timeout(8000)})
+			// omarchyd is reached over plain HTTP here, so it reads the plain-HTTP cookie name.
+			const r = await fetch(url, {headers: {cookie: `OMARCHY_APP_SESSION=${encodeURIComponent(token)}`, accept: 'application/json'}, redirect: 'manual', signal: AbortSignal.timeout(8000)})
 			await r.arrayBuffer().catch(() => {})
 			res.json({state: r.status === 200 ? 'ok' : r.status === 401 ? 'signin' : r.status === 403 ? 'not-shared' : 'unknown'})
 		} catch {
@@ -764,15 +765,15 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// Desktop: can each app be shown inside a window? Many apps (Forgejo, Nextcloud, Home
 	// Assistant…) forbid being embedded in another site (X-Frame-Options / CSP frame-ancestors),
 	// which browsers show as "refused to connect". We load each app's start page once, the way
-	// the browser would (through umbrelOS's app gateway, with the browser's own app session,
+	// the browser would (through Omarchy Server's app gateway, with the browser's own app session,
 	// which the gateway strips before the app sees it), and read only those headers.
 	//   window: can be shown in a window · tab: must open in a browser tab
-	//   signin: umbrelOS wants this browser to sign in first · unknown: couldn't tell
+	//   signin: Omarchy Server wants this browser to sign in first · unknown: couldn't tell
 	const appFrameCache = new Map() // `${appId}:${signedIn}` -> {verdict, at}
-	async function frameVerdict(app, umbrelHost, cookieHeader) {
+	async function frameVerdict(app, serverHost, cookieHeader) {
 		if (!app?.port) return 'unknown'
 		if (app.requiresHttps) return 'tab'
-		const origin = `http://${umbrelHost.includes(':') ? `[${umbrelHost}]` : umbrelHost}:${app.port}`
+		const origin = `http://${serverHost.includes(':') ? `[${serverHost}]` : serverHost}:${app.port}`
 		let url = new URL(app.path || '/', origin)
 		for (let hop = 0; hop < 5; hop++) {
 			let r
@@ -788,7 +789,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			r.body?.cancel().catch(() => {})
 			if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
 				const next = new URL(r.headers.get('location'), url)
-				// Sent elsewhere (umbrelOS's sign-in on port 2000, or an old login page): sign in first.
+				// Sent elsewhere (Omarchy Server's sign-in on port 2000, or an old login page): sign in first.
 				if (next.origin !== url.origin || next.pathname.startsWith('/app-auth')) return 'signin'
 				url = next
 				continue
@@ -802,9 +803,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return 'unknown'
 	}
 	// App relay. An app that forbids embedding can still get a desktop window: Touch relays it
-	// on a port of its own and swaps the app's "nobody may embed me" header for "only UmbrelOS
-	// Touch may embed me". Everything else passes through untouched, including umbrelOS's app
-	// gateway, so umbrelOS still checks its own sign-in on every request. On top of that the
+	// on a port of its own and swaps the app's "nobody may embed me" header for "only Omarchy Server
+	// Touch may embed me". Everything else passes through untouched, including Omarchy Server's app
+	// gateway, so Omarchy Server still checks its own sign-in on every request. On top of that the
 	// relay only answers browsers signed in to Touch, and never passes Touch's cookie to the app.
 	const relays = new Map() // appId -> {port, targetPort, server, ancestors}
 	const PING_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
@@ -829,8 +830,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			.map((c) => c.trim())
 			.filter((c) => {
 				const name = c.slice(0, c.indexOf('='))
-				// Touch's cookies never reach the app; Touch's own umbrelOS app session wins.
-				return c && name !== COOKIE && name !== APP_COOKIE && !(held && name === 'UMBREL_APP_SESSION')
+				// Touch's cookies never reach the app; Touch's own Omarchy Server app session wins.
+				return c && name !== COOKIE && name !== APP_COOKIE && !(held && name === 'OMARCHY_APP_SESSION')
 			})
 		if (held) rest.push(held)
 		if (rest.length) h.cookie = rest.join('; ')
@@ -879,9 +880,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return appHostPattern.match.exec(host)?.[1] ?? null
 	}
 
-	function startRelay(app, umbrelHost) {
+	function startRelay(app, serverHost) {
 		const relay = {appId: app.id, port: 0, targetPort: app.port, ancestors: new Set(), server: null}
-		const upstream = (req, sid) => ({host: umbrelHost, port: relay.targetPort, method: req.method, path: req.url, headers: relayHeaders(req, sid)})
+		const upstream = (req, sid) => ({host: serverHost, port: relay.targetPort, method: req.method, path: req.url, headers: relayHeaders(req, sid)})
 		relay.handle = (req, res) => {
 			const url = new URL(req.url ?? '/', 'http://x')
 			if (url.pathname === '/__touch/ping.gif') {
@@ -894,7 +895,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				appTickets.delete(url.searchParams.get('t') ?? '')
 				if (!t || t.exp < Date.now() || t.appId !== app.id || !store.getSession(t.sid)) {
 					res.writeHead(401, {'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store'})
-					return res.end('This link has expired. Open the app again from UmbrelOS Touch.')
+					return res.end('This link has expired. Open the app again from Omarchy Server.')
 				}
 				const id = randomBytes(32).toString('base64url')
 				appSessions.set(id, {sid: t.sid, appId: app.id, exp: Date.now() + 12 * 60 * 60 * 1000})
@@ -910,7 +911,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const sid = relaySid(req, app.id)
 			if (!sid) {
 				res.writeHead(401, {'content-type': 'text/plain; charset=utf-8'})
-				return res.end('Sign in to UmbrelOS Touch first.')
+				return res.end('Sign in to Omarchy Server first.')
 			}
 			const up = http.request(upstream(req, sid), (ur) => {
 				const headers = {...ur.headers}
@@ -919,12 +920,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					try {
 						const to = new URL(headers.location, `http://${req.headers.host}`)
 						if (to.pathname.startsWith('/app-auth') && to.port !== String(relay.port)) {
-							// umbrelOS wants a fresh sign-in; its page can't load in a window.
+							// Omarchy Server wants a fresh sign-in; its page can't load in a window.
 							ur.resume()
 							res.writeHead(401, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'})
-							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your umbrelOS app session ended.<br>Sign out of UmbrelOS Touch and back in, then reopen this app.</body>')
+							return res.end('<!doctype html><meta charset="utf-8"><body style="font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0;color:#888;text-align:center;padding:24px">Your Omarchy Server app session ended.<br>Sign out of Omarchy Server and back in, then reopen this app.</body>')
 						}
-						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === umbrelHost)) {
+						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
 							to.host = req.headers.host
 							headers.location = to.href
 						}
@@ -993,7 +994,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const sid = relaySid(req, appId) ?? (t?.appId === appId ? t.sid : null)
 		const relay = sid ? relaysByApp.get(appId) ?? (await hostRelay(appId, sid)) : null
 		if (!relay) {
-			res.status(401).type('text/plain').send('Open this app from UmbrelOS Touch.')
+			res.status(401).type('text/plain').send('Open this app from Omarchy Server.')
 			return
 		}
 		relay.port = -1
@@ -1008,7 +1009,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		return true
 	}
 
-	async function relayFor(app, umbrelHost, ancestor) {
+	async function relayFor(app, serverHost, ancestor) {
 		let relay = relays.get(app.id)
 		if (relay && relay.targetPort !== app.port) {
 			relay.server.close()
@@ -1016,7 +1017,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			relay = null
 		}
 		if (!relay) {
-			relay = startRelay(app, umbrelHost)
+			relay = startRelay(app, serverHost)
 			const taken = new Set([...relays.values()].map((r) => r.port))
 			const candidates = relayPortBase ? Array.from({length: 100}, (_, i) => relayPortBase + i).filter((p) => !taken.has(p)) : [0]
 			let ok = false
@@ -1040,9 +1041,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		relays.clear()
 	}
 
-	// How each app opens on the desktop. With Touch's own umbrelOS app session (every sign-in
+	// How each app opens on the desktop. With Touch's own Omarchy Server app session (every sign-in
 	// since 0.12), every app is relayed, so it opens in a window with no extra sign-in. Without it,
-	// only apps that forbid embedding are relayed and the browser's own umbrelOS sign-in applies.
+	// only apps that forbid embedding are relayed and the browser's own Omarchy Server sign-in applies.
 	//   results[id]: window | tab | signin | unknown
 	//   relay[id]:   true when the app opens through a relay (ask /api/app-open for its address)
 	const isIpOrLocal = (h) => /^[\d.]+$/.test(h) || h.includes(':') || h.endsWith('.local') || h === 'localhost' || !h.includes('.')
@@ -1064,14 +1065,14 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const mode = relayMode(req)
 			const cookies = parseCookies(req.headers.cookie)
 			const held = store.getSession(req.sid)?.console?.appCookie
-			// Only umbrelOS's own app-session cookies are sent (current and older umbrelOS).
+			// Only Omarchy Server's own app-session cookies are sent (current and older Omarchy Server).
 			const cookieHeader =
 				held ??
-				['UMBREL_APP_SESSION', 'UMBREL_PROXY_TOKEN']
+				['OMARCHY_APP_SESSION', 'OMARCHY_PROXY_TOKEN']
 					.filter((n) => typeof cookies[n] === 'string' && cookies[n].length < 4096)
 					.map((n) => `${n}=${encodeURIComponent(cookies[n])}`)
 					.join('; ')
-			const umbrelHost = new URL(getClient().baseUrl).hostname
+			const serverHost = new URL(getClient().baseUrl).hostname
 			const results = {}
 			const relay = {}
 			await Promise.all(
@@ -1085,7 +1086,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					}
 					const key = `${id}:${app.port}:${cookieHeader ? 1 : 0}`
 					const hit = appFrameCache.get(key)
-					let verdict = hit && Date.now() - hit.at < 10 * 60 * 1000 ? hit.verdict : await frameVerdict(app, umbrelHost, cookieHeader)
+					let verdict = hit && Date.now() - hit.at < 10 * 60 * 1000 ? hit.verdict : await frameVerdict(app, serverHost, cookieHeader)
 					if (verdict === 'window' || verdict === 'tab' || verdict === 'blocked') appFrameCache.set(key, {verdict, at: hit?.at ?? Date.now()})
 					if (verdict === 'blocked') {
 						if (mode) relay[id] = true
@@ -1112,12 +1113,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const mode = relayMode(req)
 			const path = typeof app.path === 'string' && app.path.startsWith('/') ? app.path : '/'
 			const ancestor = publicOrigin(req)
-			const umbrelHost = new URL(getClient().baseUrl).hostname
+			const serverHost = new URL(getClient().baseUrl).hostname
 			if (mode === 'host') {
 				const host = appHostPattern.make(app.id)
 				let relay = relaysByApp.get(app.id)
 				if (!relay || relay.targetPort !== app.port) {
-					relay = startRelay(app, umbrelHost)
+					relay = startRelay(app, serverHost)
 					relaysByApp.set(app.id, relay)
 				}
 				if (ancestor) relay.ancestors.add(ancestor)
@@ -1127,7 +1128,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				return res.json({url: `${req.protocol}://${host}/__touch/enter?t=${t}&r=${encodeURIComponent(path)}`, ping: `${req.protocol}://${host}/__touch/ping.gif`})
 			}
 			if (mode === 'port') {
-				const port = await relayFor(app, umbrelHost, ancestor)
+				const port = await relayFor(app, serverHost, ancestor)
 				if (!port) return res.status(503).json({error: {code: 'UNAVAILABLE', message: 'No free port for the app relay'}})
 				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
 				return res.json({url: `http://${h}:${port}${path}`, ping: `http://${h}:${port}/__touch/ping.gif`})
@@ -1148,7 +1149,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		}
 	})
 
-	// WebSocket bridges: phone <-> this server <-> umbreld.
+	// WebSocket bridges: phone <-> this server <-> omarchyd.
 	//   /api/console?machineId=…            -> /machines/console (raw VNC, binary)
 	//   /api/terminal?appId=…&cols=…&rows=… -> /terminal (shell text; appId = a shell inside that app)
 	app.attachConsole = (server) => {
@@ -1215,7 +1216,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	const proxy = async (req, res) => {
 		const path = req.params.path
 		const kind = ALLOWED[path]
-		if (!kind) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in UmbrelOS Touch`}})
+		if (!kind) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in Omarchy Server`}})
 		if ((kind === 'query') !== (req.method === 'GET')) {
 			return res.status(405).json({error: {code: 'METHOD_NOT_SUPPORTED', message: 'Wrong method'}})
 		}
@@ -1229,7 +1230,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const data = await authedCall(req, path, kind, input)
 			res.json({data: data ?? null})
 		} catch (error) {
-			if (error instanceof UmbrelError && error.code === 'UNAUTHORIZED' && !store.getSession(req.sid)) setCookie(res, '', 0)
+			if (error instanceof BackendError && error.code === 'UNAUTHORIZED' && !store.getSession(req.sid)) setCookie(res, '', 0)
 			sendError(res, error)
 		}
 	}

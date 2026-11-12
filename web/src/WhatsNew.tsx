@@ -28,7 +28,7 @@ export function WhatsNewSheet({releases, version, onClose}: {releases: Release[]
 					</span>
 				}
 				title="What’s new"
-				subtitle={`UmbrelOS Touch ${version}`}
+				subtitle={`Omarchy Server ${version}`}
 				onClose={onClose}
 			/>
 			<div className="screen whats-new">

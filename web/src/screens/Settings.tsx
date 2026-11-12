@@ -1,4 +1,4 @@
-// Full settings, backed by the same umbreld calls the umbrelOS dashboard uses.
+// Full settings, backed by the same omarchyd calls Omarchy Server uses.
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
@@ -137,7 +137,7 @@ const ago = (t: number) => {
 }
 function describeSession(s: ActiveSession) {
 	if (s.client.type === 'native') {
-		const name = s.client.id === 'umbrel-touch' ? 'UmbrelOS Touch' : s.client.id === 'umbrel' || !s.client.id ? 'Umbrel app' : s.client.id
+		const name = s.client.id === 'omarchy-server' || !s.client.id ? 'Omarchy Server' : s.client.id
 		return {icon: 'phone' as IconName, name, detail: [s.client.platform, s.client.appVersion && `v${s.client.appVersion}`].filter(Boolean).join(' · ')}
 	}
 	const ua = s.client.userAgent ?? ''
@@ -157,11 +157,11 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
 	const layout = useLayout()
-	const [page, setPage] = useState<'main' | 'appearance' | 'storage'>(() => (sessionStorage.getItem('umbrel-touch:settings-page') as 'appearance' | 'storage') || 'main')
+	const [page, setPage] = useState<'main' | 'appearance' | 'storage'>(() => (sessionStorage.getItem('omarchy-server:settings-page') as 'appearance' | 'storage') || 'main')
 	const openPage = (p: 'main' | 'appearance' | 'storage') => {
 		haptic(5)
-		if (p === 'main') sessionStorage.removeItem('umbrel-touch:settings-page')
-		else sessionStorage.setItem('umbrel-touch:settings-page', p)
+		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
+		else sessionStorage.setItem('omarchy-server:settings-page', p)
 		setPage(p)
 		window.scrollTo({top: 0})
 	}
@@ -189,7 +189,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const startUpdate = async () => {
 		const ok = await confirm({
 			title: `Update to ${check.data?.name ?? check.data?.version}?`,
-			body: 'umbrelOS downloads the update, then restarts. Your apps and machines stop briefly. Keep the Umbrel powered on.',
+			body: 'Omarchy Server downloads the update, then restarts. Your apps and machines stop briefly. Keep the server powered on.',
 			confirm: 'Update now',
 			icon: 'update',
 		})
@@ -213,22 +213,22 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		save.mutate({path: 'user.revokeSession', input: {sessionId: s.id}, done: `${d.name} signed out`, refresh: ['user.listSessions']})
 	}
 	const revokeOthers = async () => {
-		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your Umbrel, except this phone, is signed out.', confirm: 'Sign out others', danger: true})))
+		if (!(await confirm({title: 'Sign out all other devices?', body: 'Every browser and app signed in to your server, except this phone, is signed out.', confirm: 'Sign out others', danger: true})))
 			return
 		save.mutate({path: 'user.revokeOtherSessions', done: 'Other devices signed out', refresh: ['user.listSessions']})
 	}
 	const power = async (kind: 'restart' | 'shutdown') => {
 		const ok = await confirm({
-			title: kind === 'restart' ? 'Restart your Umbrel?' : 'Shut down your Umbrel?',
-			body: kind === 'restart' ? 'Apps and machines stop, then come back after the restart.' : 'You’ll need to turn the Umbrel back on yourself (for a VM, from FygoNAS).',
+			title: kind === 'restart' ? 'Restart your server?' : 'Shut down your server?',
+			body: kind === 'restart' ? 'Apps and machines stop, then come back after the restart.' : 'You’ll need to turn the server back on yourself (for a VM, from its host).',
 			confirm: kind === 'restart' ? 'Restart' : 'Shut down',
 			danger: true,
 			icon: kind === 'restart' ? 'restart' : 'power',
 		})
-		if (ok) save.mutate({path: `system.${kind}`, done: kind === 'restart' ? 'Your Umbrel is restarting' : 'Your Umbrel is shutting down'})
+		if (ok) save.mutate({path: `system.${kind}`, done: kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down'})
 	}
 
-	const settingsUrl = `${boot.umbrel?.url ?? ''}/settings`
+	const settingsUrl = `${boot.server?.url ?? ''}/settings`
 
 	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
 	if (page === 'appearance')
@@ -286,14 +286,14 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 						<span style={{flex: 1, minWidth: 0}}>
 							<b>{user.data?.name ?? ' '}</b>
 							<span>
-								{user.data?.role === 'member' ? 'Member' : 'Owner'} · {boot.umbrel?.device ?? 'Umbrel'}
+								{user.data?.role === 'member' ? 'Member' : 'Owner'} · {boot.server?.device ?? 'server'}
 							</span>
 						</span>
 					</div>
 					<Row icon="user" color="var(--blue)" label="Name" value={user.data?.name} onClick={() => setSheet('name')} />
 					<Row icon="key" color="#8e8e93" label="Password" onClick={() => setSheet('password')} />
 					<Row icon="shield" color="var(--green)" label="Two-factor authentication" value={twoFactor.data === undefined ? '' : twoFactor.data ? 'On' : 'Off'} onClick={() => setSheet('2fa')} />
-					<Row icon="wallpaper" color="var(--mauve)" label="umbrelOS wallpaper" onClick={() => setSheet('wallpaper')} />
+					<Row icon="wallpaper" color="var(--mauve)" label="Omarchy Server wallpaper" onClick={() => setSheet('wallpaper')} />
 				</div>
 			</div>
 
@@ -305,7 +305,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				</div>
 			</div>
 
-			<Group title="Signed-in devices" footer="Every browser and app signed in to your Umbrel with your account.">
+			<Group title="Signed-in devices" footer="Every browser and app signed in to your server with your account.">
 				{(sessions.data ?? []).map((s) => {
 					const d = describeSession(s)
 					return (
@@ -333,7 +333,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<Group title="Software update">
 					<Row icon="sparkle" color="var(--pink)" label="Touch" value={`${boot.touch.version} · What’s new`} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
-					<Row icon="server" color="var(--blue)" label="umbrelOS" value={boot.umbrel?.version} />
+					<Row icon="server" color="var(--blue)" label="Omarchy Server" value={boot.server?.version} />
 					{updateError && !updating && (
 						<div className="row static update-error" role="alert">
 							<span className="row-ico" style={{'--c': 'var(--red)'} as CSSProperties}>
@@ -357,7 +357,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							<span className="progress">
 								<i style={{width: `${status.data?.progress ?? 2}%`}} />
 							</span>
-							<span className="muted" style={{fontSize: 12.5}}>Your Umbrel restarts when this finishes. Reopen Touch in a few minutes.</span>
+							<span className="muted" style={{fontSize: 12.5}}>Your server restarts when this finishes. Reopen Touch in a few minutes.</span>
 						</div>
 					) : check.data?.available ? (
 						<Row
@@ -424,14 +424,14 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				</Group>
 			)}
 
-			<Group title="More" footer="Users, backups, storage, static IP and app-store sources are in the umbrelOS dashboard.">
+			<Group title="More" footer="Users, backups, storage, static IP and app-store sources are in Omarchy Server.">
 				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}
-				<Row icon="open" color="var(--blue)" label="Everything else in umbrelOS" href={settingsUrl} />
-				{owner && <Row icon="restart" color="var(--peach)" label="Restart Umbrel" onClick={() => power('restart')} />}
-				{owner && <Row icon="power" color="var(--red)" label="Shut down Umbrel" onClick={() => power('shutdown')} />}
+				<Row icon="open" color="var(--blue)" label="Everything else in Omarchy Server" href={settingsUrl} />
+				{owner && <Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />}
+				{owner && <Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />}
 				{owner && <Row icon="danger" color="var(--red)" label="Factory reset" onClick={() => setSheet('reset')} />}
 			</Group>
-			<p className="footer-note">UmbrelOS Touch {boot.touch.version} · Not affiliated with Umbrel</p>
+			<p className="footer-note">Omarchy Server {boot.touch.version}</p>
 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
 			<PasswordSheet open={sheet === 'password'} onClose={close} onSignedOut={onSignedOut} />
@@ -499,7 +499,7 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 		<FormSheet
 			open={open}
 			title="Change password"
-			subtitle="Used for umbrelOS and UmbrelOS Touch"
+			subtitle="Used for Omarchy Server and Omarchy Server"
 			onClose={onClose}
 			submit="Change password"
 			busy={save.isPending}
@@ -510,7 +510,7 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 					{
 						onSuccess: async () => {
 							onClose()
-							// umbrelOS may sign every session out after a password change.
+							// Omarchy Server may sign every session out after a password change.
 							const still = await fetch('/api/rpc/user.get', {credentials: 'same-origin'}).catch(() => null)
 							if (still?.status === 401) onSignedOut()
 						},
@@ -555,7 +555,7 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 			{!enabled && (
 				<div className="glass card" style={{borderRadius: 18, marginBottom: 16}}>
 					<p className="prose" style={{margin: '0 0 12px'}}>
-						1. Add your Umbrel to an authenticator app (Google Authenticator, 1Password, Authy…).
+						1. Add your server to an authenticator app (Google Authenticator, 1Password, Authy…).
 					</p>
 					{uri.data ? (
 						<div className="stack">
@@ -602,8 +602,8 @@ function WallpaperSheet({open, current, onClose}: {open: boolean; current?: Wall
 	const save = useSave()
 	const qc = useQueryClient()
 	return (
-		<Sheet open={open} onClose={onClose} label="umbrelOS wallpaper">
-			<SheetHeader title="umbrelOS wallpaper" subtitle="Also used by the Horizon theme" onClose={onClose} />
+		<Sheet open={open} onClose={onClose} label="Omarchy Server wallpaper">
+			<SheetHeader title="Omarchy Server wallpaper" subtitle="Also used by the Horizon theme" onClose={onClose} />
 			<div className="wall-grid" role="radiogroup" aria-label="Wallpaper">
 				{WALLPAPER_IDS.map((id) => (
 					<button
@@ -635,7 +635,7 @@ function HostnameSheet({open, current, onClose}: {open: boolean; current: string
 		<FormSheet
 			open={open}
 			title="Device name"
-			subtitle="How your Umbrel appears on your network"
+			subtitle="How your server appears on your network"
 			onClose={onClose}
 			submit="Save"
 			busy={save.isPending}
@@ -714,7 +714,7 @@ function WifiSheet({onClose, connected}: {onClose: () => void; connected?: strin
 							className="btn danger block"
 							style={{marginTop: 14}}
 							onClick={async () => {
-								if (await confirm({title: 'Turn off Wi-Fi?', body: 'If Wi-Fi is how your Umbrel connects, you’ll lose access until it’s wired in.', confirm: 'Disconnect', danger: true}))
+								if (await confirm({title: 'Turn off Wi-Fi?', body: 'If Wi-Fi is how your server connects, you’ll lose access until it’s wired in.', confirm: 'Disconnect', danger: true}))
 									save.mutate({path: 'wifi.disconnect', done: 'Wi-Fi disconnected', refresh: ['wifi.connected']})
 							}}
 						>
@@ -728,7 +728,7 @@ function WifiSheet({onClose, connected}: {onClose: () => void; connected?: strin
 }
 
 function LogsSheet({onClose}: {onClose: () => void}) {
-	const [type, setType] = useState<'umbrelos' | 'system'>('umbrelos')
+	const [type, setType] = useState<'server' | 'system'>('server')
 	const logs = useQ<string>('system.logs', {type, lines: 1500, maxOutputBytes: 400_000})
 	const [el, setEl] = useState<HTMLPreElement | null>(null)
 	useEffect(() => {
@@ -742,7 +742,7 @@ function LogsSheet({onClose}: {onClose: () => void}) {
 				value={type}
 				onChange={setType}
 				options={[
-					{id: 'umbrelos', label: 'umbrelOS'},
+					{id: 'server', label: 'Omarchy Server'},
 					{id: 'system', label: 'System'},
 				]}
 			/>
@@ -765,17 +765,17 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 		<FormSheet
 			open={open}
 			title="Factory reset"
-			subtitle="Erases everything on this Umbrel"
+			subtitle="Erases everything on this server"
 			onClose={onClose}
 			submit="Erase everything"
 			danger
 			busy={save.isPending}
 			disabled={!password || typed !== 'RESET'}
-			onSubmit={() => save.mutate({path: 'system.factoryReset', input: {password}, done: 'Your Umbrel is resetting'}, {onSuccess: onDone})}
+			onSubmit={() => save.mutate({path: 'system.factoryReset', input: {password}, done: 'Your server is resetting'}, {onSuccess: onDone})}
 		>
 			<div className="error" style={{marginBottom: 16}}>
 				<Icon name="alert" size={18} />
-				All apps, their data, machines, files and settings are permanently deleted, and umbrelOS goes back to its first-time setup. This can’t be undone.
+				All apps, their data, machines, files and settings are permanently deleted, and Omarchy Server goes back to its first-time setup. This can’t be undone.
 			</div>
 			<Field id="reset-pw" label="Your password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
 			<Field id="reset-type" label="Type RESET to confirm" autoCapitalize="characters" autoCorrect="off" value={typed} onChange={(e) => setTyped(e.target.value)} />

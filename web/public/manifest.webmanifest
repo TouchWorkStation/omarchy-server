@@ -1,7 +1,7 @@
 {
-  "name": "UmbrelOS Touch",
-  "short_name": "Umbrel Touch",
-  "description": "A touch-first interface for your Umbrel.",
+  "name": "Omarchy Server",
+  "short_name": "Omarchy Server",
+  "description": "A touch-first interface for your server.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

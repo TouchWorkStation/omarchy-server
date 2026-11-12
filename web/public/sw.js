@@ -1,5 +1,5 @@
-// Offline shell only. API calls are never cached: they always go to your Umbrel.
-const CACHE = 'umbrel-touch-v1'
+// Offline shell only. API calls are never cached: they always go to your server.
+const CACHE = 'omarchy-server-v1'
 self.addEventListener('install', (e) => {
 	e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/', '/manifest.webmanifest', '/icon.svg'])).then(() => self.skipWaiting()))
 })
