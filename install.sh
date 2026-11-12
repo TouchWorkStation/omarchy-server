@@ -101,6 +101,14 @@ systemctl --user daemon-reload
 systemctl --user enable omarchyd.service omarchy-server-web.service >/dev/null
 systemctl --user restart omarchyd.service omarchy-server-web.service
 
+# Omarchy turns on a firewall (ufw) that blocks incoming connections: let the web app through.
+if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+	if ! sudo ufw status | grep -qE "^$PORT/tcp +ALLOW"; then
+		say "Opening port $PORT in the firewall (sudo needed)"
+		sudo ufw allow "$PORT/tcp" comment 'Omarchy Server' >/dev/null
+	fi
+fi
+
 # Keep the services running when you're not logged in (needs sudo once).
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
 	say "Letting Omarchy Server run while you're logged out (sudo needed)"
@@ -109,9 +117,19 @@ fi
 
 sleep 2
 if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --user is-active --quiet omarchyd.service; then
-	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(172\.1[6-9]|172\.2|172\.3[01]|10\.21)\.' || true)
+	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(172\.(1[6-9]|2[0-9]|3[01])|10\.21)\.' || true)
 	say "Omarchy Server is running."
-	for ip in $ips; do printf '    http://%s:%s\n' "$ip" "$PORT"; done
+	private_only=yes
+	for ip in $ips; do
+		printf '    http://%s:%s\n' "$ip" "$PORT"
+		case "$ip" in 10.*) ;; *) private_only=no ;; esac
+	done
+	if [ "$private_only" = yes ] && [ -n "$ips" ]; then
+		printf '\n    This machine only has a private address, so it is probably a VM inside umbrelOS\n'
+		printf '    (Machines). Your other devices cannot open that address directly. In UmbrelOS Touch,\n'
+		printf '    open this machine -> Port forwarding -> "Omarchy Server", then open\n'
+		printf '    http://<your-umbrel-ip>:47780 instead.\n\n'
+	fi
 	printf '    Logs: journalctl --user -u omarchyd -u omarchy-server-web -f\n'
 else
 	die "A service didn't start. See: journalctl --user -u omarchyd -u omarchy-server-web -n 50"
