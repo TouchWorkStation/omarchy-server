@@ -44,6 +44,18 @@ const keysymOf = (ch: string) => {
 	const cp = ch.codePointAt(0)!
 	return cp < 0x100 ? cp : 0x01000000 | cp
 }
+// The VM's keyboard works in physical keys (US layout): '|' is Shift + backslash, 'A' is Shift + 'a'.
+// Sending '|' alone types a backslash, so characters that need Shift are wrapped in a Shift press.
+const NEEDS_SHIFT = /^[A-Z~!@#$%^&*()_+{}|:"<>?]$/
+type KeySender = {sendKey: (keysym: number, code: string | null, down?: boolean) => void}
+function sendChar(r: KeySender, ch: string, shiftHeld = false) {
+	const k = ch === '\n' ? KEY.Enter : ch === '\t' ? KEY.Tab : keysymOf(ch)
+	const shift = !shiftHeld && NEEDS_SHIFT.test(ch)
+	if (shift) r.sendKey(KEY.Shift, null, true)
+	r.sendKey(k, null, true)
+	r.sendKey(k, null, false)
+	if (shift) r.sendKey(KEY.Shift, null, false)
+}
 
 type State = 'connecting' | 'connected' | 'lost' | 'superseded' | 'error'
 type Mode = 'touch' | 'mouse'
@@ -255,11 +267,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 	const typeText = (text: string) => {
 		const r = rfbRef.current
 		if (!r) return
-		for (const ch of text.replace(/\r\n?/g, '\n')) {
-			const k = ch === '\n' ? KEY.Enter : ch === '\t' ? KEY.Tab : keysymOf(ch)
-			r.sendKey(k, null, true)
-			r.sendKey(k, null, false)
-		}
+		for (const ch of text.replace(/\r\n?/g, '\n')) sendChar(r, ch)
 		r.focus()
 	}
 	const screenshot = async () => {
@@ -716,20 +724,6 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		if (fb) wheel(fb, e.deltaY > 0 ? BTN.wheelDown : BTN.wheelUp)
 	}
 
-	// Mouse-mode buttons: hold the left one to drag with your other finger.
-	const holdButton = (button: number) => ({
-		onPointerDown: (e: React.PointerEvent) => {
-			e.stopPropagation()
-			haptic(8)
-			press(cursor.current, button)
-		},
-		onPointerUp: (e: React.PointerEvent) => {
-			e.stopPropagation()
-			release(cursor.current, button)
-		},
-		onPointerCancel: () => release(cursor.current, button),
-	})
-
 	// ---- keyboard ----------------------------------------------------------------
 	const tapKey = (keysym: number) => {
 		const rfb = rfbRef.current
@@ -741,10 +735,39 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		for (const m of held.reverse()) rfb.sendKey(KEY[m], null, false)
 		if (held.length) setMods({Ctrl: false, Alt: false, Shift: false})
 	}
+	// Typed characters: modifiers the user toggled apply; otherwise Shift is added where needed.
+	const typeChar = (ch: string) => {
+		const rfb = rfbRef.current
+		if (!rfb) return
+		if (mods.Ctrl || mods.Alt) return tapKey(ch === '\n' ? KEY.Enter : keysymOf(ch.toLowerCase()))
+		if (mods.Shift) {
+			rfb.sendKey(KEY.Shift, null, true)
+			sendChar(rfb, ch, true)
+			rfb.sendKey(KEY.Shift, null, false)
+			return setMods({Ctrl: false, Alt: false, Shift: false})
+		}
+		sendChar(rfb, ch)
+	}
 	const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
 		const el = e.currentTarget
-		for (const ch of el.value) tapKey(ch === '\n' ? KEY.Enter : keysymOf(ch))
+		for (const ch of el.value) typeChar(ch)
 		el.value = ''
+	}
+	// Paste: on HTTPS a tap reads the clipboard; anywhere, press and hold the key for iOS's own Paste.
+	const pasteText = (text: string) => {
+		const clean = text.replace(/\r\n?/g, '\n')
+		if (!clean) return
+		typeText(clean)
+		toast(clean.length > 1 ? `Pasted ${clean.length} characters` : 'Pasted')
+	}
+	const tapPaste = async () => {
+		haptic(6)
+		try {
+			if (navigator.clipboard?.readText && window.isSecureContext) return pasteText(await navigator.clipboard.readText())
+		} catch {
+			/* denied: fall through to the hint */
+		}
+		toast('Press and hold paste, then tap Paste')
 	}
 	const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
 		const special: Record<string, number> = {Backspace: KEY.Backspace, Enter: KEY.Enter, Tab: KEY.Tab, Escape: KEY.Escape, ArrowUp: KEY.Up, ArrowDown: KEY.Down, ArrowLeft: KEY.Left, ArrowRight: KEY.Right}
@@ -949,17 +972,6 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 						</button>
 					</div>
 				)}
-				{live && mode === 'mouse' && !deskUi && (
-					<div className="console-float left mouse-buttons" onPointerDown={(e) => e.stopPropagation()}>
-						<button aria-label="Left mouse button (hold to drag)" {...holdButton(BTN.left)}>
-							L
-						</button>
-						<button aria-label="Right mouse button" {...holdButton(BTN.right)}>
-							R
-						</button>
-					</div>
-				)}
-
 				{!live && (
 					<div className="console-overlay">
 						{state === 'connecting' || state === 'lost' ? (
@@ -989,6 +1001,29 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 					<Icon name={keyboardOpen ? 'keyboard-hide' : 'keyboard'} size={22} />
 				</button>
 				<div className="console-keys">
+					<label className={`paste-key${live ? '' : ' off'}`} title="Paste: press and hold, then tap Paste">
+						paste
+						{/* A real (invisible) text field over the key, so press-and-hold shows iOS's Paste bubble. */}
+						<textarea
+							className="paste-catch"
+							aria-label="Paste into the machine: press and hold, then choose Paste"
+							inputMode="none"
+							rows={1}
+							disabled={!live}
+							onPaste={(e) => {
+								e.preventDefault()
+								pasteText(e.clipboardData.getData('text'))
+								e.currentTarget.blur()
+							}}
+							onInput={(e) => {
+								const el = e.currentTarget
+								pasteText(el.value)
+								el.value = ''
+								el.blur()
+							}}
+							onClick={() => void tapPaste()}
+						/>
+					</label>
 					{keys.map((k) => (
 						<button
 							key={k.label}

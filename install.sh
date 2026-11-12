@@ -18,7 +18,13 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
-command -v pacman >/dev/null || die "This installer is for Omarchy / Arch Linux (pacman not found)."
+if ! command -v pacman >/dev/null; then
+	found=$( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$ID}") || uname -s)
+	if [ -d /home/umbrel ] || grep -qi umbrel /etc/os-release 2>/dev/null; then
+		die "This is umbrelOS ($found), not Omarchy. Run this inside your Omarchy VM: open its console (or SSH into the VM) and run the command there."
+	fi
+	die "This installer is for Omarchy (Arch Linux), but this machine runs $found. Run it on your Omarchy machine."
+fi
 command -v systemctl >/dev/null || die "systemd is required."
 
 # 1. Packages (the only step that uses sudo).
