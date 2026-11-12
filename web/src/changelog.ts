@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.5.0',
+		date: '2026-11-12',
+		title: 'ZFS',
+		added: [
+			'ZFS pools: choose Btrfs or ZFS for a new pool, with Combined, Mirrored, RAID-Z1 and RAID-Z2 layouts.',
+			'Import existing ZFS pools, including ones from another computer, without changing anything on them. They show up in Files under Home → Pools.',
+			'ZFS pools show their health, drive errors and last error check, and can be checked or removed from here.',
+			'ZFS is optional: add it by running the installer with --zfs.',
+		],
+		fixed: ['A ZFS pool’s last error check is shown instead of “Never checked”.'],
+	},
+	{
 		version: '0.4.0',
 		date: '2026-11-12',
 		title: 'One-tap machines',

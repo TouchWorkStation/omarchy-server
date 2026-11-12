@@ -99,6 +99,19 @@ mirrored or RAID 10), import existing Btrfs drives, add drives, run error checks
 to sleep. Pools mount at `~/Pools/<name>`, so they're in Files, on the Omarchy desktop and shareable
 from Files over SMB.
 
+### ZFS (optional)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs
+```
+
+This adds the unofficial [ArchZFS](https://github.com/archzfs/archzfs) repository (its signing key is
+checked against the published fingerprint) and builds ZFS for your kernel with DKMS. Then Storage
+offers ZFS pools (Combined, Mirrored, RAID-Z1, RAID-Z2, created on blank drives only) and imports
+existing ZFS pools unchanged: a pool from another computer asks before importing, and a pool whose
+datasets would mount over a system folder is refused. **Kernel updates rebuild ZFS**, and on a
+brand-new kernel that can fail until OpenZFS supports it, leaving pools unavailable until it does.
+
 Root-only work goes through one small helper (`helper/helper.mjs`), installed root-owned at
 `/usr/local/libexec/omarchy-server/` and allowed by a single sudoers rule. It checks every request
 itself and **never erases a drive that holds anything**: pools are created only on blank drives, and
@@ -114,7 +127,7 @@ the app shows the one command (`sudo wipefs -a /dev/sdX`) to clear a drive yours
 - [x] Virtual machines: one-tap Ubuntu/Debian/Fedora/Arch/Alpine (server and desktop), Omarchy, Windows from
       your ISO, any ISO; checksum-verified, set up with cloud-init,
       run as your user (libvirt session, passt networking), screen in the browser, port forwarding
-- [x] NAS: drive health (SMART), drive sleep, Btrfs pools (new on blank drives, import, grow,
+- [x] NAS: drive health (SMART), drive sleep, Btrfs and ZFS pools (new on blank drives, import,
       error checks) in Home → Pools, SMB shares from Files
 - [ ] NFS shares
 - [x] One-line installer with systemd user services

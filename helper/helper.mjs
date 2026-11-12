@@ -15,6 +15,13 @@
 //   pool-forget NAME                  unmount a pool and stop mounting it at boot (data untouched)
 //   pool-scrub NAME                   start an error check
 //   pool-status NAME                  profile, per-drive error counters, last error check
+//   zfs-available                     is ZFS installed and loaded?
+//   zfs-pools                         imported ZFS pools: layout, health, space, last check
+//   zfs-importable                    ZFS pools on connected drives that aren't imported yet
+//   zfs-create NAME LAYOUT DEV...     new ZFS pool on BLANK drives, mounted at ~/Pools/NAME
+//   zfs-import NAME [force]           import an existing pool (unchanged), shown at ~/Pools/NAME
+//   zfs-scrub NAME                    start an error check
+//   zfs-export NAME                   stop using a pool (data untouched; can be imported again)
 //   shares-apply                      network shares from stdin JSON, folders inside the owner's home only
 //   smb-password                      set the owner's network-share password from stdin
 //   firewall-open PORT | firewall-close PORT   an app's TCP port, 1024-65535
@@ -22,7 +29,7 @@
 // Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
 // Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
 import {execFile} from 'node:child_process'
-import {chown, mkdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
+import {chown, mkdir, readdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 
 const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$/
@@ -30,6 +37,9 @@ const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
 const FSTAB_MARK = '# omarchy-server pool'
+const ZFS_MARK = '# omarchy-server zfs'
+// Mountpoints an imported pool must never land on.
+const PROTECTED = ['/', '/boot', '/efi', '/etc', '/usr', '/var', '/home', '/root', '/opt', '/srv', '/bin', '/sbin', '/lib', '/lib64', '/dev', '/proc', '/sys', '/run', '/tmp']
 const SMB_CONF = '/etc/samba/smb.conf'
 const SMB_INCLUDE = '/etc/samba/omarchy-server-shares.conf'
 const SMB_MARK = '# Managed by Omarchy Server'
@@ -52,7 +62,7 @@ export function defaultRun(cmd, args, {input} = {}) {
 }
 
 // Everything the helper touches comes through ctx, so tests can run it without root.
-export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename}}) {
+export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename, readdir}}) {
 	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the Omarchy Server owner')
 	const poolsDir = join(user.home, 'Pools')
 	const mountOf = (name) => join(poolsDir, name)
@@ -118,6 +128,47 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 	// moment it's turned on (Omarchy turns it on during its own install).
 	async function ufwActive() {
 		return run('ufw', ['status']).then(() => true, () => false)
+	}
+
+	// ---- ZFS --------------------------------------------------------------------------------------
+	const zpool = (...a) => run('zpool', a)
+	const zfs = (...a) => run('zfs', a)
+	async function zfsPoolNames() {
+		return (await zpool('list', '-H', '-o', 'name').catch(() => '')).split('\n').map((l) => l.trim()).filter(Boolean)
+	}
+	// Stable names (/dev/disk/by-id/…) so a pool survives drives being re-lettered.
+	async function byId(dev) {
+		const dir = '/dev/disk/by-id'
+		const names = await fs.readdir(dir).catch(() => [])
+		const target = await fs.realpath(dev)
+		const matches = []
+		for (const n of names) if (!/-part\d+$/.test(n) && (await fs.realpath(join(dir, n)).catch(() => null)) === target) matches.push(n)
+		const best = matches.find((n) => /^(nvme|ata|scsi|usb)-/.test(n)) ?? matches.find((n) => !n.startsWith('wwn-')) ?? matches[0]
+		return best ? join(dir, best) : dev
+	}
+	// Parse `zpool status -P NAME` into what the app shows.
+	function parseStatus(text) {
+		const state = /^\s*state:\s*(\S+)/m.exec(text)?.[1] ?? 'UNKNOWN'
+		const scan = /^\s*scan:\s*(.+(?:\n\t.+)*)/m.exec(text)?.[1]?.replace(/\s+/g, ' ').trim() ?? ''
+		const errors = /^errors:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? ''
+		const cfg = text.split(/^\s*config:\s*$/m)[1]?.split(/^errors:/m)[0] ?? ''
+		const layout = new Set()
+		const devices = []
+		for (const line of cfg.split('\n')) {
+			const m = /^\s+(\S+)\s+(ONLINE|DEGRADED|FAULTED|OFFLINE|UNAVAIL|REMOVED)\s+(\d+\S*)\s+(\d+\S*)\s+(\d+\S*)/.exec(line)
+			if (!m) continue
+			if (/^(mirror|raidz[123]?|draid)/.test(m[1])) layout.add(m[1].replace(/-\d+$/, ''))
+			else if (m[1].startsWith('/')) devices.push({path: m[1], state: m[2], errors: [m[3], m[4], m[5]].map((x) => Number.parseInt(x, 10) || 0).reduce((a, b) => a + b, 0)})
+		}
+		return {state, scan, errors, layout: layout.size ? [...layout].join('+') : 'stripe', devices}
+	}
+	async function zfsPoolMount(name) {
+		if (!/^[a-z][a-z0-9_.-]{0,31}$/i.test(name ?? '')) fail('Bad pool name')
+		if (!(await zfsPoolNames()).includes(name)) fail(`No ZFS pool called ${name}`)
+		return name
+	}
+	async function ensureZfsServices() {
+		for (const unit of ['zfs-import-cache.service', 'zfs-mount.service', 'zfs-import.target', 'zfs.target']) await run('systemctl', ['enable', unit]).catch(() => {})
 	}
 
 	const verbs = {
@@ -204,6 +255,109 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			const scrubErrors = /Error summary:\s*(.*)/.exec(scrub)?.[1]?.trim() ?? ''
 			const started = /Scrub started:\s*(.*)/.exec(scrub)?.[1]?.trim() ?? null
 			return JSON.stringify({profile, devices, scrub: {state: scrubState, errors: scrubErrors === 'no errors found' ? '' : scrubErrors, started}})
+		},
+
+		'zfs-available': async () => ((await run('zpool', ['version']).then(() => true, () => false)) ? 'yes' : 'no'),
+
+		'zfs-pools': async () => {
+			const out = []
+			const tab = await fstab()
+			for (const line of (await zpool('list', '-H', '-p', '-o', 'name,size,alloc,free,health').catch(() => '')).split('\n')) {
+				const [name, size, alloc, free, health] = line.split('\t')
+				if (!name) continue
+				const st = parseStatus(await zpool('status', '-P', name).catch(() => ''))
+				const mountpoint = (await zfs('get', '-H', '-o', 'value', 'mountpoint', name).catch(() => '')).trim()
+				const bind = tab.find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
+				const folder = bind ? bind.split(/\s+/)[1] : mountpoint.startsWith(`${poolsDir}/`) ? mountpoint : null
+				out.push({name, size: Number(size), used: Number(alloc), free: Number(free), health, mountpoint, folder, ...st})
+			}
+			return JSON.stringify(out)
+		},
+
+		'zfs-importable': async () => {
+			const text = await zpool('import').catch((e) => (/no pools available/i.test(e.message) ? '' : Promise.reject(e)))
+			const pools = []
+			for (const block of text.split(/^\s*pool:\s*/m).slice(1)) {
+				const name = block.split('\n')[0].trim()
+				pools.push({
+					name,
+					id: /^\s*id:\s*(\d+)/m.exec(block)?.[1] ?? null,
+					state: /^\s*state:\s*(\S+)/m.exec(block)?.[1] ?? 'UNKNOWN',
+					// "last accessed by another system": importing needs a deliberate "force".
+					otherSystem: /another system|was last accessed by|-f flag/i.test(block),
+					note: /^\s*status:\s*(.+(?:\n\s{2,}.+)*)/m.exec(block)?.[1]?.replace(/\s+/g, ' ').trim() ?? '',
+				})
+			}
+			return JSON.stringify(pools)
+		},
+
+		'zfs-create': async ([name, layout, ...devs]) => {
+			if (!NAME.test(name ?? '')) fail('Pool names use a-z, 0-9 and -, starting with a letter')
+			const min = {stripe: 1, mirror: 2, raidz1: 3, raidz2: 4}[layout]
+			if (!min) fail('Choose combined, mirror, raidz1 or raidz2')
+			if (!devs.length || devs.length > 24 || new Set(devs).size !== devs.length) fail('Choose the drives for the pool')
+			if (devs.length < min) fail(`That layout needs at least ${min} drives`)
+			if ((await zfsPoolNames()).includes(name)) fail(`There’s already a ZFS pool called ${name}`)
+			if ((await fstab()).some((l) => l.endsWith(`${FSTAB_MARK} ${name}`) || l.endsWith(`${ZFS_MARK} ${name}`))) fail(`There’s already a pool called ${name}`)
+			for (const d of devs) await blankDisk(d)
+			const ids = []
+			for (const d of devs) ids.push(await byId(d))
+			await fs.mkdir(poolsDir, {recursive: true})
+			await fs.chown(poolsDir, user.uid, user.gid)
+			const vdev = layout === 'stripe' ? ids : [layout, ...ids]
+			await zpool('create', '-o', 'ashift=12', '-O', 'compression=lz4', '-O', 'atime=off', '-O', 'xattr=sa', '-O', 'acltype=posixacl', '-O', `mountpoint=${mountOf(name)}`, name, ...vdev)
+			await zpool('set', 'cachefile=/etc/zfs/zpool.cache', name)
+			await ensureZfsServices()
+			await fs.chown(mountOf(name), user.uid, user.gid)
+			return JSON.stringify({name, mountpoint: mountOf(name)})
+		},
+
+		'zfs-import': async ([name, force]) => {
+			if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name ?? '')) fail('Bad pool name')
+			if (force !== undefined && force !== 'force') fail('Bad option')
+			if ((await zfsPoolNames()).includes(name)) fail(`${name} is already imported`)
+			// Import without mounting, check where its datasets would land, then mount.
+			await zpool('import', '-N', ...(force ? ['-f'] : []), name)
+			const datasets = (await zfs('list', '-H', '-o', 'name,mountpoint,canmount', '-r', name)).split('\n').filter(Boolean).map((l) => l.split('\t'))
+			const bad = datasets.find(([, mp, can]) => can !== 'off' && mp.startsWith('/') && PROTECTED.some((p) => mp === p || (p !== '/' && mp.startsWith(`${p}/`) && !mp.startsWith(`${poolsDir}/`))))
+			if (bad) {
+				await zpool('export', name).catch(() => {})
+				fail(`${bad[0]} would be mounted at ${bad[1]}, a system folder, so the pool wasn’t imported. Change its mountpoint on the system it came from, or import it by hand.`)
+			}
+			await zfs('mount', '-a')
+			await zpool('set', 'cachefile=/etc/zfs/zpool.cache', name)
+			await ensureZfsServices()
+			// Show it at ~/Pools/NAME without changing the pool: a bind mount of its top folder.
+			const top = (datasets.find(([n]) => n === name) ?? [])[1]
+			const pretty = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^[^a-z]+/, 'p')
+			if (top && top.startsWith('/') && top !== mountOf(pretty)) {
+				await fs.mkdir(mountOf(pretty), {recursive: true})
+				await fs.chown(poolsDir, user.uid, user.gid)
+				const lines = (await fstab()).filter((l) => !l.endsWith(`${ZFS_MARK} ${name}`))
+				while (lines.length && lines.at(-1) === '') lines.pop()
+				lines.push(`${top} ${mountOf(pretty)} none bind,nofail,x-systemd.requires=zfs-mount.service 0 0 ${ZFS_MARK} ${name}`, '')
+				await writeAtomic('/etc/fstab', lines.join('\n'))
+				await run('systemctl', ['daemon-reload'])
+				await run('mount', [mountOf(pretty)])
+			}
+			return 'ok'
+		},
+
+		'zfs-scrub': async ([name]) => {
+			await zpool('scrub', await zfsPoolMount(name))
+			return 'ok'
+		},
+
+		'zfs-export': async ([name]) => {
+			await zfsPoolMount(name)
+			const bind = (await fstab()).find((l) => l.endsWith(`${ZFS_MARK} ${name}`))
+			if (bind) {
+				await run('umount', [bind.split(/\s+/)[1]]).catch(() => {})
+				await writeAtomic('/etc/fstab', (await fstab()).filter((l) => l !== bind).join('\n'))
+				await run('systemctl', ['daemon-reload'])
+			}
+			await zpool('export', name).catch(() => fail(`${name} is in use. Stop apps and shares using it, then try again.`))
+			return 'ok'
 		},
 
 		'shares-apply': async (_args, stdin) => {

@@ -24,10 +24,13 @@ export type Drive = {
 	role: 'system' | 'pool' | 'blank' | 'data'
 	pool: string | null
 	btrfs: {uuid: string; label: string | null; mounted: boolean} | null
+	zfs: {pool: string | null} | null
 	sleepMinutes: number | null
 	health: Health | null
 }
 type Pool = {
+	kind: 'btrfs' | 'zfs'
+	health?: string
 	name: string
 	uuid: string
 	mountpoint: string
@@ -38,12 +41,23 @@ type Pool = {
 	free: number | null
 	profile: string | null
 	errors: number
-	scrub: {state: string; errors: string; started: string | null} | null
+	scrub: {state: string; errors: string; started: string | null; summary?: string} | null
 }
-type Importable = {uuid: string; label: string | null; devices: string[]}
+type Importable = {kind: 'btrfs' | 'zfs'; uuid: string; label: string | null; devices: string[]; state?: string; otherSystem?: boolean; note?: string}
+type FsKind = 'btrfs' | 'zfs'
+type Layout = 'single' | 'raid1' | 'raid10' | 'stripe' | 'mirror' | 'raidz1' | 'raidz2'
 
 const tb = (n?: number | null) => (n == null ? '–' : bytes(n, n >= 1e12 ? 1 : 0))
-const PROFILE: Record<string, string> = {single: 'Combined · no copies', raid1: 'Mirrored · every file on 2 drives', raid10: 'RAID 10 · mirrored and striped', dup: 'Single drive'}
+const PROFILE: Record<string, string> = {
+	single: 'Combined · no copies',
+	raid1: 'Mirrored · every file on 2 drives',
+	raid10: 'RAID 10 · mirrored and striped',
+	dup: 'Single drive',
+	stripe: 'Combined · no copies',
+	mirror: 'Mirrored',
+	raidz1: 'RAID-Z1 · survives 1 drive failing',
+	raidz2: 'RAID-Z2 · survives 2 drives failing',
+}
 const KIND: Record<Drive['kind'], string> = {hdd: 'Hard drive', ssd: 'SSD', nvme: 'NVMe SSD'}
 
 export function driveIssues(d: Drive): string[] {
@@ -76,7 +90,7 @@ function Section({title, children, footer, right}: {title: string; children: Rea
 function DriveRow({d, onClick, trailing}: {d: Drive; onClick?: () => void; trailing?: ReactNode}) {
 	const issues = driveIssues(d)
 	const color = issues.length ? 'var(--peach)' : d.role === 'system' ? '#8e8e93' : d.role === 'pool' ? 'var(--teal)' : 'var(--blue)'
-	const role = d.role === 'system' ? 'System drive' : d.role === 'pool' ? `In pool “${d.pool}”` : d.role === 'blank' ? 'Blank, ready to use' : d.btrfs ? 'Btrfs, can be imported' : 'Has data'
+	const role = d.role === 'system' ? 'System drive' : d.role === 'pool' ? `In pool “${d.pool}”` : d.role === 'blank' ? 'Blank, ready to use' : d.btrfs ? 'Btrfs, can be imported' : d.zfs ? `ZFS pool “${d.zfs.pool ?? '?'}”, can be imported` : 'Has data'
 	const inner = (
 		<>
 			<span className="row-ico" style={{'--c': color, width: 40, height: 40, borderRadius: 11} as CSSProperties}>
@@ -109,7 +123,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 	const [importing, setImporting] = useState<Importable | null>(null)
 	const [busy, setBusy] = useState(false)
 
-	const status = useQuery({queryKey: ['storage.status'], queryFn: () => query<{helperAvailable: boolean}>('storage.status')})
+	const status = useQuery({queryKey: ['storage.status'], queryFn: () => query<{helperAvailable: boolean; zfsAvailable?: boolean}>('storage.status')})
 	const disksQ = useQuery({queryKey: ['storage.disks'], queryFn: () => query<Drive[]>('storage.disks'), refetchInterval: 30_000})
 	const poolsQ = useQuery({queryKey: ['storage.pools'], queryFn: () => query<Pool[]>('storage.pools'), refetchInterval: 10_000})
 	const importQ = useQuery({queryKey: ['storage.importable'], queryFn: () => query<Importable[]>('storage.importable')})
@@ -137,11 +151,19 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 	}
 	const scrub = async (p: Pool) => {
 		if (await confirm({title: `Check “${p.name}” for errors?`, body: 'Every block is read and, where there’s a good copy, repaired. It runs in the background and can take hours on big drives. You can keep using the pool.', confirm: 'Start check', icon: 'shield'}))
-			act('storage.scrub', {name: p.name}, 'Error check started')
+			act('storage.scrub', {name: p.name, kind: p.kind}, 'Error check started')
+	}
+	const importZfs = async (i: Importable) => {
+		const ok = await confirm(
+			i.otherSystem
+				? {title: `Import “${i.label}” anyway?`, body: `This ZFS pool was last used by another system. Only continue if that system is off or no longer using these drives: two systems using one pool at once can destroy it.${i.note && !/another system/i.test(i.note) ? ` ${i.note}` : ''}`, confirm: 'Import anyway', danger: true}
+				: {title: `Import “${i.label}”?`, body: 'The ZFS pool is imported as it is, with nothing on it changed, and shows up in Files under Home → Pools.', confirm: 'Import', icon: 'download'},
+		)
+		if (ok) act('storage.importPool', {uuid: i.uuid, force: !!i.otherSystem}, `${i.label} imported`)
 	}
 	const forget = async (p: Pool) => {
-		if (await confirm({title: `Remove “${p.name}” from Omarchy Server?`, body: 'The pool is unmounted and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.', confirm: 'Remove', danger: true}))
-			act('storage.forgetPool', {name: p.name}, `${p.name} removed`)
+		if (await confirm({title: `Remove “${p.name}” from Omarchy Server?`, body: `The pool is ${p.kind === 'zfs' ? 'exported' : 'unmounted'} and no longer mounted at startup. Nothing on its drives is erased, and you can import it again later. Stop apps and shares that use it first.`, confirm: 'Remove', danger: true}))
+			act('storage.forgetPool', {name: p.name, kind: p.kind}, `${p.name} removed`)
 	}
 
 	return (
@@ -190,7 +212,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 				) : (
 					pools.map((p) => {
 						const used = p.size && p.free != null ? (p.size - p.free) / p.size : 0
-						const warn = !p.mounted || p.errors > 0 || (p.scrub?.errors ?? '') !== ''
+						const warn = !p.mounted || p.errors > 0 || (p.scrub?.errors ?? '') !== '' || (p.health !== undefined && p.health !== 'ONLINE')
 						return (
 							<div key={p.uuid} className="row static pool-row" style={{display: 'block', paddingBlock: 14}}>
 								<div style={{display: 'flex', alignItems: 'center', gap: 12}}>
@@ -200,7 +222,9 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 									<span className="main" style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column'}}>
 										<b style={{fontWeight: 600}}>{p.name}</b>
 										<span className="muted" style={{fontSize: 13}}>
-											{p.mounted ? `${PROFILE[p.profile ?? ''] ?? 'Btrfs'} · ${p.devices.length} drive${p.devices.length === 1 ? '' : 's'}` : 'Not mounted. Check its drives are connected, then restart.'}
+											{p.mounted
+												? `${p.kind === 'zfs' ? 'ZFS' : 'Btrfs'} · ${PROFILE[p.profile ?? ''] ?? p.profile ?? ''} · ${p.devices.length} drive${p.devices.length === 1 ? '' : 's'}${p.health && p.health !== 'ONLINE' ? ` · ${p.health.toLowerCase()}` : ''}`
+												: 'Not mounted. Check its drives are connected, then restart.'}
 										</span>
 									</span>
 								</div>
@@ -224,6 +248,8 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 													? 'Checking for errors now…'
 													: p.scrub?.errors
 														? `Last check: ${p.scrub.errors}`
+														: p.kind === 'zfs' && p.scrub?.summary
+															? `Last check: ${p.scrub.summary.replace(/^scrub /, '')}`
 														: p.scrub?.started
 															? `Last checked ${new Date(p.scrub.started).toLocaleDateString()}, no errors`
 															: 'Never checked for errors'}
@@ -232,9 +258,11 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 											<button className="btn small" disabled={busy || p.scrub?.state === 'running'} onClick={() => scrub(p)}>
 												<Icon name="shield" size={16} /> Check for errors
 											</button>
-											<button className="btn small" disabled={busy || !blank.length} onClick={() => setAdding(p)}>
-												<Icon name="plus" size={16} /> Add a drive
-											</button>
+											{p.kind === 'btrfs' && (
+												<button className="btn small" disabled={busy || !blank.length} onClick={() => setAdding(p)}>
+													<Icon name="plus" size={16} /> Add a drive
+												</button>
+											)}
 											<button className="btn small" disabled={busy} onClick={() => forget(p)}>
 												Remove
 											</button>
@@ -248,7 +276,7 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 			</Section>
 
 			{(importQ.data ?? []).length > 0 && (
-				<Section title="Existing pools found" footer="These drives already hold a Btrfs filesystem. Importing mounts it as a pool without changing anything on it.">
+				<Section title="Existing pools found" footer="These drives already hold a pool. Importing it changes nothing on the drives.">
 					{importQ.data!.map((i) => (
 						<div key={i.uuid} className="row static">
 							<span className="row-ico" style={{'--c': 'var(--blue)', width: 40, height: 40, borderRadius: 11} as CSSProperties}>
@@ -256,9 +284,9 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 							</span>
 							<span className="main">
 								<b style={{fontWeight: 580}}>{i.label ?? 'Unnamed filesystem'}</b>
-								<span>{i.devices.join(', ')}</span>
+								<span>{i.kind === 'zfs' ? `ZFS · ${(i.state ?? '').toLowerCase()}${i.otherSystem ? ' · last used by another system' : ''}` : `Btrfs · ${i.devices.join(', ')}`}</span>
 							</span>
-							<button className="btn small" disabled={!ready} onClick={() => setImporting(i)}>
+							<button className="btn small" disabled={!ready || busy} onClick={() => (i.kind === 'zfs' ? importZfs(i) : setImporting(i))}>
 								Import
 							</button>
 						</div>
@@ -271,7 +299,12 @@ export function StoragePage({onBack}: {onBack: () => void}) {
 			</Section>
 
 			<DriveSheet d={drive} onClose={() => setDrive(null)} onChanged={refresh} />
-			{creating && <NewPool drives={blank} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} />}
+			{ready && !status.data?.zfsAvailable && (
+				<p className="footer-note storage-note" style={{marginTop: -8}}>
+					ZFS isn’t installed. To add it, run the Omarchy Server installer with <code>--zfs</code> on the server.
+				</p>
+			)}
+			{creating && <NewPool drives={blank} zfs={!!status.data?.zfsAvailable} taken={pools.map((p) => p.name)} onClose={() => setCreating(false)} onDone={refresh} />}
 			{adding && <AddDrive pool={adding} drives={blank} onClose={() => setAdding(null)} onDone={refresh} />}
 			{importing && <ImportPool fs={importing} taken={pools.map((p) => p.name)} onClose={() => setImporting(null)} onDone={refresh} />}
 		</div>
@@ -350,29 +383,40 @@ function DriveSheet({d, onClose, onChanged}: {d: Drive | null; onClose: () => vo
 	)
 }
 
-function NewPool({drives, taken, onClose, onDone}: {drives: Drive[]; taken: string[]; onClose: () => void; onDone: () => void}) {
+function NewPool({drives, zfs, taken, onClose, onDone}: {drives: Drive[]; zfs: boolean; taken: string[]; onClose: () => void; onDone: () => void}) {
 	const toast = useToast()
 	const confirm = useConfirm()
 	const [name, setName] = useState(taken.includes('storage') ? '' : 'storage')
 	const [picked, setPicked] = useState<string[]>(drives.length === 1 ? [drives[0].path] : [])
-	const [profile, setProfile] = useState<'single' | 'raid1' | 'raid10'>('raid1') // mirrored whenever there are 2+ drives
+	const [fsKind, setFsKind] = useState<FsKind>('btrfs')
+	const [profile, setProfile] = useState<Layout>('raid1') // mirrored whenever there are 2+ drives
 	const [busy, setBusy] = useState(false)
 	const sel = drives.filter((d) => picked.includes(d.path))
 	const total = sel.reduce((n, d) => n + d.size, 0)
-	const effective = profile === 'single' ? 'single' : profile === 'raid1' && sel.length < 2 ? 'single' : profile === 'raid10' && sel.length < 4 ? (sel.length >= 2 ? 'raid1' : 'single') : profile
-	const usable = effective === 'single' ? total : effective === 'raid1' ? Math.min(total / 2, total - Math.max(0, ...sel.map((d) => d.size))) : total / 2
-	const nameOk = /^[a-z][a-z0-9-]{0,31}$/.test(name) && !taken.includes(name)
-	const options = [
-		{id: 'single' as const, label: 'Combined'},
-		...(sel.length >= 2 ? [{id: 'raid1' as const, label: 'Mirrored'}] : []),
-		...(sel.length >= 4 ? [{id: 'raid10' as const, label: 'RAID 10'}] : []),
+	const n = sel.length
+	const smallest = n ? Math.min(...sel.map((d) => d.size)) : 0
+	// What each layout needs, and the layout actually used for this many drives.
+	const LAYOUTS: {id: Layout; fs: FsKind; label: string; min: number; usable: () => number; about: string}[] = [
+		{id: 'single', fs: 'btrfs', label: 'Combined', min: 1, usable: () => total, about: n > 1 ? 'All drives’ space combined. If one drive fails, files on it are lost: keep backups.' : 'One drive. Keep backups of anything important.'},
+		{id: 'raid1', fs: 'btrfs', label: 'Mirrored', min: 2, usable: () => Math.min(total / 2, total - Math.max(0, ...sel.map((d) => d.size))), about: 'Every file is kept on two different drives, so the pool survives one drive failing.'},
+		{id: 'raid10', fs: 'btrfs', label: 'RAID 10', min: 4, usable: () => total / 2, about: 'Mirrored pairs, striped for speed. Survives one drive failing.'},
+		{id: 'stripe', fs: 'zfs', label: 'Combined', min: 1, usable: () => total, about: n > 1 ? 'All drives’ space combined. If any drive fails, the whole pool is lost: keep backups.' : 'One drive. Keep backups of anything important.'},
+		{id: 'mirror', fs: 'zfs', label: 'Mirrored', min: 2, usable: () => smallest, about: `Every drive holds a full copy. Survives ${n > 1 ? n - 1 : 1} drive${n > 2 ? 's' : ''} failing.`},
+		{id: 'raidz1', fs: 'zfs', label: 'RAID-Z1', min: 3, usable: () => (n - 1) * smallest, about: 'Parity across all drives. Survives one drive failing.'},
+		{id: 'raidz2', fs: 'zfs', label: 'RAID-Z2', min: 4, usable: () => (n - 2) * smallest, about: 'Double parity. Survives two drives failing at once.'},
 	]
+	const options = LAYOUTS.filter((l) => l.fs === fsKind && n >= l.min)
+	const fallback = fsKind === 'zfs' ? (n >= 2 ? 'mirror' : 'stripe') : n >= 2 ? 'raid1' : 'single'
+	const chosen = options.find((l) => l.id === profile) ?? options.find((l) => l.id === fallback) ?? options[0]
+	const effective = chosen?.id ?? fallback
+	const usable = chosen ? chosen.usable() : 0
+	const nameOk = /^[a-z][a-z0-9-]{0,31}$/.test(name) && !taken.includes(name)
 	const create = async () => {
 		const list = sel.map((d) => `${d.model ?? d.name} (${tb(d.size)})`).join(', ')
 		if (!(await confirm({title: `Create pool “${name}”?`, body: `${list} will be formatted for the pool. They’re blank now, so nothing is lost.`, confirm: 'Create pool', icon: 'shield'}))) return
 		setBusy(true)
 		try {
-			await mutate('storage.createPool', {name, profile: effective, devices: sel.map((d) => d.path)})
+			await mutate('storage.createPool', {name, fs: fsKind, profile: effective, devices: sel.map((d) => d.path)})
 			toast(`Pool ${name} is ready in Files → Home → Pools`)
 			onDone()
 			onClose()
@@ -403,20 +447,27 @@ function NewPool({drives, taken, onClose, onDone}: {drives: Drive[]; taken: stri
 					/>
 				))}
 			</div>
-			{sel.length > 0 && (
+			{zfs && (
+				<div style={{marginTop: 16}}>
+					<Segmented
+						label="Filesystem"
+						value={fsKind}
+						options={[
+							{id: 'btrfs', label: 'Btrfs'},
+							{id: 'zfs', label: 'ZFS'},
+						]}
+						onChange={(v) => (setFsKind(v), setProfile(v === 'zfs' ? 'mirror' : 'raid1'))}
+					/>
+				</div>
+			)}
+			{sel.length > 0 && chosen && (
 				<>
-					<div style={{marginTop: 16}}>
-						<Segmented label="Layout" value={effective} options={options} onChange={setProfile} />
+					<div style={{marginTop: 12}}>
+						<Segmented label="Layout" value={effective} options={options.map(({id, label}) => ({id, label}))} onChange={setProfile} />
 					</div>
 					<p className="muted" style={{fontSize: 13, marginTop: 10}}>
-						{effective === 'single'
-							? sel.length > 1
-								? 'All drives’ space combined. If one drive fails, files on it are lost: keep backups.'
-								: 'One drive. Keep backups of anything important.'
-							: effective === 'raid1'
-								? 'Every file is kept on two different drives, so the pool survives one drive failing.'
-								: 'Mirrored pairs, striped for speed. Survives one drive failing.'}{' '}
-						About <b>{tb(usable)}</b> usable.
+						{chosen.about} About <b>{tb(usable)}</b> usable.
+						{fsKind === 'zfs' ? ' ZFS pools can’t easily grow one drive at a time, so start with the drives you plan to use.' : ''}
 					</p>
 				</>
 			)}

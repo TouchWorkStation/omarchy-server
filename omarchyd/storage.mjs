@@ -87,14 +87,16 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 
 	async function disks() {
-		const [devs, pools, sleep, helperOk] = await Promise.all([blockDevices(), fstabPools(), readJson(sleepFile, {}), status().then((s) => s.helperAvailable)])
+		const [devs, pools, sleep, helperOk, zp] = await Promise.all([blockDevices(), fstabPools(), readJson(sleepFile, {}), status().then((s) => s.helperAvailable), zfsPools()])
 		const poolByUuid = new Map(pools.map((p) => [p.uuid, p.name]))
+		const zfsNames = new Set(zp.map((z) => z.name))
 		return Promise.all(
 			devs.map(async (d) => {
 				const all = flat(d)
 				const mounts = all.flatMap((x) => (x.mountpoints ?? []).filter(Boolean))
 				const btrfs = all.find((x) => x.fstype === 'btrfs')
-				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : null
+				const zmember = all.find((x) => x.fstype === 'zfs_member')
+				const pool = btrfs ? (poolByUuid.get(btrfs.uuid) ?? null) : zmember && zfsNames.has(zmember.label) ? zmember.label : null
 				const system = mounts.some((m) => SYSTEM_MOUNTS.has(m))
 				const blank = !d.fstype && !(d.children ?? []).length && !mounts.length
 				const nvme = d.tran === 'nvme' || d.name.startsWith('nvme')
@@ -110,6 +112,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					role: system ? 'system' : pool ? 'pool' : blank ? 'blank' : 'data',
 					pool,
 					btrfs: btrfs && !pool ? {uuid: btrfs.uuid, label: btrfs.label ?? null, mounted: !!(btrfs.mountpoints ?? []).some(Boolean)} : null,
+					zfs: zmember && !pool ? {pool: zmember.label ?? null} : null,
 					sleepMinutes: d.serial && sleep[d.serial] !== undefined ? sleep[d.serial] : null,
 					health: helperOk ? await health(d.path) : null,
 				}
@@ -117,9 +120,13 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		)
 	}
 
+	async function zfsPools() {
+		if (!(await status()).zfsAvailable) return []
+		return helper('zfs-pools').then((t) => JSON.parse(t), () => [])
+	}
 	async function pools() {
 		const [devs, list] = await Promise.all([blockDevices(), fstabPools()])
-		return Promise.all(
+		const btrfs = await Promise.all(
 			list.map(async (p) => {
 				const members = devs.filter((d) => flat(d).some((x) => x.uuid === p.uuid)).map((d) => d.path)
 				const mounted = devs.flatMap(flat).some((x) => x.uuid === p.uuid && (x.mountpoints ?? []).includes(p.mountpoint))
@@ -132,9 +139,26 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 				let detail = null
 				if (mounted) detail = await helper('pool-status', [p.name]).then((t) => JSON.parse(t), () => null)
 				const errors = detail ? Object.values(detail.devices).reduce((n, d) => n + Object.values(d).reduce((a, b) => a + b, 0), 0) : 0
-				return {name: p.name, uuid: p.uuid, mountpoint: p.mountpoint, folder: `/Home/Pools/${p.name}`, mounted, devices: members, size, free, profile: detail?.profile ?? null, errors, scrub: detail?.scrub ?? null}
+				return {kind: 'btrfs', name: p.name, uuid: p.uuid, mountpoint: p.mountpoint, folder: `/Home/Pools/${p.name}`, mounted, devices: members, size, free, profile: detail?.profile ?? null, errors, scrub: detail?.scrub ?? null}
 			}),
 		)
+		const virtualOf = (real) => (real && real.startsWith(`${home}/`) ? `/Home${real.slice(home.length)}` : null)
+		const zfsList = (await zfsPools()).map((z) => ({
+			kind: 'zfs',
+			name: z.name,
+			uuid: `zfs:${z.name}`,
+			mountpoint: z.mountpoint,
+			folder: virtualOf(z.folder),
+			mounted: true,
+			devices: z.devices.map((d) => d.path),
+			size: z.size,
+			free: z.free,
+			profile: z.layout,
+			health: z.health,
+			errors: z.devices.reduce((n, d) => n + d.errors, 0) + (z.errors && z.errors !== 'No known data errors' ? 1 : 0),
+			scrub: {state: /in progress/.test(z.scan) ? 'running' : z.scan ? 'finished' : 'never', errors: / 0B repaired.* 0 errors| with 0 errors/.test(z.scan) || !z.scan ? '' : /errors/.test(z.scan) ? z.scan : '', started: null, summary: z.scan},
+		}))
+		return [...btrfs, ...zfsList]
 	}
 
 	async function importable() {
@@ -148,14 +172,16 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					e.devices.push(x.path)
 					byUuid.set(x.uuid, e)
 				}
-		return [...byUuid.values()]
+		const zfsImport = (await status()).zfsAvailable ? await helper('zfs-importable').then((t) => JSON.parse(t), () => []) : []
+		return [...[...byUuid.values()].map((b) => ({kind: 'btrfs', ...b})), ...zfsImport.map((z) => ({kind: 'zfs', uuid: `zfs:${z.name}`, label: z.name, devices: [], state: z.state, otherSystem: z.otherSystem, note: z.note}))]
 	}
 
 	let statusCache = null
 	async function status() {
 		if (statusCache && Date.now() - statusCache.at < 30_000) return statusCache.value
 		const helperAvailable = await run('sudo', ['-n', HELPER, 'ping']).then((t) => t.trim() === 'ok', () => false)
-		statusCache = {at: Date.now(), value: {helperAvailable}}
+		const zfsAvailable = helperAvailable && (await helper('zfs-available').then((t) => t === 'yes', () => false))
+		statusCache = {at: Date.now(), value: {helperAvailable, zfsAvailable}}
 		return statusCache.value
 	}
 
@@ -203,14 +229,23 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 					const name = String(input?.name ?? '')
 					const devices = Array.isArray(input?.devices) ? input.devices.map(String) : []
 					if (!NAME.test(name)) throw new RpcError('BAD_REQUEST', 'Pool names use a-z, 0-9 and -, starting with a letter')
-					await helper('pool-create', [name, String(input?.profile ?? ''), ...devices])
+					if ((await pools()).some((p) => p.name === name)) throw new RpcError('CONFLICT', `There’s already a pool called ${name}`)
+					await helper(input?.fs === 'zfs' ? 'zfs-create' : 'pool-create', [name, String(input?.profile ?? ''), ...devices])
 					return true
 				},
 			},
 			'storage.addToPool': {kind: 'mutation', run: async (input) => (await helper('pool-add', [String(input?.name ?? ''), String(input?.device ?? '')]), true)},
-			'storage.importPool': {kind: 'mutation', run: async (input) => (await helper('pool-import', [String(input?.name ?? ''), String(input?.uuid ?? '')]), true)},
-			'storage.forgetPool': {kind: 'mutation', run: async (input) => (await helper('pool-forget', [String(input?.name ?? '')]), true)},
-			'storage.scrub': {kind: 'mutation', run: async (input) => (await helper('pool-scrub', [String(input?.name ?? '')]), true)},
+			'storage.importPool': {
+				kind: 'mutation',
+				run: async (input) => {
+					const uuid = String(input?.uuid ?? '')
+					if (uuid.startsWith('zfs:')) await helper('zfs-import', [uuid.slice(4), ...(input?.force === true ? ['force'] : [])])
+					else await helper('pool-import', [String(input?.name ?? ''), uuid])
+					return true
+				},
+			},
+			'storage.forgetPool': {kind: 'mutation', run: async (input) => (await helper(input?.kind === 'zfs' ? 'zfs-export' : 'pool-forget', [String(input?.name ?? '')]), true)},
+			'storage.scrub': {kind: 'mutation', run: async (input) => (await helper(input?.kind === 'zfs' ? 'zfs-scrub' : 'pool-scrub', [String(input?.name ?? '')]), true)},
 			'storage.setSleep': {
 				kind: 'mutation',
 				run: async (input) => {

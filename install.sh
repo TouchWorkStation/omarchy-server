@@ -5,7 +5,17 @@
 #   omarchyd            the backend, on 127.0.0.1:2021 only
 #   omarchy-server-web  the web app, on port 7780 (OMARCHY_SERVER_PORT to change)
 # Re-run it any time to update. Your account, sessions and files are kept.
+#
+# Add ZFS (optional) with:  curl -fsSL …/install.sh | bash -s -- --zfs
 set -euo pipefail
+
+ZFS=0
+for arg in "$@"; do
+	case "$arg" in
+		--zfs) ZFS=1 ;;
+		*) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+	esac
+done
 
 REPO="${OMARCHY_SERVER_REPO:-https://github.com/TouchWorkStation/omarchy-server.git}"
 BRANCH="${OMARCHY_SERVER_BRANCH:-main}"
@@ -52,6 +62,38 @@ LOG="$BASE/install.log"
 if ! { npm ci --no-audit --no-fund --loglevel=error && npm run build; } >"$LOG" 2>&1; then
 	tail -n 30 "$LOG" >&2
 	die "The build failed. Full log: $LOG"
+fi
+
+# 2a. ZFS (only with --zfs). It comes from the unofficial ArchZFS repository and is built for your
+#     kernel with DKMS. Every kernel update rebuilds it; on a brand-new kernel that build can fail
+#     until OpenZFS supports it, so pools may be unavailable until the next ZFS release.
+if [ "$ZFS" = 1 ]; then
+	say "Adding ZFS from the ArchZFS repository (sudo needed)"
+	KEY=DDF7DB817396A49B2A2723F7403BD972F75D9D76
+	if ! sudo pacman-key --list-keys "$KEY" >/dev/null 2>&1; then
+		if ! sudo pacman-key -r "$KEY" >/dev/null 2>&1; then
+			tmp=$(mktemp)
+			curl -fsSL https://archzfs.com/archzfs.gpg -o "$tmp" || die "Couldn't download the ArchZFS signing key"
+			sudo pacman-key -a "$tmp" >/dev/null
+			rm -f "$tmp"
+		fi
+		# Only trust the key if it's exactly the published one.
+		sudo pacman-key --list-keys "$KEY" >/dev/null 2>&1 || die "The ArchZFS signing key didn't match $KEY; not adding the repository"
+		sudo pacman-key --lsign-key "$KEY" >/dev/null
+	fi
+	if ! grep -q '^\[archzfs\]' /etc/pacman.conf; then
+		printf '\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n' | sudo tee -a /etc/pacman.conf >/dev/null
+	fi
+	kernel=$(pacman -Qqo "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null || echo linux)
+	sudo pacman -Syu --needed --noconfirm "${kernel}-headers" zfs-dkms zfs-utils || die "Installing ZFS failed (see above)"
+	if ! sudo modprobe zfs 2>/dev/null; then
+		if [ ! -d "/usr/lib/modules/$(uname -r)" ]; then
+			say "Your kernel was updated while installing ZFS. Restart, then run this installer again with --zfs."
+		else
+			die "ZFS installed, but its kernel module didn't load. This usually means your kernel is newer than ZFS supports yet. Run 'sudo dkms status' for details."
+		fi
+	fi
+	sudo systemctl enable zfs-import-cache.service zfs-mount.service zfs-import.target zfs.target >/dev/null 2>&1 || true
 fi
 
 # 2b. Apps run in rootless Podman as you: give your user its container ID range and a socket.

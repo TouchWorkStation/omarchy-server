@@ -140,6 +140,80 @@ describe('helper', () => {
 		assert.equal(fs.files.get('/etc/udev/rules.d/69-omarchy-server-sleep.rules'), '')
 	})
 
+	test('ZFS: blank drives only, stable drive names, layouts and mountpoint in ~/Pools', async () => {
+		const log = []
+		const fs = fakeFs({'/etc/fstab': ''})
+		fs.readdir = async () => ['ata-WDC_WD80_A', 'ata-WDC_WD80_A-part1', 'wwn-0x5000a', 'ata-WDC_WD80_B']
+		fs.realpath = async (p) => ({'/dev/disk/by-id/ata-WDC_WD80_A': '/dev/sda', '/dev/disk/by-id/wwn-0x5000a': '/dev/sda', '/dev/disk/by-id/ata-WDC_WD80_B': '/dev/sdb'})[p] ?? p
+		const h = createHelper({user, fs, run: fakeRun(log, {zpool: (a) => (a[0] === 'list' ? '' : '')})})
+		await assert.rejects(h.handle('zfs-create', ['tank', 'raidz1', '/dev/sda', '/dev/sdb']), /at least 3/)
+		await assert.rejects(h.handle('zfs-create', ['tank', 'raidz9', '/dev/sda']), /Choose/)
+		await assert.rejects(h.handle('zfs-create', ['tank', 'mirror', '/dev/sda', '/dev/sdc']), /isn’t blank/)
+		await h.handle('zfs-create', ['tank', 'mirror', '/dev/sda', '/dev/sdb'])
+		const create = log.find((l) => l[0] === 'zpool' && l[1] === 'create')
+		assert.deepEqual(create.slice(-4), ['tank', 'mirror', '/dev/disk/by-id/ata-WDC_WD80_A', '/dev/disk/by-id/ata-WDC_WD80_B'])
+		assert.ok(create.includes('mountpoint=/home/chris/Pools/tank'))
+		assert.ok(create.includes('ashift=12'))
+		assert.ok(log.some((l) => l.join(' ') === 'systemctl enable zfs-import-cache.service'))
+	})
+
+	test('ZFS import: unchanged pool, refused if it would mount over a system folder, force only when asked', async () => {
+		const log = []
+		let mountpoints = 'tank\t/tank\ton\ntank/media\t/tank/media\ton\n'
+		const fs = fakeFs({'/etc/fstab': 'UUID=1 / btrfs d 0 0\n'})
+		const run = fakeRun(log, {zpool: (a) => (a[0] === 'list' ? '' : ''), zfs: (a) => (a[0] === 'list' ? mountpoints : '')})
+		const h = createHelper({user, fs, run})
+		await assert.rejects(h.handle('zfs-import', ['tank', 'yes']), /Bad option/)
+		await h.handle('zfs-import', ['tank', 'force'])
+		assert.ok(log.some((l) => l.join(' ') === 'zpool import -N -f tank'))
+		assert.match(fs.files.get('/etc/fstab'), /^\/tank \/home\/chris\/Pools\/tank none bind,nofail.* # omarchy-server zfs tank$/m)
+		assert.ok(!log.some((l) => l[0] === 'zfs' && l[1] === 'set'), 'pool properties untouched')
+		mountpoints = 'evil\t/evil\ton\nevil/x\t/usr/local\ton\n'
+		log.length = 0
+		await assert.rejects(h.handle('zfs-import', ['evil']), /system folder/)
+		assert.ok(log.some((l) => l.join(' ') === 'zpool export evil'), 'refused pool is exported again')
+		assert.ok(!log.some((l) => l.join(' ') === 'zfs mount -a'))
+	})
+
+	test('ZFS status and import list are parsed', async () => {
+		const status = `  pool: tank
+ state: DEGRADED
+  scan: scrub repaired 0B in 01:02:03 with 0 errors on Sun Nov  8 03:00:00 2026
+config:
+
+	NAME                                STATE     READ WRITE CKSUM
+	tank                                DEGRADED     0     0     0
+	  raidz1-0                          DEGRADED     0     0     0
+	    /dev/disk/by-id/ata-A-part1     ONLINE       0     0     0
+	    /dev/disk/by-id/ata-B-part1     FAULTED      3     1     0
+	    /dev/disk/by-id/ata-C-part1     ONLINE       0     0     2
+
+errors: No known data errors
+`
+		const importList = `   pool: oldtank
+     id: 1234567890
+  state: ONLINE
+ status: The pool was last accessed by another system.
+ action: The pool can be imported using its name or numeric identifier and
+	the '-f' flag.
+ config:
+`
+		const fs = fakeFs({'/etc/fstab': ''})
+		const run = fakeRun([], {
+			zpool: (a) => (a[0] === 'list' ? 'tank\t8000\t4000\t4000\tDEGRADED\n' : a[0] === 'status' ? status : a[0] === 'import' ? importList : ''),
+			zfs: () => '/tank\n',
+		})
+		const h = createHelper({user, fs, run})
+		const [pool] = JSON.parse(await h.handle('zfs-pools'))
+		assert.equal(pool.layout, 'raidz1')
+		assert.equal(pool.state, 'DEGRADED')
+		assert.deepEqual(pool.devices.map((d) => d.errors), [0, 4, 2])
+		assert.equal(pool.errors, 'No known data errors')
+		assert.match(pool.scan, /with 0 errors/)
+		const [imp] = JSON.parse(await h.handle('zfs-importable'))
+		assert.deepEqual([imp.name, imp.state, imp.otherSystem], ['oldtank', 'ONLINE', true])
+	})
+
 	test('firewall: app ports only', async () => {
 		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})
 		for (const p of ['22', '80', '2021', '70000', 'abc']) await assert.rejects(h.handle('firewall-open', [p]), /Bad port/)
