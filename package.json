@@ -1,0 +1,45 @@
+{
+  "name": "umbrel-touch",
+  "version": "0.15.1",
+  "description": "A touch-first, phone-first interface for umbrelOS, running beside your Umbrel and talking to its real API.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "umbrel-touch": "server/cli.mjs"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p web",
+    "start": "node server/cli.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@novnc/novnc": "^1.5.0",
+    "@tabler/icons-react": "^3.51.0",
+    "@tanstack/react-query": "^5.62.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@xterm/xterm": "^5.5.0",
+    "dompurify": "^3.4.17",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "marked": "^18.2.0",
+    "pdfjs-dist": "^6.5.438",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3"
+  }
+}
