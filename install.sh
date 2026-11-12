@@ -43,8 +43,11 @@ fi
 
 say "Building (a minute or two the first time)"
 cd "$APP"
-npm ci --no-audit --no-fund --loglevel=error
-npm run build --silent
+LOG="$BASE/install.log"
+if ! { npm ci --no-audit --no-fund --loglevel=error && npm run build; } >"$LOG" 2>&1; then
+	tail -n 30 "$LOG" >&2
+	die "The build failed. Full log: $LOG"
+fi
 
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then

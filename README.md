@@ -17,16 +17,28 @@ files. Trash is the freedesktop trash that Omarchy's file manager uses. Hidden f
 nothing outside your home folder can be reached, including through symlinks. The web app's wallpaper
 is your current Omarchy background.
 
-## Try it (on the Omarchy machine)
+## Install (on the Omarchy machine)
+
+Run this as your normal user, not with sudo:
 
 ```sh
-npm install && npm run build
-node omarchyd/cli.mjs create-owner          # asks for your password in the terminal
-node omarchyd/cli.mjs serve &                # backend on 127.0.0.1:2021
-node server/cli.mjs --port 7780 --umbrel http://127.0.0.1:2021
+curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash
 ```
 
-Then open `http://<machine-ip>:7780` and sign in with your user name and that password.
+It installs Node.js if needed (the only step that asks for sudo, plus one to keep the server running
+while you're logged out), builds the app in `~/.local/share/omarchy-server`, asks you to create your
+account **in the terminal** (your password never crosses the network), and starts two systemd user
+services:
+
+| Service | Listens on | Does |
+| --- | --- | --- |
+| `omarchyd` | `127.0.0.1:2021` only | The backend: accounts, stats, files |
+| `omarchy-server-web` | port `7780` | The web app you open in a browser |
+
+Then open `http://<machine-ip>:7780` and sign in. Run the same command again to update; your account,
+sessions and files are kept.
+
+Logs: `journalctl --user -u omarchyd -u omarchy-server-web -f`
 
 ## Status
 
@@ -35,7 +47,8 @@ Then open `http://<machine-ip>:7780` and sign in with your user name and that pa
 - [ ] Your real Omarchy desktop in the browser (Hyprland headless + wayvnc + noVNC)
 - [ ] Apps and the App Store (Docker Compose behind the sign-in)
 - [ ] NAS (Btrfs pools, SMB/NFS shares, drive health and sleep) and virtual machines (libvirt)
-- [ ] Packaging: systemd services, an AUR package, an installer
+- [x] One-line installer with systemd user services
+- [ ] An AUR package, then an install ISO
 
 ## Credits
 
