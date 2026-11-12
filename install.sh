@@ -1,76 +1,109 @@
 #!/usr/bin/env bash
-# UmbrelOS Touch installer. Run it ON your Umbrel (Settings > Advanced settings >
-# Terminal, or SSH), or on any Linux machine with Docker on the same network:
-#
-#   curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/Umbrelos/main/install.sh | sudo bash
-#
-# It builds a small Docker image and runs one container named "umbrel-touch".
-# Nothing in umbrelOS is modified. Re-run it any time to update.
-#
-#   Options (environment variables):
-#     TOUCH_PORT=7780           port to open in your phone's browser
-#     UMBREL_URL=192.168.1.50   your Umbrel's address (only when NOT installing on the Umbrel)
-#     TOUCH_APP_HOSTS='{app}-touch.example.com'
-#                               app addresses for remote access (Cloudflare tunnel etc.); saved,
-#                               so later re-runs keep it. TOUCH_APP_HOSTS=off removes it.
-#   Remove it again:
-#     curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/Umbrelos/main/install.sh | sudo bash -s -- uninstall
+# Omarchy Server installer: run as your normal user on Omarchy (or any Arch Linux).
+#   curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash
+# Installs to ~/.local/share/omarchy-server and runs as two systemd user services:
+#   omarchyd            the backend, on 127.0.0.1:2021 only
+#   omarchy-server-web  the web app, on port 7780 (OMARCHY_SERVER_PORT to change)
+# Re-run it any time to update. Your account, sessions and files are kept.
 set -euo pipefail
 
-REPO="TouchWorkStation/Umbrelos"
-BRANCH="${TOUCH_BRANCH:-main}"
-NAME="umbrel-touch"
-PORT="${TOUCH_PORT:-7780}"
+REPO="${OMARCHY_SERVER_REPO:-https://github.com/TouchWorkStation/omarchy-server.git}"
+BRANCH="${OMARCHY_SERVER_BRANCH:-main}"
+PORT="${OMARCHY_SERVER_PORT:-7780}"
+BASE="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-server"
+APP="$BASE/app"
+UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
-command -v docker >/dev/null 2>&1 || die "Docker isn't installed here. Run this on your Umbrel, or install Docker first."
-docker info >/dev/null 2>&1 || die "Can't talk to Docker. Run this with sudo."
+[ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo. It asks for sudo only to install packages."
+command -v pacman >/dev/null || die "This installer is for Omarchy / Arch Linux (pacman not found)."
+command -v systemctl >/dev/null || die "systemd is required."
 
-if [ "${1:-}" = "uninstall" ]; then
-	docker rm -f "$NAME" >/dev/null 2>&1 || true
-	docker volume rm "$NAME-data" >/dev/null 2>&1 || true
-	docker image rm "$NAME:latest" >/dev/null 2>&1 || true
-	say "UmbrelOS Touch has been removed."
-	exit 0
+# 1. Packages (the only step that uses sudo).
+need=()
+for pkg in nodejs npm git; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+if [ ${#need[@]} -gt 0 ]; then
+	say "Installing ${need[*]} (sudo needed)"
+	sudo pacman -S --needed --noconfirm "${need[@]}"
+fi
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' || die "Node.js 20 or newer is required."
+
+# 2. Code: fresh clone, or update in place.
+mkdir -p "$BASE"
+if [ -d "$APP/.git" ]; then
+	say "Updating Omarchy Server"
+	git -C "$APP" fetch --depth 1 origin "$BRANCH"
+	git -C "$APP" reset --hard "origin/$BRANCH"
+else
+	say "Downloading Omarchy Server"
+	git clone --depth 1 --branch "$BRANCH" "$REPO" "$APP"
 fi
 
-# Is umbrelOS answering on this machine? Then talk to it over loopback.
-URL="${UMBREL_URL:-}"
-if [ -z "$URL" ] && curl -fsS --max-time 5 http://127.0.0.1/trpc/system.version 2>/dev/null | grep -q '"version"'; then
-	URL="http://127.0.0.1"
-	say "Found umbrelOS on this machine."
+say "Building (a minute or two the first time)"
+cd "$APP"
+npm ci --no-audit --no-fund --loglevel=error
+npm run build --silent
+
+# 3. Your account, created here in the terminal so the password never crosses the network.
+if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
+	say "Create your Omarchy Server account"
+	if [ -r /dev/tty ]; then
+		node "$APP/omarchyd/cli.mjs" create-owner --data "$BASE/omarchyd" </dev/tty
+	else
+		die "No terminal to type a password in. Run: node $APP/omarchyd/cli.mjs create-owner --data $BASE/omarchyd"
+	fi
 fi
 
-# A port clash only matters if something other than a previous install holds it.
-if ! docker ps --format '{{.Names}}' | grep -qx "$NAME" && (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
-	die "Port $PORT is already in use here. Re-run with another port:  ... | sudo TOUCH_PORT=7790 bash"
+# 4. Services, started now and at every boot.
+mkdir -p "$UNITS"
+NODE="$(command -v node)"
+cat >"$UNITS/omarchyd.service" <<EOF
+[Unit]
+Description=Omarchy Server backend (localhost only)
+After=network-online.target
+
+[Service]
+ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --data $BASE/omarchyd
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
+EOF
+cat >"$UNITS/omarchy-server-web.service" <<EOF
+[Unit]
+Description=Omarchy Server web app
+After=omarchyd.service
+Wants=omarchyd.service
+
+[Service]
+ExecStart=$NODE $APP/server/cli.mjs --port $PORT --data $BASE/web --umbrel http://127.0.0.1:2021
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable omarchyd.service omarchy-server-web.service >/dev/null
+systemctl --user restart omarchyd.service omarchy-server-web.service
+
+# Keep the services running when you're not logged in (needs sudo once).
+if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != "yes" ]; then
+	say "Letting Omarchy Server run while you're logged out (sudo needed)"
+	sudo loginctl enable-linger "$USER" || say "Couldn't enable that; the server will run only while you're logged in."
 fi
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-say "Downloading UmbrelOS Touch…"
-curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" | tar -xz -C "$TMP" --strip-components=1
-
-say "Building (takes 1–3 minutes the first time)…"
-docker build --quiet -t "$NAME:latest" "$TMP" >/dev/null
-
-docker rm -f "$NAME" >/dev/null 2>&1 || true
-# Host networking lets the container reach umbrelOS on 127.0.0.1 and serve the LAN directly.
-docker run -d --name "$NAME" --restart unless-stopped --network host \
-	-e PORT="$PORT" ${URL:+-e UMBREL_URL="$URL"} ${TOUCH_APP_HOSTS:+-e TOUCH_APP_HOSTS="$TOUCH_APP_HOSTS"} \
-	-v "$NAME-data:/data" "$NAME:latest" >/dev/null
-
-for _ in $(seq 1 20); do
-	curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && ok=1 && break
-	sleep 1
-done
-[ "${ok:-}" = 1 ] || { docker logs --tail 20 "$NAME" || true; die "UmbrelOS Touch didn't start. The log above says why."; }
-
-IP="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)"
-[ -n "$IP" ] || IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-say "UmbrelOS Touch is running."
-echo "  Open on your phone:  http://${IP:-THIS-MACHINES-IP}:$PORT"
-[ -n "$URL" ] || echo "  It will ask for your Umbrel's address on first launch."
-echo "  Then: Share > Add to Home Screen."
+sleep 2
+if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --user is-active --quiet omarchyd.service; then
+	ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(172\.1[6-9]|172\.2|172\.3[01]|10\.21)\.' || true)
+	say "Omarchy Server is running."
+	for ip in $ips; do printf '    http://%s:%s\n' "$ip" "$PORT"; done
+	printf '    Logs: journalctl --user -u omarchyd -u omarchy-server-web -f\n'
+else
+	die "A service didn't start. See: journalctl --user -u omarchyd -u omarchy-server-web -n 50"
+fi

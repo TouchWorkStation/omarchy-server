@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // omarchyd serve [--port 2021] [--data DIR]       run the backend (localhost only)
 // omarchyd create-owner [--name NAME] [--data DIR]  create the owner account; asks for the password here
+// omarchyd has-owner [--data DIR]                  exit 0 if the owner account exists
 import os from 'node:os'
 import {join} from 'node:path'
 import {parseArgs} from 'node:util'
@@ -53,6 +54,11 @@ if (command === 'serve') {
 	const server = await startOmarchyd({port: Number(values.port), dataDir})
 	console.log(`omarchyd listening on ${server.url} (data in ${dataDir})`)
 	if (!server.accounts.hasOwner()) console.log('No owner yet. Create one with: omarchyd create-owner')
+} else if (command === 'has-owner') {
+	// Exit 0 if an owner account exists (used by the installer).
+	const accounts = await openAccounts(dataDir)
+	console.log(accounts.hasOwner() ? 'yes' : 'no')
+	process.exit(accounts.hasOwner() ? 0 : 1)
 } else if (command === 'create-owner') {
 	const accounts = await openAccounts(dataDir)
 	if (accounts.hasOwner()) {
@@ -74,6 +80,6 @@ if (command === 'serve') {
 		process.exit(1)
 	}
 } else {
-	console.error(`Unknown command “${command}”. Use: serve | create-owner`)
+	console.error(`Unknown command “${command}”. Use: serve | create-owner | has-owner`)
 	process.exit(1)
 }
