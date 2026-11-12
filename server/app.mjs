@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.2.0'
+export const VERSION = '0.3.0'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -71,6 +71,17 @@ export const ALLOWED = {
 	'machines.create': 'mutation',
 	'machines.uninstall': 'mutation',
 	'machines.updateSettings': 'mutation',
+	// Storage (NAS): drives, pools, sleep
+	'storage.status': 'query',
+	'storage.disks': 'query',
+	'storage.pools': 'query',
+	'storage.importable': 'query',
+	'storage.createPool': 'mutation',
+	'storage.addToPool': 'mutation',
+	'storage.importPool': 'mutation',
+	'storage.forgetPool': 'mutation',
+	'storage.scrub': 'mutation',
+	'storage.setSleep': 'mutation',
 	// Settings: account
 	'user.set': 'mutation',
 	'user.changePassword': 'mutation',
@@ -139,7 +150,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -1100,6 +1111,23 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			sendError(res, error)
 		}
 	})
+	// A browser opened an app before it had an app session: hand one over through the app's own
+	// port (cookies belong to the host, so this covers every app on this server from then on).
+	api.get('/app-enter', async (req, res) => {
+		const id = String(req.query.app ?? '')
+		const r = typeof req.query.r === 'string' && req.query.r.startsWith('/') && !req.query.r.startsWith('//') ? req.query.r : '/'
+		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return res.status(400).type('text/plain').send('Bad app')
+		if (!store.getSession(req.sid)) return res.redirect(302, '/')
+		try {
+			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id})
+			const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
+			res.redirect(302, `http://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
+		} catch (error) {
+			if (error instanceof BackendError && error.code === 'UNAUTHORIZED') return res.redirect(302, '/')
+			res.status(error instanceof BackendError ? 404 : 500).type('text/plain').send(error instanceof BackendError ? error.message : 'Couldn’t open that app')
+		}
+	})
+
 	// The address to load an app window from: a relay port, or a one-time hand-over to the
 	// app's own subdomain (which then sets a per-app cookie there).
 	api.get('/app-open', async (req, res) => {

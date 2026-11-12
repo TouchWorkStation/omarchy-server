@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Runs on the Omarchy Server installer's first console. Installs Arch Linux with archinstall (its
+# guided screens, pre-filled), and leaves a first-boot step on the new system that installs Omarchy
+# Server and then Omarchy.
+set -u
+b='\033[1m'; d='\033[2m'; r='\033[0m'; o='\033[38;5;208m'
+
+clear
+printf "\n  ${o}${b}Omarchy Server${r} installer\n\n"
+printf "  This sets up a computer as your Omarchy Server:\n"
+printf "    1. Arch Linux is installed on a drive you choose. ${b}That drive is erased.${r}\n"
+printf "    2. On first start, Omarchy Server is installed (you create your account there).\n"
+printf "    3. Then Omarchy itself is installed, and the computer restarts into it.\n\n"
+
+until ping -c1 -W3 archlinux.org >/dev/null 2>&1; do
+	printf "  ${b}No internet connection.${r}\n"
+	printf "  Plug in an Ethernet cable, or for Wi-Fi type:  ${b}iwctl station wlan0 connect \"Your Network\"${r}\n"
+	read -rp "  Press Enter to try again, or type shell for a command line: " answer
+	[ "$answer" = "shell" ] && exit 0
+done
+
+printf "  Internet: ${b}connected${r}\n\n"
+printf "  In the next screen:\n"
+printf "    • ${b}Disk configuration${r}: pick the drive to install on (best-effort partition layout is fine)\n"
+printf "    • ${b}Authentication → User account${r}: add yourself, and say ${b}yes${r} to superuser (sudo)\n"
+printf "    • ${b}Timezone${r}: pick yours\n"
+printf "    • then choose ${b}Install${r}\n"
+printf "  Everything else is already filled in for Omarchy Server.\n\n"
+read -rp "  Press Enter to start (or type shell for a command line): " answer
+[ "$answer" = "shell" ] && exit 0
+
+if ! archinstall --config /etc/omarchy-server/archinstall.json; then
+	printf "\n  ${b}The installer stopped before finishing.${r} Run ${b}omarchy-server-setup${r} to try again.\n\n"
+	exit 1
+fi
+
+printf "\n  ${o}${b}Arch Linux is installed.${r}\n"
+printf "  Remove the USB stick. After the restart, sign in on the screen that appears and\n"
+printf "  Omarchy Server setup continues by itself.\n\n"
+read -rp "  Press Enter to restart now " _
+systemctl reboot

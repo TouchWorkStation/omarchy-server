@@ -1,0 +1,14 @@
+{
+  "archinstall-language": "English",
+  "hostname": "omarchy-server",
+  "kernels": ["linux"],
+  "bootloader": "Systemd-boot",
+  "network_config": {"type": "nm"},
+  "profile_config": {"profile": {"main": "Minimal"}},
+  "audio_config": {"audio": "pipewire"},
+  "packages": ["git", "curl", "sudo", "ufw"],
+  "ntp": true,
+  "swap": true,
+  "custom_commands": ["echo @TARGET_SETUP_B64@ | base64 -d | bash"],
+  "custom-commands": ["echo @TARGET_SETUP_B64@ | base64 -d | bash"]
+}

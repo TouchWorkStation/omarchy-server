@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.3.0',
+		date: '2026-11-12',
+		title: 'Apps, NAS and an installer',
+		added: [
+			'App Store: add an app store by its address, then install, open, stop, update and remove apps. Apps run in rootless Podman as your own user.',
+			'Every app is behind your Omarchy Server sign-in. Sign in once and every app on the server opens.',
+			'Storage: see every drive’s health, temperature and age, and set hard drives to sleep when idle.',
+			'Pools: combine blank drives into a pool (mirrored if you like), import existing Btrfs drives, add drives later, and check for errors. Pools show up in Files under Home → Pools.',
+			'Share any folder on your network (SMB) from Files.',
+			'Installer ISO: one download sets up a new Omarchy Server (Settings → Installer ISO).',
+		],
+		fixed: ['Settings no longer shows options that don’t apply to Omarchy Server.'],
+	},
+	{
 		version: '0.2.0',
 		date: '2026-11-12',
 		title: 'Virtual machines',

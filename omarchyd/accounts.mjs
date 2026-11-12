@@ -127,7 +127,7 @@ export async function openAccounts(dataDir) {
 			const cookie = token()
 			state.browsers[bearer] = {userId: user.userId, cookie, sessionId: token('s_'), createdAt: now(), expiresAt: now() + BROWSER_TTL}
 			await save()
-			return {bearer, cookie}
+			return {bearer, cookie, userId: user.userId}
 		},
 		async renewBrowser(bearer) {
 			const b = state.browsers[bearer]

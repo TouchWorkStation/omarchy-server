@@ -1,0 +1,42 @@
+name: Installer ISO
+
+# Builds the Omarchy Server installer ISO. On a version tag (v*), it's attached to that release, so
+# https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso
+# always downloads the newest one. Run it by hand from the Actions tab to just test a build.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install archiso
+        run: pacman -Syu --noconfirm archiso git
+      - name: Check the scripts
+        run: bash -n iso/build.sh iso/live/omarchy-server-setup iso/target/target-setup.sh
+      - name: Build
+        run: OUT="$GITHUB_WORKSPACE/release" iso/build.sh
+      - name: Keep the build (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-server-iso
+          path: release/*
+          retention-days: 7
+          compression-level: 0
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/omarchy-server.iso
+            release/omarchy-server.iso.sha256

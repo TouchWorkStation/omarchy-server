@@ -181,8 +181,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const channel = useQ<'stable' | 'beta'>('system.getReleaseChannel', undefined, {enabled: owner})
 	const hostname = useQ<string>('system.getHostname', undefined, {enabled: owner})
 	const ips = useQ<string[]>('system.getIpAddresses')
-	const tor = useQ<boolean>('apps.getTorEnabled', undefined, {enabled: owner})
-	const dns = useQ<boolean>('system.isExternalDns', undefined, {enabled: owner})
 	const wifiSupported = useQ<boolean>('wifi.supported', undefined, {enabled: owner})
 	const wifi = useQ<{status: 'connected' | 'disconnected'; ssid?: string}>('wifi.connected', undefined, {enabled: owner && !!wifiSupported.data})
 
@@ -228,7 +226,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 		if (ok) save.mutate({path: `system.${kind}`, done: kind === 'restart' ? 'Your server is restarting' : 'Your server is shutting down'})
 	}
 
-	const settingsUrl = `${boot.server?.url ?? ''}/settings`
 
 	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
 	if (page === 'appearance')
@@ -409,24 +406,12 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="network" color="var(--teal)" label="Device name" value={hostname.data ? `${hostname.data}.local` : ''} onClick={() => setSheet('hostname')} />
 					<Row icon="networking" color="var(--blue)" label="IP address" value={(ips.data ?? []).join(', ') || '–'} />
 					{wifiSupported.data && <Row icon="wifi" color="var(--blue)" label="Wi-Fi" value={wifi.data?.status === 'connected' ? wifi.data.ssid : 'Off'} onClick={() => setSheet('wifi')} />}
-					<Row
-						icon="tor"
-						color="var(--mauve)"
-						label="Remote Tor access"
-						trailing={<Switch label="Remote Tor access" on={!!tor.data} disabled={tor.data === undefined || save.isPending} onChange={(v) => save.mutate({path: 'apps.setTorEnabled', input: v, done: v ? 'Tor access is on' : 'Tor access is off', refresh: ['apps.getTorEnabled']})} />}
-					/>
-					<Row
-						icon="shield"
-						color="var(--green)"
-						label="Public DNS"
-						trailing={<Switch label="Public DNS" on={!!dns.data} disabled={dns.data === undefined || save.isPending} onChange={(v) => save.mutate({path: 'system.setExternalDns', input: v, done: v ? 'Using public DNS' : 'Using your router’s DNS', refresh: ['system.isExternalDns']})} />}
-					/>
 				</Group>
 			)}
 
-			<Group title="More" footer="Users, backups, storage, static IP and app-store sources are in Omarchy Server.">
+			<Group title="More">
+				<Row icon="download" color="var(--blue)" label="Installer ISO" value="Set up another server" href="https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso" />
 				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}
-				<Row icon="open" color="var(--blue)" label="Everything else in Omarchy Server" href={settingsUrl} />
 				{owner && <Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />}
 				{owner && <Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />}
 				{owner && <Row icon="danger" color="var(--red)" label="Factory reset" onClick={() => setSheet('reset')} />}

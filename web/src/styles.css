@@ -5944,3 +5944,7 @@ html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) 
 	-webkit-touch-callout: default;
 	-webkit-tap-highlight-color: transparent;
 }
+
+/* ---- Storage (NAS) ---------------------------------------------------------------------------- */
+.field-label { display: block; font-size: 13px; font-weight: 600; opacity: 0.7; margin: 4px 2px 6px; }
+.pool-row .btn.small { display: inline-flex; align-items: center; gap: 6px; }

@@ -328,10 +328,10 @@ export function createFiles({home, dataDir}) {
 			'files.emptyTrash': {kind: 'mutation', run: () => emptyTrash()},
 			'files.operationProgress': {kind: 'query', run: () => []},
 			'files.externalDevices': {kind: 'query', run: () => []},
-			'files.shares': {kind: 'query', run: () => []},
 		},
 		serveFile,
 		upload,
+		resolve,
 	}
 }
 

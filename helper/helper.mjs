@@ -1,0 +1,295 @@
+#!/usr/bin/node
+// omarchy-server helper: the only part of Omarchy Server that runs as root.
+//
+// Installed root-owned at /usr/local/libexec/omarchy-server/helper.mjs. A sudoers rule lets the
+// owner run it (and nothing else) without a password, so omarchyd can manage storage, network
+// shares and the firewall while it runs as the owner. Every argument is treated as hostile and checked
+// here, and each verb does one fixed thing:
+//
+//   ping                              is the helper installed and allowed?
+//   smart DEV                         drive health (smartctl JSON)
+//   sleep DEV MINUTES                 spin-down time for a hard drive (0 = never), kept across boots
+//   pool-create NAME PROFILE DEV...   new Btrfs pool on BLANK drives only, mounted at ~/Pools/NAME
+//   pool-add NAME DEV                 add a BLANK drive to a pool, then rebalance in the background
+//   pool-import NAME UUID             mount an existing Btrfs filesystem at ~/Pools/NAME (no changes to it)
+//   pool-forget NAME                  unmount a pool and stop mounting it at boot (data untouched)
+//   pool-scrub NAME                   start an error check
+//   pool-status NAME                  profile, per-drive error counters, last error check
+//   shares-apply                      network shares from stdin JSON, folders inside the owner's home only
+//   smb-password                      set the owner's network-share password from stdin
+//   firewall-open PORT | firewall-close PORT   an app's TCP port, 1024-65535
+//
+// Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
+// Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
+import {execFile} from 'node:child_process'
+import {chown, mkdir, readFile, realpath, rename, writeFile} from 'node:fs/promises'
+import {join, sep} from 'node:path'
+
+const DEV = /^\/dev\/(sd[a-z]{1,2}|vd[a-z]{1,2}|nvme\d{1,2}n\d{1,2}|hd[a-z])$/
+const NAME = /^[a-z][a-z0-9-]{0,31}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
+const FSTAB_MARK = '# omarchy-server pool'
+const SMB_CONF = '/etc/samba/smb.conf'
+const SMB_INCLUDE = '/etc/samba/omarchy-server-shares.conf'
+const SMB_MARK = '# Managed by Omarchy Server'
+const UDEV_SLEEP = '/etc/udev/rules.d/69-omarchy-server-sleep.rules'
+const SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
+
+export class HelperError extends Error {}
+const fail = (message) => {
+	throw new HelperError(message)
+}
+
+export function defaultRun(cmd, args, {input} = {}) {
+	return new Promise((resolve, reject) => {
+		const child = execFile(cmd, args, {timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024, env: {PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin', LC_ALL: 'C'}}, (error, stdout, stderr) => {
+			if (error && !(cmd === 'smartctl' && stdout)) return reject(new HelperError(`${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-2).join(' ')}`))
+			resolve(stdout.toString())
+		})
+		if (input !== undefined) child.stdin.end(input)
+	})
+}
+
+// Everything the helper touches comes through ctx, so tests can run it without root.
+export function createHelper({run = defaultRun, user, fs = {readFile, writeFile, mkdir, chown, realpath, rename}}) {
+	if (!user?.name || !/^[a-z_][a-z0-9_-]{0,31}$/.test(user.name) || !Number.isInteger(user.uid) || user.uid === 0 || !user.home?.startsWith('/')) fail('Run this through sudo as the Omarchy Server owner')
+	const poolsDir = join(user.home, 'Pools')
+	const mountOf = (name) => join(poolsDir, name)
+
+	async function blockDevices() {
+		const j = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,TYPE,SIZE,ROTA,FSTYPE,LABEL,UUID,MOUNTPOINTS,SERIAL']))
+		return j.blockdevices ?? []
+	}
+	const flat = (d) => [d, ...(d.children ?? []).flatMap(flat)]
+	const mounts = (d) => flat(d).flatMap((x) => (x.mountpoints ?? []).filter(Boolean))
+	async function disk(path) {
+		if (!DEV.test(path)) fail(`Not a drive: ${path}`)
+		const d = (await blockDevices()).find((x) => x.path === path && x.type === 'disk')
+		if (!d) fail(`No drive at ${path}`)
+		return d
+	}
+	// Blank: no partitions, no filesystem or RAID signature, nothing mounted, not the system drive.
+	async function blankDisk(path) {
+		const d = await disk(path)
+		if (mounts(d).some((m) => SYSTEM_MOUNTS.has(m))) fail(`${path} holds the system`)
+		if (mounts(d).length) fail(`${path} is in use`)
+		if ((d.children ?? []).length || d.fstype) fail(`${path} isn’t blank. To use it, first erase it yourself in a terminal: sudo wipefs -a ${path}`)
+		const sig = (await run('wipefs', ['--no-act', '--json', path]).catch(() => '')).trim()
+		if (sig && (JSON.parse(sig).signatures ?? []).length) fail(`${path} isn’t blank. To use it, first erase it yourself in a terminal: sudo wipefs -a ${path}`)
+		return d
+	}
+
+	async function fstab() {
+		return (await fs.readFile('/etc/fstab', 'utf8').catch(() => '')).split('\n')
+	}
+	async function writeAtomic(file, text) {
+		const tmp = `${file}.omarchy-server.tmp`
+		await fs.writeFile(tmp, text, {mode: 0o644})
+		await fs.rename(tmp, file)
+	}
+	async function addFstab(name, uuid) {
+		const lines = (await fstab()).filter((l) => !l.endsWith(`${FSTAB_MARK} ${name}`))
+		while (lines.length && lines.at(-1) === '') lines.pop()
+		lines.push(`UUID=${uuid} ${mountOf(name)} btrfs defaults,noatime,compress=zstd:3,nofail,x-systemd.device-timeout=10s 0 0 ${FSTAB_MARK} ${name}`, '')
+		await writeAtomic('/etc/fstab', lines.join('\n'))
+	}
+	async function poolMount(name) {
+		if (!NAME.test(name)) fail('Pool names use a-z, 0-9 and -')
+		if (!(await fstab()).some((l) => l.endsWith(`${FSTAB_MARK} ${name}`))) fail(`No pool called ${name}`)
+		return mountOf(name)
+	}
+	async function mountPool(name, uuid) {
+		await fs.mkdir(mountOf(name), {recursive: true})
+		await fs.chown(poolsDir, user.uid, user.gid)
+		await addFstab(name, uuid)
+		await run('systemctl', ['daemon-reload'])
+		await run('mount', [mountOf(name)])
+		await fs.chown(mountOf(name), user.uid, user.gid)
+	}
+
+	async function inHome(path) {
+		const home = await fs.realpath(user.home)
+		const real = await fs.realpath(path).catch(() => fail(`No folder at ${path}`))
+		if (real === home || !real.startsWith(home + sep)) fail('Only folders inside your home can be shared')
+		return real
+	}
+	// Rules are added whenever ufw is installed, even while it's off, so they're in place the
+	// moment it's turned on (Omarchy turns it on during its own install).
+	async function ufwActive() {
+		return run('ufw', ['status']).then(() => true, () => false)
+	}
+
+	const verbs = {
+		ping: async () => 'ok',
+
+		smart: async ([dev]) => {
+			await disk(dev)
+			return run('smartctl', ['-j', '-a', dev])
+		},
+
+		sleep: async ([dev, minutes]) => {
+			const d = await disk(dev)
+			const m = Number(minutes)
+			if (!(m in SLEEP_MINUTES)) fail('Choose 0, 10, 20, 30, 60, 120 or 240 minutes')
+			if (!(d.rota === true || d.rota === '1' || d.rota === 1)) fail('Only spinning hard drives sleep')
+			if (!d.serial || !/^[\w.-]{1,64}$/.test(d.serial)) fail('This drive doesn’t report a serial number, so its setting can’t be kept')
+			await run('hdparm', ['-S', String(SLEEP_MINUTES[m]), dev])
+			const lines = (await fs.readFile(UDEV_SLEEP, 'utf8').catch(() => '')).split('\n').filter((l) => l && !l.startsWith('#') && !l.includes(`ENV{ID_SERIAL_SHORT}=="${d.serial}"`))
+			if (m) lines.push(`ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL_SHORT}=="${d.serial}", RUN+="/usr/bin/hdparm -S ${SLEEP_MINUTES[m]} /dev/%k"`)
+			await writeAtomic(UDEV_SLEEP, lines.length ? `# Drive sleep, set by Omarchy Server\n${lines.join('\n')}\n` : '')
+			return 'ok'
+		},
+
+		'pool-create': async ([name, profile, ...devs]) => {
+			if (!NAME.test(name ?? '')) fail('Pool names use a-z, 0-9 and -, starting with a letter')
+			if (!['single', 'raid1', 'raid10'].includes(profile)) fail('Choose single, raid1 or raid10')
+			if (!devs.length || devs.length > 16 || new Set(devs).size !== devs.length) fail('Choose the drives for the pool')
+			if (profile === 'raid1' && devs.length < 2) fail('Mirroring needs at least 2 drives')
+			if (profile === 'raid10' && devs.length < 4) fail('RAID 10 needs at least 4 drives')
+			if ((await fstab()).some((l) => l.endsWith(`${FSTAB_MARK} ${name}`))) fail(`There’s already a pool called ${name}`)
+			for (const d of devs) await blankDisk(d)
+			const meta = devs.length === 1 ? 'dup' : profile === 'raid10' ? 'raid10' : 'raid1'
+			await run('mkfs.btrfs', ['-L', `omarchy-${name}`, '-d', profile, '-m', meta, ...devs])
+			await run('udevadm', ['settle']).catch(() => {})
+			const uuid = (await run('blkid', ['-s', 'UUID', '-o', 'value', devs[0]])).trim()
+			if (!UUID.test(uuid)) fail('The new pool has no UUID')
+			await mountPool(name, uuid)
+			return JSON.stringify({name, uuid, mountpoint: mountOf(name)})
+		},
+
+		'pool-add': async ([name, dev]) => {
+			const mnt = await poolMount(name)
+			await blankDisk(dev)
+			await run('btrfs', ['device', 'add', dev, mnt])
+			await run('btrfs', ['balance', 'start', '--bg', '--full-balance', mnt])
+			return 'ok'
+		},
+
+		'pool-import': async ([name, uuid]) => {
+			if (!NAME.test(name ?? '')) fail('Pool names use a-z, 0-9 and -, starting with a letter')
+			if (!UUID.test(uuid ?? '')) fail('Choose a filesystem to import')
+			const fs0 = (await blockDevices()).flatMap(flat).filter((x) => x.uuid === uuid)
+			if (!fs0.length || fs0.some((x) => x.fstype !== 'btrfs')) fail('Only Btrfs filesystems can be imported')
+			if (fs0.some((x) => (x.mountpoints ?? []).some(Boolean))) fail('That filesystem is already mounted')
+			if ((await fstab()).some((l) => l.endsWith(`${FSTAB_MARK} ${name}`) || l.includes(`UUID=${uuid} `))) fail('That pool or filesystem is already set up')
+			await mountPool(name, uuid)
+			return 'ok'
+		},
+
+		'pool-forget': async ([name]) => {
+			const mnt = await poolMount(name)
+			await run('umount', [mnt]).catch((e) => {
+				if (!/not mounted/.test(e.message)) throw new HelperError(`${name} is in use. Stop apps and shares using it, then try again.`)
+			})
+			await writeAtomic('/etc/fstab', (await fstab()).filter((l) => !l.endsWith(`${FSTAB_MARK} ${name}`)).join('\n'))
+			await run('systemctl', ['daemon-reload'])
+			return 'ok'
+		},
+
+		'pool-scrub': async ([name]) => {
+			await run('btrfs', ['scrub', 'start', await poolMount(name)])
+			return 'ok'
+		},
+
+		'pool-status': async ([name]) => {
+			const mnt = await poolMount(name)
+			const df = await run('btrfs', ['filesystem', 'df', '-b', mnt])
+			const profile = /^Data,\s*(\w+)/m.exec(df)?.[1]?.toLowerCase() ?? 'unknown'
+			const stats = await run('btrfs', ['device', 'stats', mnt])
+			const devices = {}
+			for (const m of stats.matchAll(/^\[(\/dev\/[^\]]+)\]\.(\w+)\s+(\d+)/gm)) (devices[m[1]] ??= {})[m[2]] = Number(m[3])
+			const scrub = await run('btrfs', ['scrub', 'status', mnt]).catch(() => '')
+			const scrubState = /Status:\s*(\w+)/.exec(scrub)?.[1] ?? (/no stats available/.test(scrub) ? 'never' : 'unknown')
+			const scrubErrors = /Error summary:\s*(.*)/.exec(scrub)?.[1]?.trim() ?? ''
+			const started = /Scrub started:\s*(.*)/.exec(scrub)?.[1]?.trim() ?? null
+			return JSON.stringify({profile, devices, scrub: {state: scrubState, errors: scrubErrors === 'no errors found' ? '' : scrubErrors, started}})
+		},
+
+		'shares-apply': async (_args, stdin) => {
+			let body
+			try {
+				body = JSON.parse(stdin)
+			} catch {
+				fail('Bad share list')
+			}
+			if (!Array.isArray(body?.shares) || body.shares.length > 64) fail('Bad share list')
+			const seen = new Set()
+			const blocks = []
+			for (const s of body.shares) {
+				const name = String(s?.name ?? '')
+				if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,31}$/.test(name) || seen.has(name.toLowerCase())) fail(`Bad share name: ${name}`)
+				seen.add(name.toLowerCase())
+				const path = await inHome(String(s?.path ?? ''))
+				if (/[\n\r]/.test(path)) fail('Bad folder')
+				blocks.push(`[${name}]\n   path = ${path}\n   valid users = ${user.name}\n   force user = ${user.name}\n   read only = ${s.readOnly ? 'yes' : 'no'}\n   browseable = yes\n`)
+			}
+			const shares = `${SMB_MARK}. Edit shares in the Omarchy Server web app.\n\n${blocks.join('\n')}`
+			const current = await fs.readFile(SMB_CONF, 'utf8').catch(() => null)
+			const globalSection = `[global]\n   server string = Omarchy Server\n   server min protocol = SMB2_10\n   map to guest = never\n   restrict anonymous = 2\n   disable netbios = yes\n   smb ports = 445\n`
+			if (current === null || current.startsWith(SMB_MARK)) await writeAtomic(SMB_CONF, `${SMB_MARK}\n${globalSection}\n${blocks.join('\n')}`)
+			else {
+				await writeAtomic(SMB_INCLUDE, shares)
+				if (!current.includes(`include = ${SMB_INCLUDE}`)) await writeAtomic(SMB_CONF, `${current.replace(/\n*$/, '\n')}\n# Added by Omarchy Server\n   include = ${SMB_INCLUDE}\n`)
+			}
+			if (blocks.length) {
+				await run('systemctl', ['enable', '--now', 'smb.service'])
+				await run('smbcontrol', ['smbd', 'reload-config']).catch(() => run('systemctl', ['restart', 'smb.service']))
+				if (await ufwActive()) await run('ufw', ['allow', '445/tcp', 'comment', 'Omarchy Server shares'])
+			} else {
+				await run('systemctl', ['disable', '--now', 'smb.service']).catch(() => {})
+				if (await ufwActive()) await run('ufw', ['delete', 'allow', '445/tcp']).catch(() => {})
+			}
+			return 'ok'
+		},
+
+		'smb-password': async (_args, stdin) => {
+			const pw = String(stdin ?? '').replace(/\n$/, '')
+			if (pw.length < 8 || pw.length > 128 || /[\r\n]/.test(pw)) fail('Bad password')
+			await run('smbpasswd', ['-s', '-a', user.name], {input: `${pw}\n${pw}\n`})
+			return 'ok'
+		},
+
+		'firewall-open': async ([port]) => {
+			const p = Number(port)
+			if (!Number.isInteger(p) || p < 1024 || p > 65535 || p === 2021) fail('Bad port')
+			if (await ufwActive()) await run('ufw', ['allow', `${p}/tcp`, 'comment', 'Omarchy Server app'])
+			return 'ok'
+		},
+		'firewall-close': async ([port]) => {
+			const p = Number(port)
+			if (!Number.isInteger(p) || p < 1024 || p > 65535 || p === 2021 || p === 7780) fail('Bad port')
+			if (await ufwActive()) await run('ufw', ['delete', 'allow', `${p}/tcp`]).catch(() => {})
+			return 'ok'
+		},
+	}
+
+	return {
+		async handle(verb, args = [], stdin = '') {
+			if (!Object.hasOwn(verbs, verb)) fail(`Unknown action: ${verb}`)
+			return verbs[verb](args, stdin)
+		},
+	}
+}
+
+// ---- run as a program (through sudo) ------------------------------------------------------------
+async function main() {
+	const [verb, ...args] = process.argv.slice(2)
+	try {
+		const name = process.env.SUDO_USER
+		const uid = Number(process.env.SUDO_UID)
+		const gid = Number(process.env.SUDO_GID)
+		if (process.getuid() !== 0 || !name || !uid) fail('Run this through sudo as the Omarchy Server owner')
+		const passwd = (await readFile('/etc/passwd', 'utf8')).split('\n').map((l) => l.split(':')).find((f) => f[0] === name && Number(f[2]) === uid)
+		if (!passwd) fail('Unknown user')
+		let stdin = ''
+		if (verb === 'shares-apply' || verb === 'smb-password') for await (const c of process.stdin) stdin += c
+		const helper = createHelper({user: {name, uid, gid, home: passwd[5]}})
+		process.stdout.write(`${await helper.handle(verb, args, stdin)}\n`)
+	} catch (error) {
+		process.stderr.write(`${error instanceof HelperError ? error.message : 'The helper failed'}\n`)
+		if (!(error instanceof HelperError)) process.stderr.write(`${error?.stack ?? error}\n`)
+		process.exit(error instanceof HelperError ? 2 : 1)
+	}
+}
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main()

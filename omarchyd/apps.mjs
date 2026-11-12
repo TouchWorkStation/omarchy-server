@@ -1,0 +1,619 @@
+// Apps for omarchyd: app stores you add, apps installed from them, and the gateway in front of them.
+//
+// Engine: rootless Podman, driven by the docker-compose binary through Podman's per-user socket. No
+// root, no docker group (which is root-equivalent), and no daemon socket anywhere on the network.
+//
+// Stores are git repositories in the community-store layout: a store manifest at the root, then one
+// folder per app with its manifest and a compose file. omarchyd prefers its own file names
+// (omarchy-app-store.yml, omarchy-app.yml) and also reads the older community names, so existing
+// stores work unchanged. Each app's compose file declares an `app_proxy` service naming the
+// container and port of its web interface; omarchyd removes that service and puts its own gateway
+// there instead.
+//
+// Gateway: each app's public port is served by omarchyd, which forwards only signed-in browsers to
+// the app (published on 127.0.0.1 only). A browser proves it's signed in with an app-session cookie
+// (HMAC-signed, HttpOnly). It gets one at sign-in, or by a one-time hand-over from the web app when it
+// first opens an app. Cookies belong to a host, not a port, so one sign-in covers every app.
+import {execFile} from 'node:child_process'
+import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
+import {access, cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile} from 'node:fs/promises'
+import http from 'node:http'
+import net from 'node:net'
+import os from 'node:os'
+import {join, resolve} from 'node:path'
+import YAML from 'yaml'
+
+import {RpcError} from './rpc.mjs'
+
+export const APP_COOKIE = 'OMARCHY_APP_SESSION'
+const STORE_FILES = ['omarchy-app-store.yml', 'umbrel-app-store.yml']
+const APP_FILES = ['omarchy-app.yml', 'umbrel-app.yml']
+const COMPOSE_FILES = ['omarchy-compose.yml', 'docker-compose.yml']
+const APP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
+const RESERVED = (p) => p === 7780 || p === 2021 || (p >= 40_000 && p <= 49_999)
+const SESSION_DAYS = 30
+
+function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
+	return new Promise((resolve, reject) => {
+		execFile(cmd, args, {cwd, timeout, maxBuffer: 32 * 1024 * 1024, env: {...process.env, ...env}}, (error, stdout, stderr) => {
+			if (error) {
+				error.message = `${cmd}: ${(stderr || error.message).toString().trim().split('\n').slice(-3).join(' ')}`
+				return reject(error)
+			}
+			resolve(stdout.toString())
+		})
+	})
+}
+const exists = (p) => access(p).then(() => true, () => false)
+const portFree = (port) =>
+	new Promise((resolve) => {
+		const s = net.createServer()
+		s.once('error', () => resolve(false))
+		s.listen(port, '0.0.0.0', () => s.close(() => resolve(true)))
+	})
+const parseCookies = (h = '') => Object.fromEntries(h.split(';').map((c) => c.trim().split('=')).filter(([k]) => k).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]))
+
+// Read the first of `names` that exists in `dir` as YAML.
+async function readYaml(dir, names) {
+	for (const n of names) {
+		try {
+			return {name: n, data: YAML.parse(await readFile(join(dir, n), 'utf8'))}
+		} catch (e) {
+			if (e.code !== 'ENOENT') throw e
+		}
+	}
+	return null
+}
+
+// Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
+// 127.0.0.1 only. Returns the compose text and where the gateway should forward to.
+export function prepareCompose(appId, text, allocatePort) {
+	const doc = YAML.parse(text) ?? {}
+	const services = doc.services ?? {}
+	const proxy = services.app_proxy?.environment ?? {}
+	delete services.app_proxy
+	delete doc.version
+	for (const s of Object.values(services)) {
+		if (Array.isArray(s?.depends_on)) s.depends_on = s.depends_on.filter((d) => d !== 'app_proxy')
+		else if (s?.depends_on && typeof s.depends_on === 'object') delete s.depends_on.app_proxy
+	}
+	const appPort = Number(proxy.APP_PORT)
+	const host = String(proxy.APP_HOST ?? '').trim()
+	let internalPort = null
+	if (Number.isInteger(appPort) && appPort > 0) {
+		if (/^\$\{?GATEWAY_IP\}?$/.test(host) || host === '127.0.0.1') {
+			internalPort = appPort // the app is on the host network, bound to 127.0.0.1 (GATEWAY_IP)
+		} else {
+			const name = host.replace(new RegExp(`^${appId}[_-]`), '').replace(/[_-]\d+$/, '')
+			const key = services[name] ? name : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
+			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
+			internalPort = allocatePort()
+			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
+		}
+	}
+	doc.services = services
+	return {text: YAML.stringify(doc), internalPort}
+}
+
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null}) {
+	const base = join(dataDir, 'apps')
+	const storesDir = join(base, 'stores')
+	const installedDir = join(base, 'installed')
+	const stateFile = join(base, 'apps.json')
+	const engineEnv = {DOCKER_HOST: process.env.DOCKER_HOST ?? `unix://${process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`}/podman/podman.sock`}
+
+	let state = {stores: [], apps: [], recent: []}
+	let secret
+	const busy = new Map() // appId -> {state, progress}
+	const gateways = new Map() // appId -> {server, port}
+	const tickets = new Map() // one-time hand-overs from the web app
+	let registryCache = null
+
+	const ready = (async () => {
+		await mkdir(storesDir, {recursive: true, mode: 0o700})
+		await mkdir(installedDir, {recursive: true, mode: 0o700})
+		try {
+			state = {...state, ...JSON.parse(await readFile(stateFile, 'utf8'))}
+		} catch {}
+		const sf = join(base, 'secret')
+		try {
+			secret = await readFile(sf)
+		} catch {
+			secret = randomBytes(32)
+			await writeFile(sf, secret, {mode: 0o600})
+		}
+		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
+		for (const a of state.apps) if (a.port && a.internalPort && a.state !== 'error') await openGateway(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
+	})()
+	const save = async () => {
+		const tmp = `${stateFile}.${process.pid}.tmp`
+		await writeFile(tmp, JSON.stringify(state, null, 2), {mode: 0o600})
+		await rename(tmp, stateFile)
+	}
+	const appDir = (id) => join(installedDir, id)
+	const project = (id) => `omarchy-${id}`
+
+	// ---- app sessions ---------------------------------------------------------------------------
+	const sign = (body) => createHmac('sha256', secret).update(body).digest('base64url')
+	function issueSession(userId) {
+		const body = Buffer.from(JSON.stringify({u: userId, e: Date.now() + SESSION_DAYS * 86_400_000})).toString('base64url')
+		return `v1.${body}.${sign(body)}`
+	}
+	function checkSession(token) {
+		const [v, body, mac] = String(token ?? '').split('.')
+		if (v !== 'v1' || !body || !mac) return null
+		const want = Buffer.from(sign(body))
+		const got = Buffer.from(mac)
+		if (want.length !== got.length || !timingSafeEqual(want, got)) return null
+		try {
+			const p = JSON.parse(Buffer.from(body, 'base64url').toString())
+			return p.e > Date.now() ? p : null
+		} catch {
+			return null
+		}
+	}
+	const sessionCookie = (token) => `${APP_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86_400}`
+
+	// ---- gateway --------------------------------------------------------------------------------
+	function forwardHeaders(req) {
+		const h = {...req.headers}
+		const cookies = (h.cookie ?? '')
+			.split(';')
+			.map((c) => c.trim())
+			.filter((c) => c && !c.startsWith(`${APP_COOKIE}=`))
+		if (cookies.length) h.cookie = cookies.join('; ')
+		else delete h.cookie
+		h['x-forwarded-for'] = req.socket.remoteAddress ?? ''
+		h['x-forwarded-proto'] = 'http'
+		h['x-forwarded-host'] = req.headers.host ?? ''
+		return h
+	}
+	const hostOnly = (req) => {
+		const h = req.headers.host ?? 'localhost'
+		return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
+	}
+	const safePath = (p) => (typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? p : '/')
+
+	async function openGateway(app) {
+		if (gateways.has(app.id)) return
+		const server = http.createServer((req, res) => {
+			const url = new URL(req.url ?? '/', 'http://x')
+			if (url.pathname === '/__omarchy/enter') {
+				const t = tickets.get(url.searchParams.get('t') ?? '')
+				tickets.delete(url.searchParams.get('t') ?? '')
+				if (!t || t.exp < Date.now() || t.appId !== app.id) {
+					res.writeHead(403, {'content-type': 'text/plain'})
+					return res.end('This link has expired. Open the app again from Omarchy Server.')
+				}
+				res.writeHead(302, {'set-cookie': sessionCookie(issueSession(t.userId)), location: safePath(url.searchParams.get('r')), 'cache-control': 'no-store'})
+				return res.end()
+			}
+			if (!checkSession(parseCookies(req.headers.cookie)[APP_COOKIE])) {
+				// Not signed in on this browser yet: the web app hands it over (or asks it to sign in).
+				const back = `http://${hostOnly(req)}:${webPort}/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(safePath(req.url))}`
+				res.writeHead(302, {location: back, 'cache-control': 'no-store'})
+				return res.end()
+			}
+			const up = http.request({host: '127.0.0.1', port: app.internalPort, method: req.method, path: req.url, headers: forwardHeaders(req)}, (r) => {
+				res.writeHead(r.statusCode ?? 502, r.headers)
+				r.pipe(res)
+			})
+			up.on('error', () => {
+				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
+				res.end(`${app.name ?? app.id} isn’t answering yet. If it just started, give it a moment.`)
+			})
+			req.pipe(up)
+		})
+		server.on('upgrade', (req, socket, head) => {
+			if (!checkSession(parseCookies(req.headers.cookie)[APP_COOKIE])) {
+				socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
+				return
+			}
+			const up = net.connect(app.internalPort, '127.0.0.1', () => {
+				const h = forwardHeaders(req)
+				const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(h).flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : [`${k}: ${v}`]))]
+				up.write(`${lines.join('\r\n')}\r\n\r\n`)
+				if (head?.length) up.write(head)
+				up.pipe(socket)
+				socket.pipe(up)
+			})
+			up.on('error', () => socket.destroy())
+			socket.on('error', () => up.destroy())
+		})
+		await new Promise((resolve, reject) => {
+			server.once('error', reject)
+			server.listen(app.port, gatewayHost, resolve)
+		})
+		gateways.set(app.id, {server, port: app.port})
+	}
+	function closeGateway(id) {
+		const g = gateways.get(id)
+		if (!g) return
+		g.server.close()
+		g.server.closeAllConnections?.()
+		gateways.delete(id)
+	}
+
+	// ---- stores ---------------------------------------------------------------------------------
+	const storeDir = (url) => join(storesDir, createHash('sha256').update(url).digest('hex').slice(0, 16))
+	const normalize = (url) => String(url ?? '').trim().replace(/\/+$/, '')
+	function checkUrl(url) {
+		if (/^https:\/\/[\w.-]+(:\d+)?\/[\w.\-~/]+$/.test(url)) return
+		if (allowFileStores && /^file:\/\//.test(url)) return
+		throw new RpcError('BAD_REQUEST', 'Enter the store’s https:// address, e.g. https://github.com/someone/app-store')
+	}
+	async function loadStore(url) {
+		const dir = storeDir(url)
+		const meta = await readYaml(dir, STORE_FILES)
+		if (!meta?.data?.id) throw new RpcError('BAD_REQUEST', 'That repository isn’t an app store (no store manifest at its root)')
+		const apps = []
+		for (const entry of await readdir(dir, {withFileTypes: true})) {
+			if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+			const m = await readYaml(join(dir, entry.name), APP_FILES).catch(() => null)
+			if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id)) continue
+			if (!(await readYaml(join(dir, entry.name), COMPOSE_FILES).catch(() => null))) continue
+			const a = m.data
+			apps.push({
+				id: a.id,
+				name: String(a.name ?? a.id),
+				tagline: a.tagline,
+				icon: typeof a.icon === 'string' && /^https:\/\//.test(a.icon) ? a.icon : undefined,
+				category: a.category,
+				version: a.version !== undefined ? String(a.version) : undefined,
+				port: Number(a.port) || undefined,
+				path: typeof a.path === 'string' ? a.path : '',
+				description: a.description,
+				developer: a.developer,
+				website: a.website,
+				gallery: (a.gallery ?? []).filter((g) => typeof g === 'string' && /^https:\/\//.test(g)),
+				releaseNotes: a.releaseNotes,
+				dependencies: a.dependencies ?? [],
+				defaultUsername: a.defaultUsername || undefined,
+				defaultPassword: a.defaultPassword || undefined,
+				folder: join(dir, entry.name),
+			})
+		}
+		return {url, meta: {id: String(meta.data.id), name: String(meta.data.name ?? meta.data.id)}, apps}
+	}
+	async function syncStore(url) {
+		const dir = storeDir(url)
+		if (await exists(join(dir, '.git'))) await run('git', ['-C', dir, 'pull', '--ff-only', '--depth', '1'], {timeout: 120_000})
+		else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
+	}
+	async function registry({refresh = false} = {}) {
+		await ready
+		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
+		const list = []
+		for (const s of state.stores) {
+			if (refresh || Date.now() - (s.syncedAt ?? 0) > 6 * 60 * 60_000) {
+				try {
+					await syncStore(s.url)
+					s.syncedAt = Date.now()
+				} catch {}
+			}
+			try {
+				list.push(await loadStore(s.url))
+			} catch {}
+		}
+		await save()
+		registryCache = {at: Date.now(), list}
+		return list
+	}
+	const findInRegistry = async (id) => {
+		for (const s of await registry()) {
+			const a = s.apps.find((x) => x.id === id)
+			if (a) return a
+		}
+		return null
+	}
+
+	// ---- engine ---------------------------------------------------------------------------------
+	function composeEnv(app) {
+		const dir = appDir(app.id)
+		const host = os.hostname()
+		const derive = (what) => createHmac('sha256', secret).update(`${what}:${app.id}`).digest('hex')
+		return {
+			...engineEnv,
+			APP_DATA_DIR: dir,
+			APP_ID: app.id,
+			GATEWAY_IP: '127.0.0.1',
+			DEVICE_HOSTNAME: host,
+			DEVICE_DOMAIN_NAME: `${host}.local`,
+			APP_PASSWORD: derive('password'),
+			APP_SEED: derive('seed'),
+			// Community-store compose files reach shared folders through this root; it maps
+			// <root>/data/storage/downloads to your Downloads folder.
+			UMBREL_ROOT: join(base, 'shared-root'),
+		}
+	}
+	async function sharedRoot() {
+		const storage = join(base, 'shared-root', 'data', 'storage')
+		await mkdir(storage, {recursive: true})
+		const link = join(storage, 'downloads')
+		if (!(await exists(link))) {
+			await mkdir(join(home, 'Downloads'), {recursive: true})
+			await symlink(join(home, 'Downloads'), link).catch(() => {})
+		}
+	}
+	const compose = (app, ...args) => run('docker-compose', ['-p', project(app.id), '-f', join(appDir(app.id), 'compose.omarchy.yml'), ...args], {env: composeEnv(app), cwd: appDir(app.id)})
+
+	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
+	// create them the way Docker does).
+	async function createBindSources(app, text) {
+		const env = composeEnv(app)
+		const doc = YAML.parse(text) ?? {}
+		for (const s of Object.values(doc.services ?? {})) {
+			for (const v of s?.volumes ?? []) {
+				const src = typeof v === 'string' ? v.split(':')[0] : v?.source
+				if (!src || !/^[$/.]/.test(src)) continue
+				const path = resolve(appDir(app.id), src.replace(/\$\{?(\w+)\}?/g, (_, k) => env[k] ?? ''))
+				if (!path.startsWith(appDir(app.id))) continue // only inside the app's own folder
+				if (!(await exists(path))) await mkdir(path, {recursive: true})
+			}
+		}
+	}
+
+	async function engineAvailable() {
+		const ok = await run('docker-compose', ['version'], {env: engineEnv}).then(() => true, () => false)
+		const sock = engineEnv.DOCKER_HOST.replace(/^unix:\/\//, '')
+		return ok && (await exists(sock))
+	}
+
+	async function liveStates() {
+		const out = new Map()
+		await Promise.all(
+			state.apps
+				.filter((a) => !busy.has(a.id) && a.state !== 'error')
+				.map(async (a) => {
+					try {
+						const text = (await compose(a, 'ps', '-a', '--format', 'json')).trim()
+						const rows = text.startsWith('[') ? JSON.parse(text) : text.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+						const states = rows.map((r) => String(r.State ?? r.state ?? '').toLowerCase())
+						out.set(a.id, states.length && states.some((s) => s === 'running') ? 'running' : 'stopped')
+					} catch {
+						out.set(a.id, 'unknown')
+					}
+				}),
+		)
+		return out
+	}
+
+	// ---- procedures -----------------------------------------------------------------------------
+	async function list() {
+		await ready
+		const live = await liveStates()
+		return state.apps.map((a) => {
+			const b = busy.get(a.id)
+			return {
+				id: a.id,
+				name: a.name,
+				version: a.version,
+				icon: a.icon,
+				port: a.port,
+				internalPort: a.internalPort,
+				path: a.path ?? '',
+				state: b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown')),
+				...(b?.progress !== undefined ? {progress: b.progress} : {}),
+				...(a.state === 'error' ? {error: a.error} : {}),
+				credentials: {defaultUsername: a.defaultUsername, defaultPassword: a.defaultPassword, showBeforeOpen: !!a.defaultPassword},
+			}
+		})
+	}
+	const findInstalled = (id) => {
+		const a = state.apps.find((x) => x.id === id)
+		if (!a) throw new RpcError('NOT_FOUND', 'That app isn’t installed')
+		return a
+	}
+
+	async function placeApp(src, app) {
+		const dir = appDir(app.id)
+		await cp(src.folder, dir, {recursive: true, filter: (p) => !p.split('/').includes('.git'), force: true})
+		const c = await readYaml(dir, COMPOSE_FILES)
+		const text = await readFile(join(dir, c.name), 'utf8')
+		const used = new Set(state.apps.map((a) => a.internalPort))
+		const prepared = prepareCompose(app.id, text, () => {
+			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
+			while (used.has(p)) p++
+			return p
+		})
+		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
+		await createBindSources(app, prepared.text)
+		return prepared.internalPort
+	}
+
+	async function install(input) {
+		await ready
+		const id = String(input?.appId ?? '')
+		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
+		const src = await findInRegistry(id)
+		if (!src) throw new RpcError('NOT_FOUND', 'That app isn’t in your stores')
+		if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
+		if (src.port) {
+			if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
+			if (state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
+		}
+		const app = {id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, installedAt: Date.now(), state: 'installing'}
+		state.apps.push(app)
+		await save()
+		busy.set(id, {state: 'installing', progress: 5})
+		;(async () => {
+			try {
+				await sharedRoot()
+				app.internalPort = await placeApp(src, app)
+				busy.set(id, {state: 'installing', progress: 15})
+				await compose(app, 'pull')
+				busy.set(id, {state: 'installing', progress: 85})
+				await compose(app, 'up', '-d', '--remove-orphans')
+				if (app.port && app.internalPort) {
+					await openGateway(app)
+					await firewall?.open(app.port)
+				}
+				delete app.state
+				delete app.error
+			} catch (error) {
+				Object.assign(app, {state: 'error', error: error.message})
+			} finally {
+				busy.delete(id)
+				await save().catch(() => {})
+			}
+		})()
+		return true
+	}
+
+	async function update(input) {
+		await ready
+		const app = findInstalled(String(input?.appId ?? ''))
+		const src = await findInRegistry(app.id)
+		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
+		busy.set(app.id, {state: 'updating', progress: 10})
+		try {
+			app.internalPort = await placeApp(src, app)
+			closeGateway(app.id)
+			await compose(app, 'pull')
+			await compose(app, 'up', '-d', '--remove-orphans')
+			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path})
+			if (app.port && app.internalPort) await openGateway(app)
+			delete app.state
+			delete app.error
+		} finally {
+			busy.delete(app.id)
+			await save()
+		}
+		return true
+	}
+
+	const lifecycle = (args, pending) => async (input) => {
+		await ready
+		const app = findInstalled(String(input?.appId ?? ''))
+		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
+		busy.set(app.id, {state: pending})
+		try {
+			await compose(app, ...args)
+		} finally {
+			busy.delete(app.id)
+		}
+		return true
+	}
+
+	async function uninstall(input) {
+		await ready
+		const app = findInstalled(String(input?.appId ?? ''))
+		busy.set(app.id, {state: 'uninstalling'})
+		try {
+			closeGateway(app.id)
+			if (app.port) await firewall?.close(app.port)
+			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
+			await rm(appDir(app.id), {recursive: true, force: true})
+			state.apps = state.apps.filter((a) => a.id !== app.id)
+			state.recent = state.recent.filter((r) => r !== app.id)
+			await save()
+		} finally {
+			busy.delete(app.id)
+		}
+		return true
+	}
+
+	async function updates() {
+		const out = []
+		for (const a of state.apps) {
+			const src = await findInRegistry(a.id).catch(() => null)
+			if (src?.version && a.version && src.version !== a.version) out.push({id: a.id, version: src.version})
+		}
+		return out
+	}
+
+	return {
+		ready,
+		checkSession,
+		issueSession,
+		sessionCookie,
+		close: () => {
+			for (const id of [...gateways.keys()]) closeGateway(id)
+		},
+		procedures: {
+			'apps.list': {kind: 'query', run: list},
+			'apps.install': {kind: 'mutation', run: install},
+			'apps.installReview': {kind: 'query', run: () => ({requiredFolders: [], gpuAccess: false})},
+			'apps.uninstall': {kind: 'mutation', run: uninstall},
+			'apps.start': {kind: 'mutation', run: lifecycle(['up', '-d'], 'starting')},
+			'apps.stop': {kind: 'mutation', run: lifecycle(['stop'], 'stopping')},
+			'apps.restart': {kind: 'mutation', run: lifecycle(['restart'], 'restarting')},
+			'apps.update': {kind: 'mutation', run: update},
+			'apps.updates': {kind: 'query', run: updates},
+			'apps.logs': {
+				kind: 'query',
+				run: async (input) => {
+					const app = findInstalled(String(input?.appId ?? ''))
+					const text = await compose(app, 'logs', '--no-color', '--tail', '500')
+					const max = Math.min(Number(input?.maxOutputBytes) || 200_000, 1_000_000)
+					return text.length > max ? text.slice(-max) : text
+				},
+			},
+			'apps.trackOpen': {
+				kind: 'mutation',
+				run: async (input) => {
+					const id = String(input?.appId ?? '')
+					if (!state.apps.some((a) => a.id === id)) return true
+					state.recent = [id, ...state.recent.filter((r) => r !== id)].slice(0, 12)
+					await save()
+					return true
+				},
+			},
+			'apps.recentlyOpened': {kind: 'query', run: async () => (await ready, state.recent.filter((id) => state.apps.some((a) => a.id === id)))},
+			// A one-time hand-over for a browser that opens an app before it has an app session.
+			'apps.accessTicket': {
+				kind: 'mutation',
+				run: async (input, {auth}) => {
+					const app = findInstalled(String(input?.appId ?? ''))
+					const t = randomBytes(24).toString('base64url')
+					for (const [k, v] of tickets) if (v.exp < Date.now()) tickets.delete(k)
+					tickets.set(t, {appId: app.id, userId: auth.userId, exp: Date.now() + 60_000})
+					return {ticket: t, port: app.port, path: app.path ?? ''}
+				},
+			},
+			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},
+			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta}) => ({url, meta})))},
+			'appStore.addRepository': {
+				kind: 'mutation',
+				run: async (input) => {
+					await ready
+					const url = normalize(input?.url)
+					checkUrl(url)
+					if (state.stores.some((s) => s.url.toLowerCase() === url.toLowerCase())) throw new RpcError('CONFLICT', 'That store is already added')
+					try {
+						await rm(storeDir(url), {recursive: true, force: true})
+						await syncStore(url)
+					} catch {
+						await rm(storeDir(url), {recursive: true, force: true})
+						throw new RpcError('BAD_REQUEST', 'Couldn’t download that store. Check the address and that the repository is public.')
+					}
+					let loaded
+					try {
+						loaded = await loadStore(url)
+					} catch (e) {
+						await rm(storeDir(url), {recursive: true, force: true})
+						throw e
+					}
+					state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
+					registryCache = null
+					await save()
+					return true
+				},
+			},
+			'appStore.removeRepository': {
+				kind: 'mutation',
+				run: async (input) => {
+					await ready
+					const url = normalize(input?.url)
+					const s = state.stores.find((x) => x.url.toLowerCase() === url.toLowerCase())
+					if (!s) throw new RpcError('NOT_FOUND', 'That store isn’t added')
+					state.stores = state.stores.filter((x) => x !== s)
+					await rm(storeDir(s.url), {recursive: true, force: true})
+					registryCache = null
+					await save()
+					return true
+				},
+			},
+		},
+	}
+}

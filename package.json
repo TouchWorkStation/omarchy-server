@@ -1,6 +1,6 @@
 {
   "name": "omarchy-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Your Omarchy machine as a home server you open in a browser.",
   "private": true,
   "type": "module",
@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "express": "^4.21.2",
-    "ws": "^8.22.2"
+    "ws": "^8.22.2",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",

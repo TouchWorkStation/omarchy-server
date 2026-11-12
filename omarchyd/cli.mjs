@@ -11,7 +11,7 @@ import {startOmarchyd} from './server.mjs'
 
 const {values, positionals} = parseArgs({
 	allowPositionals: true,
-	options: {port: {type: 'string', default: '2021'}, data: {type: 'string'}, name: {type: 'string'}},
+	options: {port: {type: 'string', default: '2021'}, 'web-port': {type: 'string', default: '7780'}, data: {type: 'string'}, name: {type: 'string'}},
 })
 const dataDir = values.data ?? join(process.env.XDG_DATA_HOME ?? join(os.homedir(), '.local/share'), 'omarchy-server')
 const command = positionals[0] ?? 'serve'
@@ -51,7 +51,7 @@ if (command === 'serve') {
 		console.error('omarchyd runs as your own user, not root. Start it without sudo.')
 		process.exit(1)
 	}
-	const server = await startOmarchyd({port: Number(values.port), dataDir})
+	const server = await startOmarchyd({port: Number(values.port), webPort: Number(values['web-port']), dataDir})
 	console.log(`omarchyd listening on ${server.url} (data in ${dataDir})`)
 	if (!server.accounts.hasOwner()) console.log('No owner yet. Create one with: omarchyd create-owner')
 } else if (command === 'has-owner') {

@@ -24,10 +24,11 @@ if ! command -v pacman >/dev/null; then
 fi
 command -v systemctl >/dev/null || die "systemd is required."
 
-# 1. Packages (the only step that uses sudo). Machines: QEMU + libvirt (per-user session),
-#    passt for their networking, xorriso (libisoburn) for cloud-init seeds.
+# 1. Packages. Machines: QEMU + libvirt (per-user session), passt for their networking, xorriso
+#    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
+#    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
 need=()
-for pkg in nodejs npm git openssl qemu-base libvirt passt libisoburn; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl qemu-base libvirt passt libisoburn podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 if [ ${#need[@]} -gt 0 ]; then
 	say "Installing ${need[*]} (sudo needed)"
 	sudo pacman -S --needed --noconfirm "${need[@]}"
@@ -53,6 +54,35 @@ if ! { npm ci --no-audit --no-fund --loglevel=error && npm run build; } >"$LOG" 
 	die "The build failed. Full log: $LOG"
 fi
 
+# 2b. Apps run in rootless Podman as you: give your user its container ID range and a socket.
+if ! grep -q "^$USER:" /etc/subuid 2>/dev/null || ! grep -q "^$USER:" /etc/subgid 2>/dev/null; then
+	say "Giving your user a container ID range (sudo needed)"
+	sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+	podman system migrate >/dev/null 2>&1 || true
+fi
+REG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
+if [ ! -f "$REG" ]; then
+	mkdir -p "$(dirname "$REG")"
+	printf '# Short image names (e.g. nginx) come from Docker Hub, as app stores expect.\nunqualified-search-registries = ["docker.io"]\n' >"$REG"
+fi
+systemctl --user enable --now podman.socket >/dev/null
+
+# 2c. The storage helper: the one part that runs as root, allowed by a single sudoers rule.
+#     It's copied root-owned so nothing running as you can change it.
+say "Installing the storage helper (sudo needed)"
+sudo install -d -o root -g root -m 0755 /usr/local/libexec/omarchy-server
+sudo install -o root -g root -m 0755 "$APP/helper/helper.mjs" /usr/local/libexec/omarchy-server/helper.mjs
+rule="$USER ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-server/helper.mjs"
+tmp=$(mktemp)
+printf '# Omarchy Server: lets %s run the storage helper (and nothing else) without a password.\n%s\n' "$USER" "$rule" >"$tmp"
+if sudo visudo -cf "$tmp" >/dev/null; then
+	sudo install -o root -g root -m 0440 "$tmp" /etc/sudoers.d/omarchy-server
+else
+	say "Skipped the sudoers rule (it didn't validate); storage management will be unavailable."
+fi
+rm -f "$tmp"
+mkdir -p "$HOME/Pools"
+
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
 	say "Create your Omarchy Server account"
@@ -72,10 +102,9 @@ Description=Omarchy Server backend (localhost only)
 After=network-online.target
 
 [Service]
-ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --data $BASE/omarchyd
+ExecStart=$NODE $APP/omarchyd/cli.mjs serve --port 2021 --web-port $PORT --data $BASE/omarchyd
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=yes
 
 [Install]
 WantedBy=default.target
@@ -100,21 +129,15 @@ systemctl --user enable omarchyd.service omarchy-server-web.service >/dev/null
 systemctl --user restart omarchyd.service omarchy-server-web.service
 
 # Omarchy turns on a firewall (ufw) that blocks incoming connections: let the web app through.
-if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
-	if ! sudo ufw status | grep -qE "^$PORT/tcp +ALLOW"; then
-		say "Opening port $PORT in the firewall (sudo needed)"
-		sudo ufw allow "$PORT/tcp" comment 'Omarchy Server' >/dev/null
-	fi
-fi
+# Rules are added even while ufw is off, so they apply as soon as it's turned on.
+if command -v ufw >/dev/null 2>&1; then
+	say "Allowing Omarchy Server through the firewall (sudo needed)"
+	sudo ufw allow "$PORT/tcp" comment 'Omarchy Server' >/dev/null
 
-# Machine port forwards live in 40000-49999. Nothing listens there until you add a forward to a
-# machine, so opening the range only lets forwards you create be reached from your network.
-if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
-	if ! sudo ufw status | grep -qE "^40000:49999/tcp +ALLOW"; then
-		say "Allowing machine port forwards (40000-49999) through the firewall"
-		sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
-		sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
-	fi
+	# Machine port forwards live in 40000-49999. Nothing listens there until you add a forward to a
+	# machine, so this only lets forwards you create be reached from your network.
+	sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
+	sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
 fi
 
 # Keep the services running when you're not logged in (needs sudo once).

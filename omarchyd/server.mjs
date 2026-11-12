@@ -8,18 +8,22 @@ import os from 'node:os'
 import {extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
+import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
+import {createStorage} from './storage.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.2.0'
+export const OMARCHYD_VERSION = '0.3.0'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), machineOptions = {}}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, ...machineOptions})
+	const storage = createStorage({dataDir, home, files, ...storageOptions})
+	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions})
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const release = await system.osRelease()
@@ -40,14 +44,15 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 			kind: 'mutation',
 			public: true,
 			run: async (input, {res}) => {
-				const {bearer, cookie} = await accounts.loginBrowser(input)
-				res.setHeader('set-cookie', [`OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Strict`])
+				const {bearer, cookie, userId} = await accounts.loginBrowser(input)
+				await apps.ready
+				res.setHeader('set-cookie', [`OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Strict`, apps.sessionCookie(apps.issueSession(userId))])
 				return bearer
 			},
 		},
 		'user.renewToken': {kind: 'mutation', run: async (_i, {auth}) => (auth.kind === 'browser' && (await accounts.renewBrowser(auth.bearer)), 'renewed')},
 		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
-		'user.get': {kind: 'query', run: (_i, {auth}) => ({...accounts.getUser(auth.userId), wallpaper: {id: '1'}})},
+		'user.get': {kind: 'query', run: (_i, {auth}) => ({...accounts.getUser(auth.userId), wallpaper: {id: '1'}, sambaUsername: os.userInfo().username})},
 		'user.set': {kind: 'mutation', run: async (input, {auth}) => (await accounts.updateUser(auth.userId, input), true)},
 		'user.changePassword': {kind: 'mutation', run: async (input, {auth}) => (await accounts.setPassword(auth.userId, input ?? {}), true)},
 		'user.getHttpApiToken': {kind: 'query', run: (_i, {auth}) => accounts.issueUrlToken(auth)},
@@ -76,16 +81,15 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'system.updateStatus': {kind: 'query', run: () => ({running: false, progress: 0, description: '', error: false})},
 
 		// ---- not built yet: answer empty so the web app shows empty states, not errors ----------
-		'apps.list': {kind: 'query', run: () => []},
-		'apps.recentlyOpened': {kind: 'query', run: () => []},
-		'appStore.registry': {kind: 'query', run: () => []},
-		'appStore.repositories': {kind: 'query', run: () => []},
 		'notifications.get': {kind: 'query', run: () => []},
 		'wifi.connected': {kind: 'query', run: () => ({status: 'disconnected'})},
 		'wifi.networks': {kind: 'query', run: () => []},
 
 		...files.procedures,
+		...storage.procedures,
 		...machines.procedures,
+		...apps.procedures,
+		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
 
 	// The web app's wallpaper is the current Omarchy theme background.
@@ -109,6 +113,12 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		try {
 			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
+			// The web app asks whether a browser's app session is valid (it never sees it otherwise).
+			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
+				await apps.ready
+				const cookie = Object.fromEntries((req.headers.cookie ?? '').split(';').map((c) => c.trim().split('=')).map(([k, ...v]) => [k, v.join('=')]))[APP_COOKIE]
+				return sendJson(res, apps.checkSession(decodeURIComponent(cookie ?? '')) ? 200 : 401, {})
+			}
 			const fileKind = /^\/api\/files\/(view|download|upload)$/.exec(url.pathname)?.[1]
 			if (fileKind === 'upload' && req.method === 'POST') {
 				const auth = accounts.authenticate(req)
@@ -162,5 +172,5 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		server.once('error', reject)
 		server.listen(port, host, resolve)
 	})
-	return {url: `http://${host}:${server.address().port}`, accounts, close: () => new Promise((r) => server.close(r))}
+	return {url: `http://${host}:${server.address().port}`, accounts, close: () => (apps.close(), new Promise((r) => server.close(r)))}
 }
