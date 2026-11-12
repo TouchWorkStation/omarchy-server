@@ -84,8 +84,17 @@ if [ "$ZFS" = 1 ]; then
 	if ! grep -q '^\[archzfs\]' /etc/pacman.conf; then
 		printf '\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n' | sudo tee -a /etc/pacman.conf >/dev/null
 	fi
+	# Refresh package lists (now including archzfs) the way this system expects. Omarchy refuses a
+	# direct `pacman -Syu` and wants `omarchy update`, which also takes a snapshot first.
+	if command -v omarchy >/dev/null 2>&1; then
+		say "Updating the system with 'omarchy update' first (Omarchy's own way)"
+		omarchy update || die "'omarchy update' didn't finish. Run it yourself, then run this installer again with --zfs."
+	else
+		sudo pacman -Syu --noconfirm || die "Updating the system failed (see above)"
+	fi
+	# The update may have installed a newer kernel: build ZFS for the one that's installed.
 	kernel=$(pacman -Qqo "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null || echo linux)
-	sudo pacman -Syu --needed --noconfirm "${kernel}-headers" zfs-dkms zfs-utils || die "Installing ZFS failed (see above)"
+	sudo pacman -S --needed --noconfirm "${kernel}-headers" zfs-dkms zfs-utils || die "Installing ZFS failed (see above)"
 	if ! sudo modprobe zfs 2>/dev/null; then
 		if [ ! -d "/usr/lib/modules/$(uname -r)" ]; then
 			say "Your kernel was updated while installing ZFS. Restart, then run this installer again with --zfs."
