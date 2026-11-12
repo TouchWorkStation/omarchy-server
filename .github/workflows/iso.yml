@@ -1,10 +1,13 @@
 name: Installer ISO
 
-# Builds the Omarchy Server installer ISO. On a version tag (v*), it's attached to that release, so
+# Builds the Omarchy Server installer ISO. When a release is published (or a v* tag is pushed), the
+# ISO is attached to that release, so
 # https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso
 # always downloads the newest one. Run it by hand from the Actions tab to just test a build.
 on:
   workflow_dispatch:
+  release:
+    types: [published]
   push:
     tags: ['v*']
 
