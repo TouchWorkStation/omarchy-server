@@ -12,6 +12,7 @@ import {after, before, describe, test} from 'node:test'
 import WebSocket from 'ws'
 
 import {openAccounts} from '../omarchyd/accounts.mjs'
+import {cloudUserData, isWindowsClientLabel, omarchyConfiguration, windowsAnswerFile} from '../omarchyd/machine-media.mjs'
 import {findChecksum} from '../omarchyd/machines.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
@@ -23,10 +24,30 @@ test('findChecksum reads GNU and BSD checksum lists', () => {
 	assert.equal(findChecksum(`${h}  disk.img.part\n`, 'disk.img', 'sha256'), null)
 })
 
+test('install media: desktop cloud-init, Omarchy disk layout, Windows answer file', () => {
+	const ud = cloudUserData({host: 'box', username: 'chris', hash: '$6$x', cloudInit: {packages: ['ubuntu-desktop-minimal', 'bad;rm -rf /'], commands: [['systemctl', 'set-default', 'graphical.target']], graphical: true}})
+	assert.match(ud, /packages:\n  - 'ubuntu-desktop-minimal'\n/)
+	assert.ok(!ud.includes('rm -rf'), 'unsafe package names dropped')
+	assert.match(ud, /runcmd:\n  - \["systemctl","set-default","graphical.target"\]/)
+	assert.match(ud, /power_state:\n  mode: reboot/)
+	const cfg = omarchyConfiguration({host: 'om', diskSizeGb: 40})
+	const parts = cfg.disk_config.device_modifications[0].partitions
+	assert.equal(cfg.disk_config.device_modifications[0].device, '/dev/vda')
+	assert.equal(parts[0].start.value + parts[0].size.value + parts[1].size.value + 1024 ** 2, 40 * 1024 ** 3)
+	assert.equal(isWindowsClientLabel('CCCOMA_X64FRE_EN-US_DV9'), true)
+	assert.equal(isWindowsClientLabel('ARCH_202611'), false)
+	const xml = windowsAnswerFile({computerName: 'MY-PC & stuff', username: 'chris', password: 'hunter2 secret'})
+	assert.ok(!xml.includes('hunter2'), 'password not in plain text')
+	assert.match(xml, /<ComputerName>MY-PCstuff<\/ComputerName>/)
+	assert.match(xml, /BypassTPMCheck/)
+	assert.match(xml, /<Name>chris<\/Name>/)
+	assert.equal(Buffer.from(/<Value>([^<]+)<\/Value>/.exec(xml)[1], 'base64').toString('utf16le'), 'hunter2 secretPassword')
+})
+
 describe('omarchyd machines', () => {
 	let root, data, d, fixture, fixtureUrl, auth
 	const doms = new Map()
-	const seen = {userData: '', xml: ''}
+	const seen = {userData: '', xml: '', media: {}}
 	const image = randomBytes(256 * 1024)
 
 	const run = async (cmd, args, opts = {}) => {
@@ -60,10 +81,13 @@ describe('omarchyd machines', () => {
 		}
 		if (cmd === 'qemu-img') {
 			if (args[0] === 'convert') await copyFile(args[3], args[4])
+			if (args[0] === 'create') await writeFile(args[3], 'blank')
 			return 'qemu-img version 9.0\n'
 		}
 		if (cmd === 'xorriso') {
-			seen.userData = await readFile(join(opts.cwd, 'user-data'), 'utf8')
+			if (args.includes('-pvd_info')) return `Volume Id    : ${/Win11/.test(args[1]) ? 'CCCOMA_X64FRE_EN-US_DV9' : 'ARCH_202611'}\n`
+			for (const f of args.slice(args.indexOf('-rock') + 1)) seen.media[f] = await readFile(join(opts.cwd, f), 'utf8')
+			seen.userData = seen.media['user-data'] ?? seen.userData
 			await writeFile(args[args.indexOf('-output') + 1], 'iso')
 			return ''
 		}
@@ -82,10 +106,12 @@ describe('omarchyd machines', () => {
 					images: [
 						{id: 'testos-amd64', familyId: 'debian', name: 'TestOS', variantName: 'Server', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/test.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1, adminGroup: 'sudo'},
 						{id: 'bados-amd64', familyId: 'debian', name: 'BadOS', version: '1', arch: 'amd64', kind: 'cloud', url: 'https://fixture.test/img/bad.qcow2', checksums: {url: 'https://fixture.test/img/SHA256SUMS', algorithm: 'sha256'}, sizeMb: 1},
+						{id: 'omarchy-9-amd64', familyId: 'omarchy', name: 'Omarchy', version: '9', arch: 'amd64', kind: 'iso', install: 'omarchy', url: 'https://fixture.test/img/omarchy.iso', sha256: createHash('sha256').update(image).digest('hex'), sizeMb: 1},
 						{id: 'insecure', name: 'Plain HTTP', version: '1', arch: 'amd64', kind: 'cloud', url: 'http://fixture.test/x.img', checksums: {url: 'https://fixture.test/s', algorithm: 'sha256'}},
 					],
 				}),
 				'/img/test.qcow2': image,
+				'/img/omarchy.iso': image,
 				'/img/bad.qcow2': randomBytes(1000),
 				'/img/SHA256SUMS': `${sum} *test.qcow2\n${'0'.repeat(64)} *bad.qcow2\n`,
 			}
@@ -95,6 +121,9 @@ describe('omarchyd machines', () => {
 		})
 		await new Promise((r) => fixture.listen(0, '127.0.0.1', r))
 		fixtureUrl = `http://127.0.0.1:${fixture.address().port}`
+		await mkdir(join(root, 'home/Downloads'), {recursive: true})
+		await writeFile(join(root, 'home/Downloads/Win11_25H2_English_x64.iso'), 'win')
+		await writeFile(join(root, 'home/Downloads/archlinux.iso'), 'arch')
 		const kvm = join(root, 'kvm')
 		await writeFile(kvm, '')
 		const accounts = await openAccounts(data)
@@ -102,7 +131,7 @@ describe('omarchyd machines', () => {
 		d = await startOmarchyd({
 			port: 0,
 			dataDir: data,
-			home: root,
+			home: join(root, 'home'),
 			machineOptions: {run, kvmDevice: kvm, catalogUrl: 'https://fixture.test/catalog.json', fetchImpl: (u, init) => fetch(String(u).replace('https://fixture.test', fixtureUrl), init)},
 		})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
@@ -145,7 +174,7 @@ describe('omarchyd machines', () => {
 		assert.equal(caps.libvirtAvailable, true)
 		assert.equal(caps.kvmAvailable, true)
 		const imgs = await q('machines.osImages')
-		assert.deepEqual(imgs.map((i) => [i.id, i.state]), [['testos-amd64', 'available'], ['bados-amd64', 'available']])
+		assert.deepEqual(imgs.map((i) => [i.id, i.state]), [['testos-amd64', 'available'], ['bados-amd64', 'available'], ['omarchy-9-amd64', 'available']])
 	})
 
 	test('create: verifies the download, hashes the password, defines and starts the machine', async () => {
@@ -200,6 +229,46 @@ describe('omarchyd machines', () => {
 		const reused = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
 		await new Promise((r) => reused.on('error', r))
 		vnc.close()
+	})
+
+	test('Omarchy installs itself from its ISO with a cidata drive (hash only)', async () => {
+		const {id: om} = await call('machines.create', {...spec, name: 'Omarchy', osId: 'omarchy-9-amd64', diskSizeGb: 40})
+		await until(async () => (await q('machines.list')).find((x) => x.id === om && x.state === 'running'))
+		const creds = JSON.parse(seen.media['user_credentials.json'])
+		assert.equal(creds.users[0].username, 'chris')
+		assert.match(creds.users[0].enc_password, /^\$6\$/)
+		assert.ok(!seen.media['user_credentials.json'].includes('hunter2'))
+		assert.equal(JSON.parse(seen.media['user_configuration.json']).hostname, 'omarchy')
+		assert.match(seen.xml, /<os firmware='efi'>/)
+		assert.match(seen.xml, /omarchy-9-amd64\.iso'\/><target dev='sda' bus='sata'\/><boot order='2'\/>/)
+		assert.match(seen.xml, /disk\.qcow2'\/><target dev='vda' bus='virtio'\/><boot order='1'\/>/)
+		assert.match(seen.xml, /seed\.iso'\/><target dev='sdb' bus='sata'\/><readonly\/>/)
+		await call('machines.uninstall', {id: om})
+	})
+
+	test('your own ISOs: Windows installs itself with an answer file that is removed after; others boot to install by hand', async () => {
+		const isos = await q('machines.localIsos')
+		const win = isos.find((i) => /Win11/.test(i.id))
+		const arch = isos.find((i) => /archlinux/.test(i.id))
+		assert.deepEqual([win.platform, win.requiresCredentials, win.manualSetup], ['windows', true, false])
+		assert.deepEqual([arch.platform, arch.requiresCredentials, arch.manualSetup], ['linux', false, true])
+		await assert.rejects(call('machines.create', {...spec, name: 'Win', osId: win.id, diskSizeGb: 40}), /between 64/)
+		const {id: w} = await call('machines.create', {...spec, name: 'Win', osId: win.id, diskSizeGb: 64})
+		await until(async () => (await q('machines.list')).find((x) => x.id === w && x.state === 'running'))
+		assert.match(seen.media['autounattend.xml'], /<Name>chris<\/Name>/)
+		assert.match(seen.xml, /<model type='e1000e'\/>/)
+		assert.match(seen.xml, /<model type='vga'\/>/)
+		assert.match(seen.xml, /disk\.qcow2'\/><target dev='sda' bus='sata'\/><boot order='1'\/>/)
+		assert.match(seen.xml, /answer\.iso/)
+		await call('machines.forceStop', {id: w})
+		assert.ok(!seen.xml.includes('answer.iso'), 'answer file detached')
+		await assert.rejects(stat(join(data, 'machines/vms', w, 'answer.iso')))
+		await call('machines.uninstall', {id: w})
+		const {id: a} = await call('machines.create', {name: 'Arch ISO', osId: arch.id, cores: 1, memoryGb: 1, diskSizeGb: 10})
+		await until(async () => (await q('machines.list')).find((x) => x.id === a && x.state === 'running'))
+		assert.match(seen.xml, /archlinux\.iso'\/><target dev='sda' bus='sata'\/><boot order='2'\/>/)
+		assert.ok(!/seed\.iso|answer\.iso/.test(seen.xml))
+		await call('machines.uninstall', {id: a})
 	})
 
 	test('stop, start, uninstall', async () => {

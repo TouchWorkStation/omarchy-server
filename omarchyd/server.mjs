@@ -16,12 +16,12 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.3.0'
+export const OMARCHYD_VERSION = '0.4.0'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
-	const machines = createMachines({dataDir, ...machineOptions})
+	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions})
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).

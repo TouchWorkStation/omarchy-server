@@ -66,6 +66,7 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 		enabled: open,
 		refetchInterval: (q) => ((q.state.data ?? []).some((i) => i.state === 'downloading') ? 2000 : false),
 	})
+	const ownIsos = useQuery({queryKey: ['machines.localIsos'], queryFn: () => query<OsImage[]>('machines.localIsos'), enabled: open, staleTime: 15_000})
 	const [picked, setPicked] = useState<OsImage | null>(null)
 	const close = () => {
 		setPicked(null)
@@ -80,35 +81,7 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 		[images.data, hostArch],
 	)
 
-	return (
-		<Sheet open={open} onClose={close} label="New machine" tall>
-			{picked ? (
-				<Configure os={picked} hostArch={hostArch} onBack={() => setPicked(null)} onDone={close} />
-			) : (
-				<>
-					<SheetHeader title="New machine" subtitle="Choose an operating system" onClose={close} />
-					{caps.data?.performanceWarning && (
-						<div className="error" style={{marginBottom: 12}}>
-							<Icon name="alert" size={18} />
-							{caps.data.performanceWarning}
-						</div>
-					)}
-					{caps.data && !caps.data.libvirtAvailable && (
-						<div className="error">
-							<Icon name="alert" size={18} />
-							Virtual machines aren’t available on this server.
-						</div>
-					)}
-					<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '0 20px 20px'}}>
-						{images.isLoading && Array.from({length: 5}, (_, i) => <div key={i} className="skeleton" style={{height: 64, margin: '8px 0'}} />)}
-						{images.error && (
-							<div className="error">
-								<Icon name="alert" size={18} />
-								{(images.error as Error).message}
-							</div>
-						)}
-						<div className="glass group" style={{borderRadius: 18, '--inset': '74px'} as React.CSSProperties}>
-							{list.map((os) => {
+	const renderRow = (os: OsImage) => {
 								const look = osLook(os.familyId)
 								const emulated = os.arch !== hostArch
 								return (
@@ -149,10 +122,49 @@ export function CreateMachine({open, onClose}: {open: boolean; onClose: () => vo
 										)}
 									</button>
 								)
-							})}
+							}
+
+	return (
+		<Sheet open={open} onClose={close} label="New machine" tall>
+			{picked ? (
+				<Configure os={picked} hostArch={hostArch} onBack={() => setPicked(null)} onDone={close} />
+			) : (
+				<>
+					<SheetHeader title="New machine" subtitle="Choose an operating system" onClose={close} />
+					{caps.data?.performanceWarning && (
+						<div className="error" style={{marginBottom: 12}}>
+							<Icon name="alert" size={18} />
+							{caps.data.performanceWarning}
 						</div>
+					)}
+					{caps.data && !caps.data.libvirtAvailable && (
+						<div className="error">
+							<Icon name="alert" size={18} />
+							Virtual machines aren’t available on this server.
+						</div>
+					)}
+					<div style={{overflowY: 'auto', flex: 1, margin: '0 -20px', padding: '0 20px 20px'}}>
+						{images.isLoading && Array.from({length: 5}, (_, i) => <div key={i} className="skeleton" style={{height: 64, margin: '8px 0'}} />)}
+						{images.error && (
+							<div className="error">
+								<Icon name="alert" size={18} />
+								{(images.error as Error).message}
+							</div>
+						)}
+						<div className="glass group" style={{borderRadius: 18, '--inset': '74px'} as React.CSSProperties}>
+							{list.map(renderRow)}
+						</div>
+						<div className="section-head" style={{marginTop: 18}}>
+							<h2>Your own ISO</h2>
+						</div>
+						{(ownIsos.data ?? []).length > 0 && (
+							<div className="glass group" style={{borderRadius: 18, '--inset': '74px'} as React.CSSProperties}>
+								{ownIsos.data!.map(renderRow)}
+							</div>
+						)}
 						<p className="footer-note" style={{textAlign: 'left'}}>
-							Installing from your own ISO or disk image arrives in a coming update.
+							{(ownIsos.data ?? []).length ? 'ISOs found in your Home folder. ' : 'Put an .iso file anywhere in Files (Downloads is fine) and it shows up here. '}
+							Windows 10 and 11 install by themselves with your account: get the ISO from microsoft.com/software-download. Other ISOs boot their installer in the console for you to finish.
 						</p>
 					</div>
 				</>
@@ -263,7 +275,11 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 							<div className="field">
 								<label htmlFor="vm-pass">Password in the machine</label>
 								<input id="vm-pass" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-								<span className="hint">Used to sign in to {os.name}. It isn’t stored by Omarchy Server.</span>
+								<span className="hint">
+									{windows
+										? 'Used to sign in to Windows. It’s kept only in the installer’s answer file, which is deleted the first time you shut down or restart this machine here.'
+										: `Used to sign in to ${os.name}. Only a scrambled (hashed) copy goes into the machine; Omarchy Server doesn’t keep it.`}
+								</span>
 							</div>
 						)}
 					</>
@@ -274,6 +290,22 @@ function Configure({os, hostArch, onBack, onDone}: {os: OsImage; hostArch: strin
 						<input id="vm-key" autoCapitalize="characters" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} />
 					</div>
 				)}
+				{(() => {
+					const note = os.manualSetup
+						? 'This ISO boots its own installer. When the machine is running, open its console and install it there; afterwards it starts from its own disk.'
+						: windows
+							? 'Windows installs by itself with this account (about 20–40 minutes; it restarts a few times). It installs as Windows Pro without activation: enter your own key in Windows Settings → Activation.'
+							: os.familyId === 'omarchy'
+								? 'Omarchy installs by itself from its official ISO. When it restarts, sign in with this username and password.'
+								: os.variantName === 'Desktop'
+									? 'The first start installs the desktop from the internet (10–30 minutes), then the machine restarts into it. Watch it in the console.'
+									: null
+					return note ? (
+						<p className="hint" style={{margin: '0 4px 14px', color: 'var(--muted)', fontSize: 13}}>
+							{note}
+						</p>
+					) : null
+				})()}
 				{os.state !== 'downloaded' && (
 					<p className="hint" style={{margin: '0 4px 14px', color: 'var(--muted)', fontSize: 13}}>
 						{os.name} ({bytes(os.sizeMb * 1e6, 1)}) downloads first; the machine appears right away and shows its progress.

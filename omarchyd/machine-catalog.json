@@ -1,7 +1,34 @@
 {
   "version": 1,
-  "about": "Operating systems Omarchy Server can create machines from. Each image is downloaded from its publisher and checked against the publisher's own checksum file before use. No hashes are stored here, so entries that track 'latest' stay valid as publishers update them.",
+  "about": "Operating systems Omarchy Server can create machines from, with one tap. Every download comes from its publisher and must match a checksum: either the publisher's own checksum list (entries that track 'latest') or a sha256 pinned here (versioned files). Cloud images set themselves up with cloud-init; desktops add their desktop on first start. Omarchy installs itself from its official ISO.",
   "images": [
+    {
+      "id": "ubuntu-26.04-desktop-amd64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Desktop",
+      "version": "26.04 LTS",
+      "arch": "amd64",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 860,
+      "adminGroup": "sudo",
+      "cloudInit": {"packages": ["ubuntu-desktop-minimal"], "commands": [["systemctl", "set-default", "graphical.target"]], "graphical": true}
+    },
+    {
+      "id": "ubuntu-26.04-server-amd64",
+      "familyId": "ubuntu",
+      "name": "Ubuntu",
+      "variantName": "Server",
+      "version": "26.04 LTS",
+      "arch": "amd64",
+      "kind": "cloud",
+      "url": "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img",
+      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS", "algorithm": "sha256"},
+      "sizeMb": 860,
+      "adminGroup": "sudo"
+    },
     {
       "id": "ubuntu-24.04-server-amd64",
       "familyId": "ubuntu",
@@ -9,7 +36,6 @@
       "variantName": "Server",
       "version": "24.04 LTS",
       "arch": "amd64",
-      "platform": "linux",
       "kind": "cloud",
       "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
       "checksums": {"url": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS", "algorithm": "sha256"},
@@ -17,18 +43,18 @@
       "adminGroup": "sudo"
     },
     {
-      "id": "ubuntu-24.04-server-arm64",
-      "familyId": "ubuntu",
-      "name": "Ubuntu",
-      "variantName": "Server",
-      "version": "24.04 LTS",
-      "arch": "arm64",
-      "platform": "linux",
+      "id": "debian-13-desktop-amd64",
+      "familyId": "debian",
+      "name": "Debian",
+      "variantName": "Desktop",
+      "version": "13",
+      "arch": "amd64",
       "kind": "cloud",
-      "url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img",
-      "checksums": {"url": "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS", "algorithm": "sha256"},
-      "sizeMb": 580,
-      "adminGroup": "sudo"
+      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
+      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
+      "sizeMb": 420,
+      "adminGroup": "sudo",
+      "cloudInit": {"packages": ["task-gnome-desktop"], "commands": [["systemctl", "set-default", "graphical.target"]], "graphical": true}
     },
     {
       "id": "debian-13-server-amd64",
@@ -37,7 +63,6 @@
       "variantName": "Server",
       "version": "13",
       "arch": "amd64",
-      "platform": "linux",
       "kind": "cloud",
       "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
       "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
@@ -45,18 +70,34 @@
       "adminGroup": "sudo"
     },
     {
-      "id": "debian-13-server-arm64",
-      "familyId": "debian",
-      "name": "Debian",
-      "variantName": "Server",
-      "version": "13",
-      "arch": "arm64",
-      "platform": "linux",
+      "id": "fedora-44-desktop-amd64",
+      "familyId": "fedora",
+      "name": "Fedora",
+      "variantName": "Desktop",
+      "version": "44",
+      "arch": "amd64",
       "kind": "cloud",
-      "url": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2",
-      "checksums": {"url": "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS", "algorithm": "sha512"},
-      "sizeMb": 400,
-      "adminGroup": "sudo"
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+      "sha256": "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f",
+      "sizeMb": 584,
+      "adminGroup": "wheel",
+      "cloudInit": {
+        "commands": [["dnf", "install", "-y", "@workstation-product-environment", "kernel-modules"], ["systemctl", "enable", "gdm.service"], ["systemctl", "set-default", "graphical.target"]],
+        "graphical": true
+      }
+    },
+    {
+      "id": "fedora-44-server-amd64",
+      "familyId": "fedora",
+      "name": "Fedora",
+      "variantName": "Server",
+      "version": "44",
+      "arch": "amd64",
+      "kind": "cloud",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+      "sha256": "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f",
+      "sizeMb": 584,
+      "adminGroup": "wheel"
     },
     {
       "id": "arch-server-amd64",
@@ -65,12 +106,37 @@
       "variantName": "Server",
       "version": "latest",
       "arch": "amd64",
-      "platform": "linux",
       "kind": "cloud",
       "url": "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
       "checksums": {"url": "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256", "algorithm": "sha256"},
       "sizeMb": 520,
       "adminGroup": "wheel"
+    },
+    {
+      "id": "alpine-3.24.1-amd64",
+      "familyId": "alpine",
+      "name": "Alpine Linux",
+      "version": "3.24.1",
+      "arch": "amd64",
+      "kind": "cloud",
+      "firmware": "efi",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/generic_alpine-3.24.1-x86_64-uefi-cloudinit-r0.qcow2",
+      "sha256": "20acb6673d31497bc292a8f6a075d98aa47d03cfe79ddf3c811840e60cf6f8c5",
+      "sizeMb": 202,
+      "adminGroup": "wheel",
+      "cloudInit": {"shell": "/bin/ash", "adminGroup": "wheel", "packages": ["sudo"]}
+    },
+    {
+      "id": "omarchy-4.0.4-amd64",
+      "familyId": "omarchy",
+      "name": "Omarchy",
+      "version": "4.0.4",
+      "arch": "amd64",
+      "kind": "iso",
+      "install": "omarchy",
+      "url": "https://iso.omarchy.org/omarchy-4.0.4.iso",
+      "sha256": "ddeded2758c48318d201dfdac905ecb28f570441883f0c052ea3cd5d05acf92d",
+      "sizeMb": 6186
     }
   ]
 }

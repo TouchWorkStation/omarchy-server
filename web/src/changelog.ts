@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.4.0',
+		date: '2026-11-12',
+		title: 'One-tap machines',
+		added: [
+			'Desktops: Ubuntu Desktop, Debian Desktop and Fedora Desktop install with one tap and start into their desktop.',
+			'More systems: Ubuntu 26.04, Fedora Server and Alpine Linux.',
+			'Omarchy as a machine: it downloads the official ISO and installs itself with your username and password.',
+			'Your own ISO: any .iso in Files shows up under New machine. Windows 10 and 11 install by themselves with your account; other ISOs boot their installer in the console.',
+		],
+	},
+	{
 		version: '0.3.0',
 		date: '2026-11-12',
 		title: 'Apps, NAS and an installer',

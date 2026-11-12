@@ -57,6 +57,16 @@ Logs: `journalctl --user -u omarchyd -u omarchy-server-web -f`
 
 ## Machines
 
+Tap an operating system and it installs itself:
+
+| Kind | How it installs |
+| --- | --- |
+| Ubuntu, Debian, Fedora, Arch, Alpine (Server) | Cloud image + cloud-init: your account, ready in a minute or two |
+| Ubuntu, Debian, Fedora (Desktop) | Same image; the first start installs the desktop, then restarts into it |
+| Omarchy | Official ISO + a `cidata` drive with its unattended-install files (your account, hashed password) |
+| Windows 10/11 (your ISO) | Put Microsoft's ISO in Files; an answer file installs it with your local account (Pro, unactivated) |
+| Any other ISO in Files | Boots its installer; finish it in the console |
+
 Virtual machines run under libvirt's **per-user session** (`qemu:///session`), so QEMU runs as you,
 not root, and you don't need the `libvirt` group. Each machine:
 
@@ -101,7 +111,8 @@ the app shows the one command (`sudo wipefs -a /dev/sdX`) to clear a drive yours
 - [ ] Your real Omarchy desktop in the browser (Hyprland headless + wayvnc + noVNC)
 - [x] Apps and the App Store: stores you add (community-store layout), rootless Podman + Compose,
       every app behind the Omarchy Server sign-in
-- [x] Virtual machines: Ubuntu, Debian and Arch cloud images, checksum-verified, set up with cloud-init,
+- [x] Virtual machines: one-tap Ubuntu/Debian/Fedora/Arch/Alpine (server and desktop), Omarchy, Windows from
+      your ISO, any ISO; checksum-verified, set up with cloud-init,
       run as your user (libvirt session, passt networking), screen in the browser, port forwarding
 - [x] NAS: drive health (SMART), drive sleep, Btrfs pools (new on blank drives, import, grow,
       error checks) in Home → Pools, SMB shares from Files
