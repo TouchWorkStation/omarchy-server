@@ -6,7 +6,7 @@ import {createContext, memo, useCallback, useContext, useEffect, useMemo, useRef
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
+import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
 import {AppSheet} from '../AppSheet'
 import {Console} from '../Console'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
@@ -1846,6 +1846,10 @@ function AppsWindow() {
 }
 
 function ConsoleWindow({machineId, onClose}: {machineId: string; onClose: () => void}) {
+	if (machineId === 'desktop') return <Console embedded machine={SERVER_DESKTOP} onClose={onClose} />
+	return <MachineConsoleWindow machineId={machineId} onClose={onClose} />
+}
+function MachineConsoleWindow({machineId, onClose}: {machineId: string; onClose: () => void}) {
 	const machines = useMachines()
 	const m = machines.data?.find((x) => x.id === machineId)
 	if (machines.isLoading)

@@ -38,7 +38,7 @@ command -v systemctl >/dev/null || die "systemd is required."
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
 #    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
 need=()
-for pkg in nodejs npm git openssl qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl wayvnc qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 if [ ${#need[@]} -gt 0 ]; then
 	say "Installing ${need[*]} (sudo needed)"
 	sudo pacman -S --needed --noconfirm "${need[@]}"
@@ -212,9 +212,28 @@ NoNewPrivileges=yes
 [Install]
 WantedBy=default.target
 EOF
+# Your Omarchy desktop in the web app: wayvnc shares the running Hyprland session on 127.0.0.1 only
+# (never on the network). The web app reaches it through omarchyd, behind your sign-in. It runs while
+# you're signed in to Omarchy on this machine, and stops when you sign out.
+cat >"$UNITS/omarchy-server-desktop.service" <<EOF
+[Unit]
+Description=Omarchy Server: share this Omarchy desktop with the web app (localhost only)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/wayvnc --max-fps=30 127.0.0.1 5900
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+EOF
 systemctl --user daemon-reload
-systemctl --user enable omarchyd.service omarchy-server-web.service >/dev/null
+systemctl --user enable omarchyd.service omarchy-server-web.service omarchy-server-desktop.service >/dev/null
 systemctl --user restart omarchyd.service omarchy-server-web.service
+# Start sharing now if a desktop session is running (otherwise it starts at the next sign-in).
+systemctl --user is-active --quiet graphical-session.target && systemctl --user restart omarchy-server-desktop.service >/dev/null 2>&1 || true
 
 # Omarchy turns on a firewall (ufw) that blocks incoming connections: let the web app through.
 # Rules are added even while ufw is off, so they apply as soon as it's turned on.

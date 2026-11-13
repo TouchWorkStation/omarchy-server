@@ -32,6 +32,31 @@ const COMPOSE_FILES = ['omarchy-compose.yml', 'docker-compose.yml']
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const RESERVED = (p) => p === 7780 || p === 2021 || (p >= 40_000 && p <= 49_999)
 const SESSION_DAYS = 30
+// Some stores keep icons and screenshots in a separate gallery site, by app id.
+// Stores every new Omarchy Server starts with (you can remove them under App Store → Stores). They're
+// downloaded from GitHub by your server; nothing from them is copied into Omarchy Server itself.
+export const DEFAULT_STORES = [
+	{url: 'https://github.com/TouchWorkStation/app-store'},
+	{url: 'https://github.com/getumbrel/umbrel-apps', name: 'Popular apps'},
+]
+const GALLERIES = {'https://github.com/getumbrel/umbrel-apps': 'https://getumbrel.github.io/umbrel-apps-gallery'}
+// Variables omarchyd provides to every app (anything else a compose file needs without a default
+// means the app relies on something Omarchy Server doesn't offer yet).
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_ID', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST'])
+// Container user most store apps run as (PUID/PGID 1000).
+const APP_UID = 1000
+
+// Variables a compose file uses with no default, that we don't provide.
+export function missingVars(text) {
+	const out = new Set()
+	for (const m of String(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
+		const name = m[1] ?? m[3]
+		const rest = m[2] ?? ''
+		if (/^:?[-=]/.test(rest)) continue // has a default
+		if (!PROVIDED.has(name)) out.add(name)
+	}
+	return [...out]
+}
 
 function execP(cmd, args, {env, cwd, timeout = 10 * 60_000} = {}) {
 	return new Promise((resolve, reject) => {
@@ -95,7 +120,7 @@ export function prepareCompose(appId, text, allocatePort) {
 	return {text: YAML.stringify(doc), internalPort}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -121,6 +146,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		} catch {
 			secret = randomBytes(32)
 			await writeFile(sf, secret, {mode: 0o600})
+		}
+		// First start: add the default stores (they download the first time the App Store opens).
+		if (!state.defaultsAdded) {
+			for (const d of defaultStores) if (!state.stores.some((x) => x.url.toLowerCase() === d.url.toLowerCase())) state.stores.push({url: d.url, ...(d.name ? {name: d.name} : {}), syncedAt: 0})
+			state.defaultsAdded = true
+			await save()
 		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
 		for (const a of state.apps) if (a.port && a.internalPort && a.state !== 'error') await openGateway(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
@@ -244,8 +275,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	async function loadStore(url) {
 		const dir = storeDir(url)
-		const meta = await readYaml(dir, STORE_FILES)
-		if (!meta?.data?.id) throw new RpcError('BAD_REQUEST', 'That repository isn’t an app store (no store manifest at its root)')
+		let meta = (await readYaml(dir, STORE_FILES))?.data
+		const gallery = GALLERIES[url.toLowerCase().replace(/\.git$/, '')] ?? (typeof meta?.gallery === 'string' && /^https:\/\//.test(meta.gallery) ? meta.gallery.replace(/\/+$/, '') : null)
 		const apps = []
 		for (const entry of await readdir(dir, {withFileTypes: true})) {
 			if (!entry.isDirectory() || entry.name.startsWith('.')) continue
@@ -253,11 +284,22 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id)) continue
 			if (!(await readYaml(join(dir, entry.name), COMPOSE_FILES).catch(() => null))) continue
 			const a = m.data
+			const compose = await readFile(join(dir, entry.name, (await readYaml(join(dir, entry.name), COMPOSE_FILES)).name), 'utf8')
+			const deps = (a.dependencies ?? []).filter((x) => typeof x === 'string')
+			const missing = missingVars(compose)
+			const unsupported = deps.length
+				? `Needs ${deps.join(', ')} installed alongside it, which Omarchy Server can’t connect apps to yet.`
+				: /ipv4_address/.test(compose)
+					? 'Uses fixed internal network addresses, which Omarchy Server doesn’t support yet.'
+					: missing.length
+						? `Needs settings Omarchy Server doesn’t provide yet (${missing.slice(0, 3).join(', ')}).`
+						: null
+			const media = (f) => (typeof f === 'string' && /^https:\/\//.test(f) ? f : gallery && typeof f === 'string' && /^[\w.-]+$/.test(f) ? `${gallery}/${a.id}/${f}` : null)
 			apps.push({
 				id: a.id,
 				name: String(a.name ?? a.id),
 				tagline: a.tagline,
-				icon: typeof a.icon === 'string' && /^https:\/\//.test(a.icon) ? a.icon : undefined,
+				icon: media(a.icon) ?? (gallery ? `${gallery}/${a.id}/icon.svg` : undefined),
 				category: a.category,
 				version: a.version !== undefined ? String(a.version) : undefined,
 				port: Number(a.port) || undefined,
@@ -265,15 +307,24 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				description: a.description,
 				developer: a.developer,
 				website: a.website,
-				gallery: (a.gallery ?? []).filter((g) => typeof g === 'string' && /^https:\/\//.test(g)),
+				gallery: (a.gallery ?? []).map(media).filter(Boolean),
 				releaseNotes: a.releaseNotes,
 				dependencies: a.dependencies ?? [],
 				defaultUsername: a.defaultUsername || undefined,
 				defaultPassword: a.defaultPassword || undefined,
+				deterministicPassword: a.deterministicPassword === true,
+				...(unsupported ? {unsupported} : {}),
 				folder: join(dir, entry.name),
 			})
 		}
-		return {url, meta: {id: String(meta.data.id), name: String(meta.data.name ?? meta.data.id)}, apps}
+		if (!meta?.id) {
+			// No store manifest: a plain repository of app folders. Name it after the repository.
+			if (!apps.length) throw new RpcError('BAD_REQUEST', 'That repository isn’t an app store (no apps found in it)')
+			const slug = url.replace(/\.git$/, '').split('/').filter(Boolean).slice(-2).join('-').toLowerCase().replace(/[^a-z0-9-]/g, '-')
+			const repo = url.replace(/\.git$/, '').split('/').pop() ?? 'store'
+			meta = {id: slug, name: repo.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+		}
+		return {url, meta: {id: String(meta.id), name: String(meta.name ?? meta.id)}, apps}
 	}
 	async function syncStore(url) {
 		const dir = storeDir(url)
@@ -292,7 +343,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				} catch {}
 			}
 			try {
-				list.push(await loadStore(s.url))
+				const loaded = await loadStore(s.url)
+				if (s.name) loaded.meta.name = s.name
+				s.meta = loaded.meta
+				list.push(loaded)
 			} catch {}
 		}
 		await save()
@@ -341,17 +395,38 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// create them the way Docker does).
 	async function createBindSources(app, text) {
 		const env = composeEnv(app)
+		const shared = join(base, 'shared-root')
 		const doc = YAML.parse(text) ?? {}
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
 				const src = typeof v === 'string' ? v.split(':')[0] : v?.source
 				if (!src || !/^[$/.]/.test(src)) continue
 				const path = resolve(appDir(app.id), src.replace(/\$\{?(\w+)\}?/g, (_, k) => env[k] ?? ''))
-				if (!path.startsWith(appDir(app.id))) continue // only inside the app's own folder
+				// Only inside the app's own folder, or the shared folders (e.g. a Downloads subfolder).
+				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
 			}
 		}
 	}
+	// Rootless containers see your files as owned by their root. Store apps mostly run as user
+	// 1000 (as on the systems they were written for), so give the app's own folder to that user,
+	// and let it into Downloads with an access entry (your ownership of Downloads is unchanged).
+	async function prepareOwnership(app) {
+		await run('podman', ['unshare', 'chown', '-R', `${APP_UID}:${APP_UID}`, appDir(app.id)], {env: engineEnv})
+		const sub = await subordinateId()
+		if (sub !== null) {
+			const downloads = join(home, 'Downloads')
+			for (const flags of [['-R', '-m'], ['-R', '-d', '-m']]) await run('setfacl', [...flags, `u:${sub + APP_UID - 1}:rwX`, downloads]).catch(() => {})
+		}
+	}
+	async function subordinateId() {
+		const user = os.userInfo().username
+		const line = (await readFile('/etc/subuid', 'utf8').catch(() => '')).split('\n').find((l) => l.startsWith(`${user}:`))
+		const start = Number(line?.split(':')[1])
+		return Number.isInteger(start) ? start : null
+	}
+	// App folders end up owned by container users, so remove them from inside the user namespace.
+	const removeAppDir = (id) => run('podman', ['unshare', 'rm', '-rf', appDir(id)], {env: engineEnv}).catch(() => rm(appDir(id), {recursive: true, force: true}))
 
 	async function engineAvailable() {
 		const ok = await run('docker-compose', ['version'], {env: engineEnv}).then(() => true, () => false)
@@ -395,7 +470,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				state: b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown')),
 				...(b?.progress !== undefined ? {progress: b.progress} : {}),
 				...(a.state === 'error' ? {error: a.error} : {}),
-				credentials: {defaultUsername: a.defaultUsername, defaultPassword: a.defaultPassword, showBeforeOpen: !!a.defaultPassword},
+				credentials: (() => {
+					const password = a.deterministicPassword ? createHmac('sha256', secret).update(`password:${a.id}`).digest('hex') : a.defaultPassword
+					return {defaultUsername: a.defaultUsername, defaultPassword: password, showBeforeOpen: !!password}
+				})(),
 			}
 		})
 	}
@@ -427,12 +505,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const src = await findInRegistry(id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app isn’t in your stores')
+		if (src.unsupported) throw new RpcError('PRECONDITION_FAILED', `${src.name} can’t be installed here yet. ${src.unsupported}`)
 		if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
 		if (src.port) {
 			if (src.port < 1024 || src.port > 65535 || RESERVED(src.port)) throw new RpcError('PRECONDITION_FAILED', `${src.name} wants port ${src.port}, which Omarchy Server keeps for itself`)
 			if (state.apps.some((a) => a.port === src.port) || !(await portFree(src.port))) throw new RpcError('CONFLICT', `Port ${src.port} is already in use, so ${src.name} can’t be installed`)
 		}
-		const app = {id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, installedAt: Date.now(), state: 'installing'}
+		const app = {id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, installedAt: Date.now(), state: 'installing'}
 		state.apps.push(app)
 		await save()
 		busy.set(id, {state: 'installing', progress: 5})
@@ -440,6 +519,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			try {
 				await sharedRoot()
 				app.internalPort = await placeApp(src, app)
+				await prepareOwnership(app)
 				busy.set(id, {state: 'installing', progress: 15})
 				await compose(app, 'pull')
 				busy.set(id, {state: 'installing', progress: 85})
@@ -503,7 +583,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			closeGateway(app.id)
 			if (app.port) await firewall?.close(app.port)
 			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
-			await rm(appDir(app.id), {recursive: true, force: true})
+			await removeAppDir(app.id)
 			state.apps = state.apps.filter((a) => a.id !== app.id)
 			state.recent = state.recent.filter((r) => r !== app.id)
 			await save()
@@ -522,8 +602,24 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return out
 	}
 
+	// A shell inside an installed app's main container (the one the gateway forwards to).
+	async function shellFor(appId) {
+		await ready
+		const app = findInstalled(String(appId))
+		const doc = YAML.parse(await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8')) ?? {}
+		const names = Object.keys(doc.services ?? {})
+		const main = names.find((n) => (doc.services[n].ports ?? []).some((p) => String(p).startsWith(`127.0.0.1:${app.internalPort}:`))) ?? names[0]
+		if (!main) throw new RpcError('NOT_FOUND', 'That app has no containers')
+		return {
+			command: ['docker-compose', '-p', project(app.id), '-f', join(appDir(app.id), 'compose.omarchy.yml'), 'exec', main, 'sh', '-c', 'command -v bash >/dev/null 2>&1 && exec bash || exec sh'],
+			env: {...process.env, ...composeEnv(app)},
+			cwd: appDir(app.id),
+		}
+	}
+
 	return {
 		ready,
+		shellFor,
 		checkSession,
 		issueSession,
 		sessionCookie,
@@ -572,7 +668,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				},
 			},
 			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},
-			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta}) => ({url, meta})))},
+			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta, name}) => ({url, meta: meta ?? {id: url, name: name ?? url.split('/').pop()}})))},
 			'appStore.addRepository': {
 				kind: 'mutation',
 				run: async (input) => {

@@ -46,6 +46,12 @@ describe('omarchyd apps', () => {
 			if (verb === 'logs') return 'web-1  | hello from the app\n'
 			return ''
 		}
+		if (cmd === 'podman') {
+			calls.push({podman: args})
+			if (args[1] === 'rm') execFileSync('rm', args.slice(2))
+			return ''
+		}
+		if (cmd === 'setfacl') return ''
 		throw new Error(`${cmd} not simulated`)
 	}
 
@@ -70,7 +76,7 @@ describe('omarchyd apps', () => {
 		storeUrl = `file://${store}`
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
-		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run, allowFileStores: true, gatewayHost: '127.0.0.1'}})
+		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run, allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: []}})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})
@@ -114,7 +120,7 @@ describe('omarchyd apps', () => {
 		await call('apps.install', {appId: 'demo-app'})
 		const app = await until(async () => (await q('apps.list')).find((a) => a.id === 'demo-app' && a.state === 'running'))
 		assert.equal(app.port, appPort)
-		const upCall = calls.find((c) => c.args[4] === 'up')
+		const upCall = calls.find((c) => c.args?.[4] === 'up')
 		assert.match(upCall.env.APP_DATA_DIR, /apps\/installed\/demo-app$/)
 		assert.equal(upCall.env.GATEWAY_IP, '127.0.0.1')
 		const composed = YAML.parse(await readFile(join(data, 'apps/installed/demo-app/compose.omarchy.yml'), 'utf8'))
@@ -122,6 +128,7 @@ describe('omarchyd apps', () => {
 		assert.deepEqual(composed.services.web.ports, [`127.0.0.1:${app.internalPort}:8080`])
 		// The app's data folder was created for it.
 		await readFile(join(data, 'apps/installed/demo-app/omarchy-app.yml'))
+		assert.ok(calls.some((c) => c.podman?.join(' ') === `unshare chown -R 1000:1000 ${join(data, 'apps/installed/demo-app')}`), 'app folder handed to the container user')
 		await assert.rejects(call('apps.install', {appId: 'demo-app'}), /already installed/)
 		// Stand in for the container: an HTTP + WebSocket server on the internal port.
 		upstream = http.createServer((req, res) => res.end(JSON.stringify({path: req.url, cookie: req.headers.cookie ?? ''})))
@@ -166,13 +173,41 @@ describe('omarchyd apps', () => {
 		assert.ok(r.headers.getSetCookie().some((c) => /^OMARCHY_APP_SESSION=v1\./.test(c)))
 	})
 
+	test('stores without a manifest; apps needing what we lack are listed but refused with a reason', async () => {
+		const store = join(root, 'plain-apps')
+		const app = async (id, manifest, compose) => {
+			await mkdir(join(store, id), {recursive: true})
+			await writeFile(join(store, id, 'umbrel-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\nport: ${appPort + 5}\ndeterministicPassword: true\n${manifest}`)
+			await writeFile(join(store, id, 'docker-compose.yml'), compose)
+		}
+		await app('plain', '', 'services:\n  web:\n    image: x\n    environment:\n      PW: $APP_PASSWORD\n      OPT: ${NOT_SET:-fine}\n')
+		await app('needs-node', 'dependencies:\n  - bitcoin\n', 'services:\n  web:\n    image: x\n')
+		await app('needs-vars', '', 'services:\n  web:\n    image: x\n    environment:\n      RPC: ${APP_BITCOIN_NODE_IP}\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const reg = (await q('appStore.registry')).find((r) => r.url.endsWith('plain-apps'))
+		assert.equal(reg.meta.name, 'Plain Apps')
+		const by = Object.fromEntries(reg.apps.map((a) => [a.id, a]))
+		assert.equal(by.plain.unsupported, undefined)
+		assert.match(by['needs-node'].unsupported, /Needs bitcoin/)
+		assert.match(by['needs-vars'].unsupported, /APP_BITCOIN_NODE_IP/)
+		await assert.rejects(call('apps.install', {appId: 'needs-node'}), /can’t be installed here yet/)
+		await call('apps.install', {appId: 'plain'})
+		const plain = await until(async () => (await q('apps.list')).find((a) => a.id === 'plain' && a.state === 'running'))
+		assert.match(plain.credentials.defaultPassword, /^[0-9a-f]{64}$/, 'app-generated password is shown')
+		await call('apps.uninstall', {appId: 'plain'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
 	test('logs, stop, uninstall', async () => {
 		assert.match(await q('apps.logs', {appId: 'demo-app'}), /hello from the app/)
 		await call('apps.stop', {appId: 'demo-app'})
 		assert.equal((await q('apps.list'))[0].state, 'stopped')
 		await call('apps.uninstall', {appId: 'demo-app'})
 		assert.deepEqual(await q('apps.list'), [])
-		assert.ok(calls.some((c) => c.args[4] === 'down' && c.args.includes('--volumes')))
+		assert.ok(calls.some((c) => c.args?.[4] === 'down' && c.args?.includes('--volumes')))
 		await assert.rejects(fetch(`http://127.0.0.1:${appPort}/`), 'gateway closed')
 		await call('appStore.removeRepository', {url: storeUrl})
 		assert.deepEqual(await q('appStore.registry'), [])

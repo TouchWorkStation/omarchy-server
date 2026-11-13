@@ -1,6 +1,6 @@
 import {useState} from 'react'
 
-import type {Machine, PortForward} from '../api'
+import {SERVER_DESKTOP, type Machine, type PortForward} from '../api'
 import {Console} from '../Console'
 import {useDesktop} from '../desktop/Desktop'
 import {CreateMachine} from '../CreateMachine'
@@ -29,7 +29,7 @@ export function Machines() {
 	const [creating, setCreating] = useState(false)
 	const list = machines.data ?? []
 	const selected = list.find((m) => m.id === selectedId) ?? null
-	const consoleMachine = list.find((m) => m.id === consoleId) ?? null
+	const consoleMachine = consoleId === 'desktop' ? SERVER_DESKTOP : (list.find((m) => m.id === consoleId) ?? null)
 	const running = list.filter((m) => m.state === 'running').length
 
 	return (
@@ -48,6 +48,23 @@ export function Machines() {
 				<h1 className="title">Machines</h1>
 				<p className="subtitle">{machines.isLoading ? 'Loading…' : list.length ? `${running} of ${list.length} running` : 'Virtual machines on your server'}</p>
 			</div>
+			<button
+				className="glass vm-card desktop-card"
+				onClick={() => {
+					haptic(8)
+					if (desk) desk.openConsole('desktop')
+					else setConsoleId('desktop')
+				}}
+			>
+				<span className="vm-ico" style={{background: 'linear-gradient(140deg,#2b2b2b,#0b0b0b)', width: 52, height: 52, borderRadius: 15, display: 'grid', placeItems: 'center', color: '#fff'}}>
+					<Icon name="terminal" size={26} />
+				</span>
+				<span className="main" style={{display: 'flex', flexDirection: 'column', gap: 2, textAlign: 'left', flex: 1, minWidth: 0}}>
+					<b style={{fontSize: 17}}>Omarchy desktop</b>
+					<span className="muted" style={{fontSize: 13}}>This server’s own desktop, live. Needs someone signed in to Omarchy on the server.</span>
+				</span>
+				<Icon name="chevron" size={18} className="chev" />
+			</button>
 			{machines.error && (
 				<div className="error">
 					<Icon name="alert" size={18} />

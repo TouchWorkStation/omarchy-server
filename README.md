@@ -86,11 +86,27 @@ when `/dev/kvm` is available (otherwise machines still run, slowly).
 
 ## Apps
 
-Add a store under App Store → Stores (for example `https://github.com/TouchWorkStation/app-store`).
+A new server starts with two stores, downloaded from GitHub by your server (nothing from them is
+copied into Omarchy Server): the TouchWorkStation store and a large public store of about 400 apps
+(shown as "Popular apps"). Add or remove stores under App Store → Stores.
+Apps that rely on things Omarchy Server doesn't provide yet (apps that depend on other apps, fixed
+internal network addresses, or settings it doesn't supply) are listed with the reason and can't be
+installed. Store apps mostly run as user 1000, so each app's folder is handed to that user inside
+its container, and it gets access to Downloads through an ACL.
 Stores use the community-store layout: a store manifest at the root and a folder per app with its
 manifest and compose file. Apps run in **rootless Podman** as you (no root, no docker group, no
 Docker socket on the network). Each app's web port is served by omarchyd's gateway, which only lets
 in browsers signed in to Omarchy Server, and forwards to the app on `127.0.0.1`.
+
+## Desktop and terminal
+
+- **Omarchy desktop:** Machines → Omarchy desktop shows this server's own desktop, live. `wayvnc`
+  shares the signed-in Hyprland session on `127.0.0.1:5900` only; the web app reaches it through
+  omarchyd with a single-use ticket, so it's behind your Omarchy Server sign-in. It's available
+  while someone is signed in to Omarchy on the server.
+- **Terminal:** a login shell in a real pty (via util-linux `script`), or a shell inside an app.
+- **On the server:** `omarchy-server` (status, open, restart, logs), "Omarchy Server" in the
+  launcher, and a top-bar icon (`omarchy-server widget off` removes it).
 
 ## Storage
 

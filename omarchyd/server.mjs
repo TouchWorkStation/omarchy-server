@@ -12,13 +12,14 @@ import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
 import {createStorage} from './storage.mjs'
+import {bridge, openShell} from './terminal.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.5.0'
+export const OMARCHYD_VERSION = '0.6.0'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
@@ -59,11 +60,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'user.createWebSocketTicket': {
 			kind: 'mutation',
 			run: (input, {auth}) => {
-				if (input?.target !== 'machines') throw new RpcError('NOT_FOUND', 'The terminal arrives in a coming Omarchy Server update')
+				if (input?.target !== 'machines' && input?.target !== 'terminal') throw new RpcError('BAD_REQUEST', 'Unknown console')
 				const now = Date.now()
 				for (const [t, v] of tickets) if (v.expires < now) tickets.delete(t)
 				const ticket = randomBytes(24).toString('base64url')
-				tickets.set(ticket, {userId: auth.userId, target: 'machines', expires: now + 30_000})
+				tickets.set(ticket, {userId: auth.userId, target: input.target, expires: now + 30_000})
 				return ticket
 			},
 		},
@@ -145,13 +146,28 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		}
 		try {
 			const url = new URL(req.url ?? '/', 'http://localhost')
-			if (url.pathname !== '/machines/console') return refuse('404 Not Found')
+			const route = {'/machines/console': 'machines', '/terminal': 'terminal'}[url.pathname]
+			if (!route) return refuse('404 Not Found')
 			const t = tickets.get(url.searchParams.get('ticket') ?? '')
 			tickets.delete(url.searchParams.get('ticket') ?? '')
-			if (!t || t.expires < Date.now() || t.target !== 'machines') return refuse('401 Unauthorized')
-			const path = await machines.vncSocket(url.searchParams.get('machineId') ?? '').catch(() => null)
-			if (!path) return refuse('409 Conflict')
-			const vnc = net.connect(path)
+			if (!t || t.expires < Date.now() || t.target !== route) return refuse('401 Unauthorized')
+			// A shell: your own, or one inside an installed app's container.
+			if (route === 'terminal') {
+				const cols = Number(url.searchParams.get('cols'))
+				const rows = Number(url.searchParams.get('rows'))
+				if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 300) return refuse('400 Bad Request')
+				const appId = url.searchParams.get('appId')
+				const inApp = appId ? await apps.shellFor(appId).catch(() => null) : null
+				if (appId && !inApp) return refuse('409 Conflict')
+				const child = openShell({cols, rows, home, ...(inApp ?? {}), cwd: inApp?.cwd ?? home})
+				wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, child))
+				return
+			}
+			// "desktop" is this server's own Omarchy desktop, shared by wayvnc on 127.0.0.1 only.
+			const machineId = url.searchParams.get('machineId') ?? ''
+			const target = machineId === 'desktop' ? {host: '127.0.0.1', port: desktopVncPort} : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
+			if (!target) return refuse('409 Conflict')
+			const vnc = net.connect(target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))
 			vnc.once('connect', () => {
 				vnc.removeAllListeners('error')

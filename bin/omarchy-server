@@ -7,6 +7,7 @@
 #   omarchy-server widget on    add the status icon to the top bar (off to remove)
 set -u
 UNITS=(omarchyd.service omarchy-server-web.service)
+DESKTOP_UNIT=omarchy-server-desktop.service
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PORT=$(sed -n 's/.*server\/cli\.mjs --port \([0-9]*\).*/\1/p' "$UNIT_DIR/omarchy-server-web.service" 2>/dev/null | head -1)
 PORT=${PORT:-7780}
@@ -20,12 +21,14 @@ reload_bar() { if command -v omarchy-restart-waybar >/dev/null 2>&1; then omarch
 
 case "${1:-status}" in
 	status)
-		for u in "${UNITS[@]}"; do printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"; done
+		for u in "${UNITS[@]}" "$DESKTOP_UNIT"; do printf '%-34s %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"; done
 		running && printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
 		;;
 	open) xdg-open "http://localhost:$PORT" >/dev/null 2>&1 & ;;
 	start | stop | restart)
 		systemctl --user "$1" "${UNITS[@]}"
+		# Desktop sharing only runs inside a signed-in Omarchy session.
+		systemctl --user is-active --quiet graphical-session.target 2>/dev/null && systemctl --user "$1" "$DESKTOP_UNIT" 2>/dev/null
 		sleep 1
 		if [ "$1" = stop ]; then notify "Stopped"; elif running; then notify "Running at http://$(ip_addr):$PORT"; else notify "Didn't start. See: omarchy-server logs"; fi
 		;;

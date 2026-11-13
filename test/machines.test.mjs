@@ -218,7 +218,9 @@ describe('omarchyd machines', () => {
 		const wsUrl = `${d.url.replace('http', 'ws')}/machines/console?machineId=${id}`
 		const refused = new WebSocket(`${wsUrl}&ticket=nope`, ['binary'])
 		await new Promise((r) => refused.on('error', r))
-		await assert.rejects(call('user.createWebSocketTicket', {target: 'terminal'}), /terminal/)
+		const termTicket = await call('user.createWebSocketTicket', {target: 'terminal'})
+		const wrongKind = new WebSocket(`${wsUrl}&ticket=${termTicket}`, ['binary'])
+		await new Promise((r) => wrongKind.on('error', r)) // a terminal ticket can't open a screen
 		const ticket = await call('user.createWebSocketTicket', {target: 'machines'})
 		const ws = new WebSocket(`${wsUrl}&ticket=${ticket}`, ['binary'])
 		const first = await new Promise((r, j) => (ws.once('message', (m) => r(m.toString())), ws.once('error', j)))

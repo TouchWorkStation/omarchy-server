@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.6.0',
+		date: '2026-11-12',
+		title: 'Terminal, desktop and 400 apps',
+		added: [
+			'Terminal: a real shell on the server from the web app, and a shell inside any installed app.',
+			'Omarchy desktop: see and use this server’s own Omarchy desktop from Machines, behind your sign-in.',
+			'App Store: about 400 apps, in your TouchWorkStation store and Popular apps, added automatically. Apps that need something Omarchy Server can’t provide yet say why instead of failing.',
+			'Top-bar icon, launcher entries and an omarchy-server command to open, check and restart the server.',
+		],
+	},
+	{
 		version: '0.5.0',
 		date: '2026-11-12',
 		title: 'ZFS',

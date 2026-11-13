@@ -7,7 +7,7 @@ import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
 
-type StoreApp = RegistryApp & {compatible?: boolean; repo?: string}
+type StoreApp = RegistryApp & {compatible?: boolean; repo?: string; unsupported?: string}
 
 const CATEGORY_LABEL: Record<string, string> = {
 	files: 'Files & Productivity',
@@ -80,7 +80,7 @@ export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp
 							{isAppBusy(inst.state) ? <span className="spinner" style={{width: 14, height: 14}} /> : 'Open'}
 						</button>
 					) : (
-						<button className="btn get" onClick={() => pick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false}>
+						<button className="btn get" onClick={() => pick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false || !!app.unsupported}>
 							Get
 						</button>
 					)}
@@ -376,7 +376,7 @@ function StoreSheet({
 
 	const live = installed.get(app.id)
 	const missingDeps = (app.dependencies ?? []).filter((d) => !installed.has(d))
-	const incompatible = app.compatible === false
+	const incompatible = app.compatible === false || !!app.unsupported
 	const canInstall = !live && !incompatible && missingDeps.length === 0
 	const showReview = reviewing && canInstall
 
@@ -485,7 +485,7 @@ function StoreSheet({
 					) : incompatible ? (
 						<div className="error">
 							<Icon name="alert" size={18} />
-							This app needs a newer version of Omarchy Server.
+							{app.unsupported ?? 'This app needs a newer version of Omarchy Server.'}
 						</div>
 					) : missingDeps.length ? (
 						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>

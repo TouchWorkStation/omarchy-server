@@ -144,6 +144,9 @@ export type Machine = {
 	portForwards?: PortForward[]
 }
 
+// This server's own Omarchy desktop, shown in the same viewer as a machine's screen.
+export const SERVER_DESKTOP: Machine = {id: 'desktop', name: 'Omarchy desktop', state: 'running'}
+
 export type InstallReview = {
 	requiredFolders: {id: string; name: string; note: string | null; defaultSourcePath: string; readOnly: boolean}[]
 	gpuAccess: boolean
