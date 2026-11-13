@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.0'
+export const VERSION = '0.8.1'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -1174,7 +1174,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return res.status(400).type('text/plain').send('Bad app')
 		if (!store.getSession(req.sid)) return res.redirect(302, '/')
 		try {
-			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id})
+			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
 			const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
 			res.redirect(302, `http://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
 		} catch (error) {

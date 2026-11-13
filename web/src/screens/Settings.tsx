@@ -2,15 +2,14 @@
 import {useContext, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type ActiveSession, type Wallpaper} from '../api'
+import {logout, mutate, query, type ActiveSession} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useToast, wallpaperUrl, type LayoutPref, type Prefs} from '../ui'
+import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
 import {StoragePage} from './Storage'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 
-const WALLPAPER_IDS = Array.from({length: 25}, (_, i) => String(i + 1))
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -146,7 +145,7 @@ function describeSession(s: ActiveSession) {
 	return {icon: 'browser' as IconName, name: `${browser}${os ? ` on ${os}` : ''}`, detail: ''}
 }
 
-type SheetId = null | 'name' | 'password' | '2fa' | 'wallpaper' | 'hostname' | 'wifi' | 'logs' | 'reset'
+type SheetId = null | 'name' | 'password' | '2fa' | 'hostname' | 'wifi' | 'logs' | 'reset'
 
 export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onBack: () => void; onSignedOut: () => void}) {
 	const boot = useBootstrap()
@@ -290,7 +289,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<Row icon="user" color="var(--blue)" label="Name" value={user.data?.name} onClick={() => setSheet('name')} />
 					<Row icon="key" color="#8e8e93" label="Password" onClick={() => setSheet('password')} />
 					<Row icon="shield" color="var(--green)" label="Two-factor authentication" value={twoFactor.data === undefined ? '' : twoFactor.data ? 'On' : 'Off'} onClick={() => setSheet('2fa')} />
-					<Row icon="wallpaper" color="var(--mauve)" label="Omarchy Server wallpaper" onClick={() => setSheet('wallpaper')} />
 				</div>
 			</div>
 
@@ -413,7 +411,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			<NameSheet open={sheet === 'name'} current={user.data?.name ?? ''} onClose={close} />
 			<PasswordSheet open={sheet === 'password'} onClose={close} onSignedOut={onSignedOut} />
 			<TwoFactorSheet open={sheet === '2fa'} enabled={!!twoFactor.data} onClose={close} />
-			<WallpaperSheet open={sheet === 'wallpaper'} current={user.data?.wallpaper} onClose={close} />
 			<HostnameSheet open={sheet === 'hostname'} current={hostname.data ?? ''} onClose={close} />
 			{sheet === 'wifi' && <WifiSheet onClose={close} connected={wifi.data?.status === 'connected' ? wifi.data.ssid : undefined} />}
 			{sheet === 'logs' && <LogsSheet onClose={close} />}
@@ -572,34 +569,6 @@ function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boole
 				style={{textAlign: 'center', letterSpacing: '0.3em', fontSize: 20}}
 			/>
 		</FormSheet>
-	)
-}
-
-function WallpaperSheet({open, current, onClose}: {open: boolean; current?: Wallpaper | null; onClose: () => void}) {
-	const save = useSave()
-	const qc = useQueryClient()
-	return (
-		<Sheet open={open} onClose={onClose} label="Omarchy Server wallpaper">
-			<SheetHeader title="Omarchy Server wallpaper" subtitle="Also used by the Horizon theme" onClose={onClose} />
-			<div className="wall-grid" role="radiogroup" aria-label="Wallpaper">
-				{WALLPAPER_IDS.map((id) => (
-					<button
-						key={id}
-						role="radio"
-						aria-checked={current?.id === id}
-						aria-label={`Wallpaper ${id}`}
-						style={{backgroundImage: `url(${wallpaperUrl({id, brandColorHsl: null})}?size=thumb)`}}
-						onClick={() => {
-							haptic(6)
-							save.mutate(
-								{path: 'user.set', input: {wallpaper: id}, done: 'Wallpaper changed'},
-								{onSuccess: () => qc.invalidateQueries({queryKey: ['user.get']})},
-							)
-						}}
-					/>
-				))}
-			</div>
-		</Sheet>
 	)
 }
 

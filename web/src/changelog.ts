@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.1',
+		date: '2026-11-12',
+		title: 'Apps load, wallpapers in Appearance',
+		added: ['Wallpaper now lives in Settings → Appearance, with the backgrounds from your Omarchy themes. Picking one sets it right away.'],
+		fixed: [
+			'Apps that run on their own port (Home Assistant, Plex, Pi-hole, AdGuard and others) spun forever inside Omarchy Server. They now open through a viewer port that lets them show, without proxy headers they reject.',
+			'Apps whose web port comes from their settings (like Mempool) now get their web page connected.',
+			'An app that takes a long time to show now says so after 15 seconds, with Try again and Open in a tab, instead of spinning forever.',
+			'Removed the old wallpaper picker from the main Settings list.',
+		],
+	},
+	{
 		version: '0.8.0',
 		date: '2026-11-12',
 		title: 'One sign-in, every app, Omarchy backgrounds',

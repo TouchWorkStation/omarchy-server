@@ -572,7 +572,7 @@ export const customBackgroundUrl = (version?: number | null) => (version ? `/api
 export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; prefs: Prefs}) {
 	const url =
 		prefs.theme === 'horizon'
-			? wallpaperUrl(wallpaper)
+			? omarchyBackgroundUrl(prefs.omarchyBackground)
 			: prefs.theme === 'custom'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
 				: prefs.theme === 'omarchy'

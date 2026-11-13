@@ -114,7 +114,7 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 const varName = (v) => /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(String(v ?? '').trim())?.[1] ?? null
-export function prepareCompose(appId, text, allocatePort, {shared = false} = {}) {
+export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}} = {}) {
 	const doc = YAML.parse(text) ?? {}
 	const services = doc.services ?? {}
 	const proxy = services.app_proxy?.environment ?? {}
@@ -128,7 +128,12 @@ export function prepareCompose(appId, text, allocatePort, {shared = false} = {})
 		if (!s.container_name && s.network_mode !== 'host') s.container_name = `${appId}_${key}_1`
 	}
 	if (shared) doc.networks = {...(doc.networks ?? {}), default: {name: SHARED_NETWORK, external: true}}
-	const appPort = Number(proxy.APP_PORT)
+	// APP_PORT / APP_HOST may name a variable from the app's exports.sh (e.g. $APP_MEMPOOL_PORT).
+	const resolved = (v) => {
+		const n = varName(v)
+		return n && vars[n] !== undefined ? String(vars[n]) : String(v ?? '')
+	}
+	const appPort = Number(resolved(proxy.APP_PORT))
 	const host = String(proxy.APP_HOST ?? '').trim()
 	let internalPort = null
 	if (Number.isInteger(appPort) && appPort > 0) {
@@ -140,7 +145,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false} = {})
 			// The web service named by its fixed address (APP_HOST: $APP_X_IP, ipv4_address: $APP_X_IP).
 			const hostVar = varName(host)
 			const byAddress = hostVar ? Object.keys(services).find((k) => varName(services[k]?.networks?.default?.ipv4_address) === hostVar) : null
-			const key = services[name] ? name : byContainer ? byContainer : byAddress ? byAddress : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
+			const key = services[host] ? host : services[name] ? name : byContainer ? byContainer : byAddress ? byAddress : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
 			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
 			internalPort = allocatePort()
 			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
@@ -184,7 +189,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await save()
 		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
-		for (const a of state.apps) if (a.port && a.internalPort && a.state !== 'error') await openGateway(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
+		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
 	const save = async () => {
 		const tmp = `${stateFile}.${process.pid}.tmp`
@@ -255,8 +260,22 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	const safePath = (p) => (typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? p : '/')
 
-	async function openGateway(app) {
-		if (gateways.has(app.id)) return
+	// The sign-in gateway in front of an app. Normally it owns the app's port and forwards to the
+	// app's private one (127.0.0.1:internalPort). Apps that hold their own port themselves (host
+	// network: Home Assistant, Plex, Pi-hole…) get a "view" gateway on a port of its own instead, so
+	// they can still be shown inside Omarchy Server; it passes requests on unchanged, without
+	// proxy headers (some apps, like Home Assistant, refuse requests that claim to come via a proxy).
+	const gatewayKey = (id, view) => (view ? `${id}:view` : id)
+	async function openGateway(app, {view = false} = {}) {
+		const key = gatewayKey(app.id, view)
+		if (gateways.has(key)) return
+		const listenPort = view ? app.viewPort : app.port
+		const target = view ? app.port : app.internalPort
+		const headersFor = (req) => {
+			const h = forwardHeaders(req)
+			if (view) for (const k of Object.keys(h)) if (k.startsWith('x-forwarded-')) delete h[k]
+			return h
+		}
 		const server = http.createServer((req, res) => {
 			const url = new URL(req.url ?? '/', 'http://x')
 			if (url.pathname === '/__omarchy/enter') {
@@ -271,11 +290,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			}
 			if (!checkSession(parseCookies(req.headers.cookie)[APP_COOKIE])) {
 				// Not signed in on this browser yet: the web app hands it over (or asks it to sign in).
-				const back = `http://${hostOnly(req)}:${webPort}/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(safePath(req.url))}`
+				const back = `http://${hostOnly(req)}:${webPort}/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(safePath(req.url))}${view ? '&view=1' : ''}`
 				res.writeHead(302, {location: back, 'cache-control': 'no-store'})
 				return res.end()
 			}
-			const up = http.request({host: '127.0.0.1', port: app.internalPort, method: req.method, path: req.url, headers: forwardHeaders(req)}, (r) => {
+			const up = http.request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req)}, (r) => {
 				res.writeHead(r.statusCode ?? 502, frameable(r.headers, hostOnly(req)))
 				r.pipe(res)
 			})
@@ -290,8 +309,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
 				return
 			}
-			const up = net.connect(app.internalPort, '127.0.0.1', () => {
-				const h = forwardHeaders(req)
+			const up = net.connect(target, '127.0.0.1', () => {
+				const h = headersFor(req)
 				const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(h).flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : [`${k}: ${v}`]))]
 				up.write(`${lines.join('\r\n')}\r\n\r\n`)
 				if (head?.length) up.write(head)
@@ -303,16 +322,42 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		})
 		await new Promise((resolve, reject) => {
 			server.once('error', reject)
-			server.listen(app.port, gatewayHost, resolve)
+			server.listen(listenPort, gatewayHost, resolve)
 		})
-		gateways.set(app.id, {server, port: app.port})
+		gateways.set(key, {server, port: listenPort})
+	}
+	// A port for an app's view gateway (7900-7999), the same one each time where possible.
+	async function viewPortFor(app) {
+		const taken = new Set(state.apps.filter((a) => a.id !== app.id).map((a) => a.viewPort))
+		const start = parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 100
+		for (let i = 0; i < 100; i++) {
+			const p = 7900 + ((start + i) % 100)
+			if (!taken.has(p) && (app.viewPort === p || (await portFree(p)))) return p
+		}
+		return null
+	}
+	// Open whichever gateway the app needs (after install, update and at start-up).
+	async function openGateways(app) {
+		if (!app.port) return
+		if (app.internalPort) {
+			delete app.viewPort
+			await openGateway(app)
+			await firewall?.open(app.port)
+			return
+		}
+		app.viewPort = app.viewPort ?? (await viewPortFor(app))
+		if (!app.viewPort) return
+		await openGateway(app, {view: true})
+		await firewall?.open(app.viewPort)
 	}
 	function closeGateway(id) {
-		const g = gateways.get(id)
-		if (!g) return
-		g.server.close()
-		g.server.closeAllConnections?.()
-		gateways.delete(id)
+		for (const key of [id, gatewayKey(id, true)]) {
+			const g = gateways.get(key)
+			if (!g) continue
+			g.server.close()
+			g.server.closeAllConnections?.()
+			gateways.delete(key)
+		}
 	}
 
 	// ---- stores ---------------------------------------------------------------------------------
@@ -607,6 +652,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				icon: a.icon,
 				port: a.port,
 				internalPort: a.internalPort,
+				...(a.viewPort ? {viewPort: a.viewPort} : {}),
 				path: a.path ?? '',
 				state: b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown')),
 				...(b?.progress !== undefined ? {progress: b.progress} : {}),
@@ -657,6 +703,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function placeApp(src, app) {
 		const dir = appDir(app.id)
 		await cp(src.folder, dir, {recursive: true, filter: (p) => !p.split('/').includes('.git'), force: true})
+		// Its variables first: the compose file's web address and port can depend on them.
+		app.exports = await runExports(app)
 		const c = await readYaml(dir, COMPOSE_FILES)
 		const text = await readFile(join(dir, c.name), 'utf8')
 		const used = new Set(state.apps.map((a) => a.internalPort))
@@ -664,7 +712,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 			while (used.has(p)) p++
 			return p
-		}, {shared: !!src.shared})
+		}, {shared: !!src.shared, vars: composeEnv(app)})
 		app.shared = !!src.shared
 		if (app.shared) await ensureSharedNetwork()
 		if (/\$\{?TOR_PROXY_IP\b/.test(text)) await ensureTor()
@@ -736,16 +784,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				try {
 					await sharedRoot()
 					app.internalPort = await placeApp(src, app)
-					app.exports = await runExports(app)
 					await prepareOwnership(app)
 					busy.set(app.id, {state: 'installing', progress: 15})
 					await compose(app, 'pull')
 					busy.set(app.id, {state: 'installing', progress: 85})
 					await compose(app, 'up', '-d', '--remove-orphans')
-					if (app.port && app.internalPort) {
-						await openGateway(app)
-						await firewall?.open(app.port)
-					}
+					await openGateways(app)
 					delete app.state
 					delete app.error
 				} catch (error) {
@@ -768,12 +812,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		busy.set(app.id, {state: 'updating', progress: 10})
 		try {
 			app.internalPort = await placeApp(src, app)
-			app.exports = await runExports(app)
 			closeGateway(app.id)
 			await compose(app, 'pull')
 			await compose(app, 'up', '-d', '--remove-orphans')
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path})
-			if (app.port && app.internalPort) await openGateway(app)
+			await openGateways(app)
 			delete app.state
 			delete app.error
 		} finally {
@@ -813,6 +856,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		try {
 			closeGateway(app.id)
 			if (app.port) await firewall?.close(app.port)
+			if (app.viewPort) await firewall?.close(app.viewPort)
 			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
 			await removeAppDir(app.id)
 			state.apps = state.apps.filter((a) => a.id !== app.id)
@@ -902,7 +946,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					const t = randomBytes(24).toString('base64url')
 					for (const [k, v] of tickets) if (v.exp < Date.now()) tickets.delete(k)
 					tickets.set(t, {appId: app.id, userId: auth.userId, exp: Date.now() + 60_000})
-					return {ticket: t, port: app.port, path: app.path ?? ''}
+					// The view gateway's port when asked for it (or when the app has no gateway of its own).
+					const port = app.viewPort && (input?.view || !app.internalPort) ? app.viewPort : app.port
+					return {ticket: t, port, path: app.path ?? ''}
 				},
 			},
 			'appStore.registry': {kind: 'query', run: async () => (await registry()).map(({url, meta, apps}) => ({url, meta, apps: apps.map(({folder, ...a}) => a)}))},

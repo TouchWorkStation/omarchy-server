@@ -5,7 +5,7 @@ import {logout, mutate, query, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
 
 // One point per successful poll (keyed on fetch time, so flat values still plot).
 function useHistory(value: number | undefined, stamp: number, size = 40) {
@@ -192,7 +192,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
-	const wp = wallpaperUrl(wallpaper)
+	const wp = omarchyBackgroundUrl(prefs.omarchyBackground)
 	const photo = customBackgroundUrl(prefs.backgroundVersion)
 	const brand = wallpaper?.brandColorHsl ? `hsl(${wallpaper.brandColorHsl})` : 'hsl(24 90% 50%)'
 	const photoBrand = prefs.customBrandHsl ? `hsl(${prefs.customBrandHsl})` : brand
@@ -273,9 +273,16 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 					)
 				})}
 			</div>
-			{prefs.theme === 'omarchy' && (
-				<OmarchyBackgrounds selected={prefs.omarchyBackground ?? null} onChoose={(id) => setPrefs({...prefs, theme: 'omarchy', omarchyBackground: id})} />
-			)}
+			<div className="section-head" style={{margin: '18px 0 6px'}}>
+				<h2>Wallpaper</h2>
+			</div>
+			<OmarchyBackgrounds
+				selected={prefs.theme === 'omarchy' || prefs.theme === 'horizon' ? (prefs.omarchyBackground ?? null) : undefined}
+				onChoose={(id) =>
+					// A wallpaper needs a theme that shows one: Horizon keeps its look, anything else becomes Omarchy.
+					setPrefs({...prefs, theme: prefs.theme === 'horizon' ? 'horizon' : 'omarchy', omarchyBackground: id})
+				}
+			/>
 						{photo && (
 				<div className="photo-actions">
 					<button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>

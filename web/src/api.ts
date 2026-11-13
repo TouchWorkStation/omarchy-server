@@ -82,6 +82,8 @@ export type AppState =
 	| 'not-installed'
 
 export type UserApp = {
+	/** Apps that hold their own port: where Omarchy Server shows them inside its page. */
+	viewPort?: number
 	id: string
 	name?: string
 	version?: string

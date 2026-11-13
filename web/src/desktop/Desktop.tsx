@@ -1639,11 +1639,52 @@ function RelayedFrame({app}: {app: UserApp}) {
 	)
 }
 
+// The loading screen for an app window. If the app hasn't shown anything after a while, say so
+// and offer a way forward instead of spinning forever.
+function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetry?: () => void}) {
+	const [slow, setSlow] = useState(false)
+	useEffect(() => {
+		const t = window.setTimeout(() => setSlow(true), 15000)
+		return () => window.clearTimeout(t)
+	}, [])
+	const name = app.name ?? app.id
+	if (!slow)
+		return (
+			<div className="frame-loading">
+				<AppIcon src={app.icon} name={name} size={64} />
+				<span className="spinner" />
+			</div>
+		)
+	return (
+		<div className="win-empty app-gate frame-slow">
+			<AppIcon src={app.icon} name={name} size={64} />
+			<b>{name} is taking a while</b>
+			<span>
+				It may still be starting (some apps need a few minutes the first time), or it may not allow being shown inside Omarchy Server. You can keep waiting, try again, or
+				open it in its own tab.
+			</span>
+			<div className="app-gate-actions">
+				<button className="btn" onClick={() => (onRetry ? onRetry() : location.reload())}>
+					<Icon name="restart" size={17} />
+					Try again
+				</button>
+				{url && (
+					<a className="btn primary" href={url} target="_blank" rel="noopener noreferrer">
+						<Icon name="open" size={17} />
+						Open in a tab
+					</a>
+				)}
+			</div>
+		</div>
+	)
+}
+
 // An Omarchy Server app in a window. Omarchy Server asks each browser to sign in before it opens apps, and its
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
 // The session it creates covers all of this browser's apps (7 days); the window then loads.
 export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
 	const [loaded, setLoaded] = useState(false)
+	const [reloadKey, setReloadKey] = useState(0)
 	const qc = useQueryClient()
 	const [access, setAccess] = useState<Access>('checking')
 	const [waiting, setWaiting] = useState(false)
@@ -1815,17 +1856,15 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<span>Ask the server’s owner to share it with your account in Omarchy Server.</span>
 			</div>
 		)
+	// Apps that hold their own port are shown through their view gateway (which allows the window).
+	const src = app.viewPort && app.port ? url.replace(`:${app.port}`, `:${app.viewPort}`) : url
 	return (
 		<>
-			{!loaded && (
-				<div className="frame-loading">
-					<AppIcon src={app.icon} name={name} size={64} />
-					<span className="spinner" />
-				</div>
-			)}
+			{!loaded && <SlowLoad key={reloadKey} app={app} url={url} onRetry={() => (setLoaded(false), setReloadKey((n) => n + 1))} />}
 			<iframe
+				key={reloadKey}
 				className="app-frame"
-				src={url}
+				src={src}
 				title={name}
 				onLoad={() => setLoaded(true)}
 				allow="clipboard-read; clipboard-write; fullscreen; camera; microphone; display-capture"

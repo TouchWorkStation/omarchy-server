@@ -294,6 +294,51 @@ describe('omarchyd apps', () => {
 		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 
+	test('apps holding their own port get a view gateway; a web port can come from exports.sh', async () => {
+		const store = join(root, 'own-port-apps')
+		const ownPort = appPort + 9
+		await mkdir(join(store, 'hostnet'), {recursive: true})
+		await writeFile(join(store, 'hostnet', 'umbrel-app.yml'), `manifestVersion: 1\nid: hostnet\nname: Hostnet\nport: ${ownPort}\n`)
+		await writeFile(join(store, 'hostnet', 'docker-compose.yml'), 'services:\n  server:\n    image: x\n    network_mode: host\n')
+		await mkdir(join(store, 'varport'), {recursive: true})
+		await writeFile(join(store, 'varport', 'umbrel-app.yml'), `manifestVersion: 1\nid: varport\nname: Varport\nport: ${appPort + 10}\n`)
+		await writeFile(join(store, 'varport', 'docker-compose.yml'), 'services:\n  app_proxy:\n    environment:\n      APP_HOST: varport_web_1\n      APP_PORT: $APP_VARPORT_PORT\n  web:\n    image: x\n')
+		await writeFile(join(store, 'varport', 'exports.sh'), 'export APP_VARPORT_PORT="4000"\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		// The app itself, listening on its own port (as a host-network app does).
+		const own = http.createServer((req, res) => {
+			res.setHeader('x-frame-options', 'SAMEORIGIN')
+			res.end(JSON.stringify({forwarded: Object.keys(req.headers).filter((k) => k.startsWith('x-forwarded'))}))
+		})
+		try {
+			await call('apps.install', {appId: 'hostnet'})
+			await new Promise((r) => own.listen(ownPort, '127.0.0.1', r))
+			await call('apps.install', {appId: 'varport'})
+			const host = await until(async () => (await q('apps.list')).find((a) => a.id === 'hostnet' && a.state === 'running'))
+			assert.ok(host.viewPort >= 7900 && host.viewPort < 8000, 'a view gateway port')
+			const anon = await fetch(`http://127.0.0.1:${host.viewPort}/`, {redirect: 'manual'})
+			assert.equal(anon.headers.get('location'), `http://127.0.0.1:7799/api/app-enter?app=hostnet&r=%2F&view=1`)
+			const {ticket, port} = await call('apps.accessTicket', {appId: 'hostnet', view: true})
+			assert.equal(port, host.viewPort)
+			const enter = await fetch(`http://127.0.0.1:${port}/__omarchy/enter?t=${ticket}`, {redirect: 'manual'})
+			const cookie = enter.headers.get('set-cookie').split(';')[0]
+			const page = await fetch(`http://127.0.0.1:${port}/`, {headers: {cookie}})
+			assert.deepEqual(await page.json(), {forwarded: []}, 'no proxy headers reach the app')
+			assert.equal(page.headers.get('x-frame-options'), null)
+			await until(async () => (await q('apps.list')).find((a) => a.id === 'varport' && a.state === 'running'))
+			const vp = YAML.parse(await readFile(join(data, 'apps', 'installed', 'varport', 'compose.omarchy.yml'), 'utf8'))
+			assert.match(vp.services.web.ports.at(-1), /^127\.0\.0\.1:\d+:4000$/)
+		} finally {
+			own.close()
+			await call('apps.uninstall', {appId: 'hostnet'}).catch(() => {})
+			await call('apps.uninstall', {appId: 'varport'}).catch(() => {})
+			await call('appStore.removeRepository', {url: `file://${store}`})
+		}
+	})
+
 	test('logs, stop, uninstall', async () => {
 		assert.match(await q('apps.logs', {appId: 'demo-app'}), /hello from the app/)
 		await call('apps.stop', {appId: 'demo-app'})

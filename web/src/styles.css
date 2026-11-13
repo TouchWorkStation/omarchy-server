@@ -6076,3 +6076,7 @@ html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) 
 	font-size: 14px;
 	color: var(--muted);
 }
+.frame-slow {
+	z-index: 1;
+	background: var(--bg-solid);
+}
