@@ -3,6 +3,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
 import {appUrl, useAction, useApps, useBootstrap, useInstallReview, useRegistry} from '../data'
+import {useDesktop} from '../desktop/Desktop'
 import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
@@ -28,7 +29,7 @@ const catIcon = (c: string) => (hasIcon(c) ? c : 'category')
 // Shown first in "Featured" when present in the catalog; otherwise any app with screenshots.
 const FEATURED = ['immich', 'nextcloud', 'home-assistant', 'jellyfin', 'plex', 'bitcoin', 'ollama', 'vaultwarden', 'pi-hole', 'tailscale']
 
-export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp) => void; onBack?: () => void}) {
+export function Store({onOpenInstalled, onOpenApp, onBack}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void}) {
 	const registry = useRegistry()
 	const apps = useApps()
 	const [q, setQ] = useState('')
@@ -205,6 +206,7 @@ export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp
 					installed={installed}
 					onSelect={(a) => setSelected({app: a})}
 					onClose={() => setSelected(null)}
+					onOpenApp={onOpenApp}
 				/>
 			)}
 		</div>
@@ -360,6 +362,7 @@ function StoreSheet({
 	installed,
 	onSelect,
 	onClose,
+	onOpenApp,
 }: {
 	app: StoreApp
 	startInstall?: boolean
@@ -367,8 +370,10 @@ function StoreSheet({
 	installed: Map<string, UserApp>
 	onSelect: (a: StoreApp) => void
 	onClose: () => void
+	onOpenApp?: (app: UserApp) => void
 }) {
 	const boot = useBootstrap()
+	const desk = useDesktop()
 	const action = useAction()
 	const [reviewing, setReviewing] = useState(!!startInstall)
 	const [more, setMore] = useState(false)
@@ -472,10 +477,20 @@ function StoreSheet({
 								</div>
 							) : (
 								<>
-									<a className="btn primary" href={liveUrl ?? undefined} target="_blank" rel="noopener noreferrer" aria-disabled={!liveUrl}>
+									<button
+										className="btn primary"
+										disabled={!liveUrl}
+										onClick={() => {
+											haptic(6)
+											onClose()
+											if (desk) desk.launch(live)
+											else if (onOpenApp) onOpenApp(live)
+											else if (liveUrl) window.open(liveUrl, '_blank', 'noopener')
+										}}
+									>
 										<Icon name="open" size={20} />
 										Open
-									</a>
+									</button>
 									<span style={{display: 'flex', alignItems: 'center'}}>
 										<StatusPill {...appStatus(live.state)} />
 									</span>

@@ -1627,11 +1627,18 @@ function RelayedFrame({app}: {app: UserApp}) {
 // An Omarchy Server app in a window. Omarchy Server asks each browser to sign in before it opens apps, and its
 // sign-in page refuses to load inside another page, so that one step happens in a normal tab.
 // The session it creates covers all of this browser's apps (7 days); the window then loads.
-function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
+export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClose: () => void}) {
 	const [loaded, setLoaded] = useState(false)
 	const qc = useQueryClient()
 	const [access, setAccess] = useState<Access>('checking')
 	const [waiting, setWaiting] = useState(false)
+	const [handover, setHandover] = useState<'trying' | 'failed'>('trying')
+	// The invisible hand-over gets 12 seconds before the sign-in tab is offered instead.
+	useEffect(() => {
+		if (access !== 'signin' || handover !== 'trying') return
+		const t = window.setTimeout(() => setHandover('failed'), 12000)
+		return () => window.clearTimeout(t)
+	}, [access, handover])
 	// How this app opens: through Touch's relay (in a window, signed in by Touch) or directly.
 	const frame = useAppFrame(app ? [app.id] : [])
 	const relayed = !!app && !!frame.data?.relay[app.id]
@@ -1706,6 +1713,28 @@ function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null; onClo
 					You’re using Touch over HTTPS (for example through a Cloudflare tunnel), where the app’s own port can’t be reached. Set TOUCH_APP_HOSTS (see the README) so each app
 					gets an address like {name.toLowerCase().replace(/[^a-z0-9]+/g, '')}-touch.your-domain.
 				</span>
+			</div>
+		)
+	// Not signed in to the app gateway yet: hand this browser a session invisibly (Omarchy Server's
+	// one-time ticket through the app's own port), then load the app here. Only if that fails
+	// does the sign-in step fall back to a browser tab.
+	if (access === 'signin' && handover !== 'failed' && !waiting)
+		return (
+			<div className="frame-loading">
+				<AppIcon src={app.icon} name={name} size={64} />
+				<span className="spinner" />
+				<iframe
+					title={`${name} sign-in`}
+					src={`/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(app.path || '/')}`}
+					style={{display: 'none'}}
+					onLoad={() =>
+						checkAccess(app.id).then((s) => {
+							if (s === 'signin') return setHandover('failed')
+							qc.invalidateQueries({queryKey: ['app-frame']})
+							setAccess(s)
+						})
+					}
+				/>
 			</div>
 		)
 	if (access === 'signin')

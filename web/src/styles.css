@@ -5951,3 +5951,23 @@ html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) 
 
 /* Omarchy desktop entry at the top of Machines */
 .vm-card.desktop-card { display: flex; flex-direction: row; align-items: center; gap: 14px; width: 100%; padding: 16px; margin-bottom: 18px; }
+
+/* An app opened full screen in the same tab (phones and the classic layout). */
+.app-viewer {
+	background: var(--bg-solid);
+	color: var(--fg);
+}
+.app-viewer .console-bar a.round-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.app-viewer-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	padding-bottom: var(--safe-b, 0px);
+}
+.app-viewer-body .win-empty .btn {
+	margin-top: 6px;
+}

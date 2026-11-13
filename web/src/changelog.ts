@@ -4,6 +4,19 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.7.2',
+		date: '2026-11-12',
+		title: 'Apps open right here',
+		added: [
+			'Open shows the app full screen inside Omarchy Server, in the same tab, like an app on your phone. Back (on screen or your phone’s own back gesture) returns to where you were.',
+			'The app screen has Reload, and a button to open it in its own browser tab if you ever want that.',
+		],
+		fixed: [
+			'Open in the App Store and on an app’s page no longer starts a new browser tab.',
+			'Desktop windows sign the browser in to apps by themselves instead of opening a sign-in tab.',
+		],
+	},
+	{
 		version: '0.7.1',
 		date: '2026-11-12',
 		title: 'App installs fixed',

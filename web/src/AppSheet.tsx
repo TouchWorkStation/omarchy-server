@@ -7,10 +7,10 @@ import {useDesktop} from './desktop/Desktop'
 import {Icon, type IconName} from './icons'
 import {AppIcon, KV, Sheet, SheetHeader, StatusPill, appStatus, haptic, isAppBusy, useConfirm, useToast} from './ui'
 
-type Props = {app: UserApp | null; update?: {version: string}; onClose: () => void; onTerminal?: (app: {id: string; name?: string; icon?: string}) => void}
+type Props = {app: UserApp | null; update?: {version: string}; onClose: () => void; onOpenApp?: (app: UserApp) => void; onTerminal?: (app: {id: string; name?: string; icon?: string}) => void}
 type A = {id: string; label: string; icon: IconName; onClick: () => void; disabled?: boolean}
 
-export function AppSheet({app, update, onClose, onTerminal}: Props) {
+export function AppSheet({app, update, onClose, onOpenApp, onTerminal}: Props) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const action = useAction()
@@ -36,6 +36,11 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 		if (desk) {
 			onClose()
 			desk.launch(app)
+			return
+		}
+		if (onOpenApp) {
+			onClose()
+			onOpenApp(app)
 			return
 		}
 		mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
