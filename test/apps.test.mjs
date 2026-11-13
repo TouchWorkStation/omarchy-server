@@ -143,7 +143,11 @@ describe('omarchyd apps', () => {
 		assert.ok(!calls.some((c) => c.podman?.join(' ') === `unshare chown -R 1000:1000 ${join(data, 'apps/installed/demo-app')}`), 'the app’s own files stay readable')
 		await assert.rejects(call('apps.install', {appId: 'demo-app'}), /already installed/)
 		// Stand in for the container: an HTTP + WebSocket server on the internal port.
-		upstream = http.createServer((req, res) => res.end(JSON.stringify({path: req.url, cookie: req.headers.cookie ?? ''})))
+		upstream = http.createServer((req, res) => {
+			res.setHeader('x-frame-options', 'DENY')
+			res.setHeader('content-security-policy', "default-src 'self'; frame-ancestors 'none'")
+			res.end(JSON.stringify({path: req.url, cookie: req.headers.cookie ?? ''}))
+		})
 		wss = new WebSocketServer({server: upstream})
 		wss.on('connection', (ws) => ws.on('message', (m) => ws.send(`echo:${m}`)))
 		await new Promise((r) => upstream.listen(app.internalPort, '127.0.0.1', r))
@@ -162,8 +166,11 @@ describe('omarchyd apps', () => {
 		const cookie = enter.headers.get('set-cookie').split(';')[0]
 		assert.match(cookie, /^OMARCHY_APP_SESSION=v1\./)
 		assert.equal((await fetch(`${gw}/__omarchy/enter?t=${ticket}`, {redirect: 'manual'})).status, 403, 'tickets are single-use')
-		const ok = await (await fetch(`${gw}/dash`, {headers: {cookie: `${cookie}; theme=dark`}})).json()
-		assert.deepEqual(ok, {path: '/dash', cookie: 'theme=dark'})
+		const okRes = await fetch(`${gw}/dash`, {headers: {cookie: `${cookie}; theme=dark`}})
+		// Only the Omarchy Server web app on this host may show the app inside its page.
+		assert.equal(okRes.headers.get('x-frame-options'), null)
+		assert.equal(okRes.headers.get('content-security-policy'), "default-src 'self'; frame-ancestors 'self' http://127.0.0.1:7799 https://127.0.0.1:7799")
+		assert.deepEqual(await okRes.json(), {path: '/dash', cookie: 'theme=dark'})
 		// A tampered session is refused.
 		const bad = cookie.slice(0, -2) + (cookie.endsWith('A') ? 'BB' : 'AA')
 		assert.equal((await fetch(`${gw}/`, {headers: {cookie: bad}, redirect: 'manual'})).status, 302)

@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.7.2'
+export const VERSION = '0.7.3'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -1092,6 +1092,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					const app = apps.find((a) => a.id === id)
 					if (!app?.port) return void (results[id] = 'unknown')
 					if (app.requiresHttps) return void (results[id] = 'tab')
+					// On this network Omarchy Server's own app gateway lets its apps be shown inside this
+					// page, and hands each browser its app session itself: a plain window, no relay port.
+					if (mode === 'port') return void (results[id] = 'window')
 					if (sso && mode) {
 						relay[id] = true
 						return void (results[id] = 'window')
@@ -1162,7 +1165,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
 				return res.json({url: `http://${h}:${port}${path}`, ping: `http://${h}:${port}/__touch/ping.gif`})
 			}
-			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (TOUCH_APP_HOSTS)'}})
+			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (see the README)'}})
 		} catch (error) {
 			sendError(res, error)
 		}

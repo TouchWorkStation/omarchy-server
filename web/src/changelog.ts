@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.7.3',
+		date: '2026-11-12',
+		title: 'App windows load',
+		fixed: [
+			'Apps like Home Assistant showed “Couldn’t reach” in their window: they went through extra ports the firewall blocks. They now load straight from their own port, which is already open.',
+			'Removed leftover wording from another project in app window messages.',
+		],
+	},
+	{
 		version: '0.7.2',
 		date: '2026-11-12',
 		title: 'Apps open right here',

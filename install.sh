@@ -245,6 +245,9 @@ if command -v ufw >/dev/null 2>&1; then
 	# machine, so this only lets forwards you create be reached from your network.
 	sudo ufw allow 40000:49999/tcp comment 'Omarchy Server machine forwards' >/dev/null
 	sudo ufw allow 40000:49999/udp comment 'Omarchy Server machine forwards' >/dev/null
+
+	# App windows that can't load straight from the app (rare) go through a relay on 7800-7899.
+	sudo ufw allow 7800:7899/tcp comment 'Omarchy Server app windows' >/dev/null
 fi
 
 # Keep the services running when you're not logged in (needs sudo once).

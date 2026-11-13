@@ -101,7 +101,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(r.setCookie, /HttpOnly/)
 		assert.match(r.setCookie, /SameSite=Strict/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.7.2', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.7.3', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -341,12 +341,12 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(out.status, 401) // needs a Touch session too
 	})
 
-	test('desktop: every app opens in a window through a relay, using Touch’s own Omarchy Server app session', async () => {
+	test('desktop: on the local network apps open in plain windows (no relay port); the relay still works', async () => {
 		const r = await touch.req('GET', '/api/app-frame?apps=immich,nextcloud,home-assistant,../x')
 		assert.equal(r.status, 200)
 		assert.equal(r.body.sso, true) // the sign-in kept Omarchy Server's app session server-side
 		assert.deepEqual(r.body.results, {immich: 'window', nextcloud: 'window', 'home-assistant': 'window'})
-		assert.deepEqual(r.body.relay, {immich: true, nextcloud: true, 'home-assistant': true})
+		assert.deepEqual(r.body.relay, {}, 'the app gateway allows the window itself, so no extra firewall ports are needed')
 		const open = await touch.req('GET', '/api/app-open?app=nextcloud')
 		assert.equal(open.status, 200)
 		const url = new URL(open.body.url)

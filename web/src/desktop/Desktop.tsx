@@ -1590,8 +1590,8 @@ function RelayedFrame({app}: {app: UserApp}) {
 				<span>
 					{problem === 'unreachable'
 						? location.protocol === 'https:'
-							? 'Touch’s address for this app didn’t answer. Check that your tunnel also routes the app addresses (TOUCH_APP_HOSTS) to Touch.'
-							: 'Touch opens each app on a port of its own (7800 and up). If a firewall runs on this server, allow those ports.'
+							? 'This app’s address didn’t answer. Check that your tunnel also routes the app addresses to Omarchy Server.'
+							: 'Omarchy Server couldn’t reach this app’s window. If a firewall runs on this server, allow ports 7800 to 7899.'
 						: problem}
 				</span>
 				<div className="app-gate-actions">
@@ -1710,8 +1710,8 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<AppIcon src={app.icon} name={name} size={64} />
 				<b>Apps need their own addresses for remote access</b>
 				<span>
-					You’re using Touch over HTTPS (for example through a Cloudflare tunnel), where the app’s own port can’t be reached. Set TOUCH_APP_HOSTS (see the README) so each app
-					gets an address like {name.toLowerCase().replace(/[^a-z0-9]+/g, '')}-touch.your-domain.
+					You’re using Omarchy Server over HTTPS (for example through a Cloudflare tunnel), where the app’s own port can’t be reached. Set app addresses (see the README) so each app
+					gets an address like {name.toLowerCase().replace(/[^a-z0-9]+/g, '')}.your-domain.
 				</span>
 			</div>
 		)

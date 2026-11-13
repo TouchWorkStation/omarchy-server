@@ -204,6 +204,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const h = req.headers.host ?? 'localhost'
 		return h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0]
 	}
+	// Apps open inside Omarchy Server's own page (desktop windows, the full-screen app view). Many
+	// apps forbid being shown inside another page; for their responses through this gateway that is
+	// relaxed to exactly one embedder: the Omarchy Server web app on this same host. Nothing else changes.
+	const frameable = (headers, host) => {
+		const out = {...headers}
+		delete out['x-frame-options']
+		const allow = `frame-ancestors 'self' http://${host}:${webPort} https://${host}:${webPort}`
+		const csp = []
+			.concat(out['content-security-policy'] ?? [])
+			.map((v) =>
+				String(v)
+					.split(';')
+					.map((d) => d.trim())
+					.filter((d) => d && !/^frame-ancestors\b/i.test(d))
+					.join('; '),
+			)
+			.filter(Boolean)
+		out['content-security-policy'] = csp.length ? [`${csp[0]}; ${allow}`, ...csp.slice(1)] : allow
+		return out
+	}
 	const safePath = (p) => (typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') ? p : '/')
 
 	async function openGateway(app) {
@@ -227,7 +247,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				return res.end()
 			}
 			const up = http.request({host: '127.0.0.1', port: app.internalPort, method: req.method, path: req.url, headers: forwardHeaders(req)}, (r) => {
-				res.writeHead(r.statusCode ?? 502, r.headers)
+				res.writeHead(r.statusCode ?? 502, frameable(r.headers, hostOnly(req)))
 				r.pipe(res)
 			})
 			up.on('error', () => {
