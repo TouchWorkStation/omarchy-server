@@ -6229,3 +6229,53 @@ html.page-locked body {
 	color: #ff8a8a;
 	opacity: 1;
 }
+
+/* Install: extra access the app asks for, allowed explicitly */
+.access-ask {
+	margin-bottom: 16px;
+	padding: 14px 16px;
+	border-radius: 18px;
+	border: 1px solid color-mix(in srgb, var(--peach, #f5a97f) 55%, transparent);
+	background: color-mix(in srgb, var(--peach, #f5a97f) 10%, transparent);
+}
+.access-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+	color: var(--peach, #f5a97f);
+}
+.access-head b {
+	color: var(--fg);
+	font-size: 15px;
+}
+.access-item {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 8px 0;
+	border-top: 1px solid rgba(255, 255, 255, 0.07);
+	font-size: 14px;
+}
+.access-item span {
+	color: var(--muted);
+	font-size: 13.5px;
+}
+.access-item .access-what {
+	font-family: 'JetBrains Mono', ui-monospace, monospace;
+	font-size: 12.5px;
+}
+.access-allow {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 10px;
+	font-weight: 600;
+	font-size: 14.5px;
+	cursor: pointer;
+}
+.access-allow input {
+	width: 20px;
+	height: 20px;
+	accent-color: var(--accent);
+}

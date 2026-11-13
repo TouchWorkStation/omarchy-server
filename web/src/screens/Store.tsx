@@ -1,4 +1,4 @@
-import {useMemo, useState, type CSSProperties} from 'react'
+import {useEffect, useMemo, useState, type CSSProperties} from 'react'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query, type RegistryApp, type UserApp} from '../api'
@@ -386,11 +386,16 @@ function StoreSheet({
 	const incompatible = app.compatible === false || !!app.unsupported
 	const canInstall = !live && !incompatible
 	const showReview = reviewing && canInstall
+	// Extra access must be allowed explicitly: a separate tick, every install.
+	const [allowed, setAllowed] = useState(false)
+	useEffect(() => setAllowed(false), [reviewing, app.id])
+	const access = review.data?.permissions ?? []
 
 	const install = () => {
 		haptic(12)
 		const folderAccess = review.data?.requiredFolders.map((f) => ({id: f.id, sourcePath: f.defaultSourcePath}))
-		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {})}, done: `${app.name} installed`})
+		const grant = [...new Set((review.data?.permissions ?? []).map((p) => p.id))]
+		action.mutate({path: 'apps.install', input: {appId: app.id, ...(folderAccess?.length ? {folderAccess} : {}), ...(grant.length ? {grant} : {})}, done: `${app.name} installed`})
 		setReviewing(false)
 	}
 	const liveUrl = live ? appUrl(live, boot.server!.host) : null
@@ -464,7 +469,29 @@ function StoreSheet({
 							)}
 						</div>
 					)}
-					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && (
+					{access.length > 0 && (
+						<div className="access-ask">
+							<div className="access-head">
+								<Icon name="alert" size={18} />
+								<b>{app.name} asks for extra access</b>
+							</div>
+							{access.map((p) => (
+								<div className="access-item" key={`${p.appId}-${p.id}`}>
+									<b>
+										{p.label}
+										{access.some((x) => x.appId !== app.id) ? ` · ${p.appName}` : ''}
+									</b>
+									<span>{p.detail}</span>
+									{p.id === 'low-ports' || p.id === 'devices' ? <span className="access-what">{p.what.join(', ')}</span> : null}
+								</div>
+							))}
+							<label className="access-allow">
+								<input type="checkbox" checked={allowed} onChange={(e) => setAllowed(e.target.checked)} />
+								<span>I understand. Allow this for {app.name}.</span>
+							</label>
+						</div>
+					)}
+					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && (
 						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
 							<span className="row-ico" style={{'--c': 'var(--green)'} as React.CSSProperties}>
 								<Icon name="shield" size={18} />
@@ -473,7 +500,7 @@ function StoreSheet({
 						</div>
 					)}
 					<div className="stack">
-						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending}>
+						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || (access.length > 0 && !allowed)}>
 							<Icon name="download" size={20} />
 							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
 						</button>

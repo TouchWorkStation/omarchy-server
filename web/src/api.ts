@@ -160,6 +160,8 @@ export type InstallReview = {
 	gpuAccess: boolean
 	/** Apps it needs that aren't installed yet: installed first, together with it. */
 	alsoInstalls?: {id: string; name: string; icon?: string}[]
+	/** Extra access the apps ask for; each must be allowed explicitly. */
+	permissions?: {id: string; label: string; detail: string; what: string[]; appId: string; appName: string}[]
 }
 
 export type OsImage = {

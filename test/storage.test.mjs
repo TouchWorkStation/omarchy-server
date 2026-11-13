@@ -248,9 +248,22 @@ errors: No known data errors
 
 	test('firewall: app ports only', async () => {
 		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})
-		for (const p of ['22', '80', '2021', '70000', 'abc']) await assert.rejects(h.handle('firewall-open', [p]), /Bad port/)
+		for (const p of ['22', '2021', '5900', '70000', 'abc']) await assert.rejects(h.handle('firewall-open', [p]), /Bad port/)
 		assert.equal(await h.handle('firewall-open', ['38780']), 'ok')
+		assert.equal(await h.handle('firewall-open', ['53']), 'ok', 'system ports, for apps you allowed to use them')
 		await assert.rejects(h.handle('firewall-close', ['7780']), /Bad port/)
+	})
+	test('low ports: only ever lowers the limit, and remembers it', async () => {
+		const log = []
+		let now = 1024
+		const fs = fakeFs()
+		const h = createHelper({user, fs, run: fakeRun(log, {sysctl: (args) => (args[0] === '-n' ? `${now}\n` : ((now = Number(args[1].split('=')[1])), ''))})})
+		await h.handle('low-ports', ['53'])
+		assert.equal(now, 53)
+		assert.match(fs.files.get('/etc/sysctl.d/60-omarchy-server-ports.conf'), /ip_unprivileged_port_start = 53/)
+		await h.handle('low-ports', ['443'])
+		assert.equal(now, 53, 'never raised again by another app')
+		await assert.rejects(h.handle('low-ports', ['0']), /Bad port/)
 	})
 })
 

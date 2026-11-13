@@ -295,6 +295,8 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 		firewall: {
 			open: (port) => helper('firewall-open', [String(port)]).catch(() => {}),
 			close: (port) => helper('firewall-close', [String(port)]).catch(() => {}),
+			// Not caught: an app that needs system ports can't start without this.
+			lowPorts: (n) => helper('low-ports', [String(n)]),
 		},
 	}
 }

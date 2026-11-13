@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.9',
+		date: '2026-11-13',
+		title: 'Apps that need extra access',
+		added: [
+			'Container managers (Portainer, Dockge, Dozzle), DNS blockers (Pi-hole, AdGuard Home), VPNs (WireGuard) and reverse proxies can now be installed. The store lists exactly what extra access each one needs and installs only after you tick “Allow”.',
+			'Apps that manage containers get your own rootless container engine, never the system one.',
+			'Apps can now use ports below 1024 (DNS on 53, web on 80 and 443) and UDP ports, when you allow it.',
+		],
+		fixed: ['An update that would need new access is refused with a clear message instead of quietly gaining it.'],
+	},
+	{
 		version: '0.8.8',
 		date: '2026-11-13',
 		title: 'Only the TouchWorkStation store',

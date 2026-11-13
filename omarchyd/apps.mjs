@@ -41,7 +41,7 @@ export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-st
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
@@ -60,6 +60,51 @@ const TOR_PASSWORD = 'moneyprintergobrrr' // the control password these store ap
 const APP_UID = 1000
 
 // Variables a compose file uses with no default, that we don't provide.
+// ---- extra access an app asks for -------------------------------------------------------------
+// Worked out from the compose file itself (a listing can't leave anything out). Each needs your
+// explicit permission when installing; plain apps need none.
+export const PERMISSIONS = {
+	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
+	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. Omarchy Server lets your containers use those ports on this server.'},
+	devices: {label: 'Use hardware devices', detail: 'It gets direct access to devices plugged into your server, such as USB sticks or video cards.'},
+	network: {label: 'Change networking inside its container', detail: 'It can create network interfaces, routes and firewall rules inside its own container (VPNs need this). It can’t change your server’s own network.'},
+	privileged: {label: 'Run with every container permission', detail: 'It runs with all permissions inside its container. Containers here run as you, not as root, so it still can’t become root on your server.'},
+}
+const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
+export function appPermissions(text) {
+	const doc = (() => {
+		try {
+			return YAML.parse(String(text)) ?? {}
+		} catch {
+			return {}
+		}
+	})()
+	const found = new Map()
+	const add = (id, what) => {
+		if (!found.has(id)) found.set(id, new Set())
+		if (what) found.get(id).add(String(what))
+	}
+	for (const [name, s] of Object.entries(doc.services ?? {})) {
+		if (!s || typeof s !== 'object' || name === 'app_proxy') continue
+		if (s.privileged === true || s.privileged === 'true') add('privileged', name)
+		for (const v of s.volumes ?? []) {
+			const src = typeof v === 'string' ? v.split(':')[0] : String(v?.source ?? '')
+			if (SOCKET.test(src)) add('containers', name)
+			else if (/^\/dev(\/|$)/.test(src) && !/^\/dev\/shm/.test(src)) add('devices', src)
+		}
+		for (const d of s.devices ?? []) add('devices', String(typeof d === 'string' ? d.split(':')[0] : d?.source ?? 'device'))
+		for (const c of s.cap_add ?? []) if (/NET_ADMIN|NET_RAW|SYS_MODULE|SYS_ADMIN|ALL/i.test(String(c))) add(/SYS_ADMIN|ALL/i.test(String(c)) ? 'privileged' : 'network', String(c))
+		if (s.sysctls && Object.keys(s.sysctls).length) add('network', 'sysctls')
+		for (const p of s.ports ?? []) {
+			const t = typeof p === 'object' ? String(p.published ?? '') : String(p).split('/')[0]
+			const parts = t.split(':')
+			const host = Number(parts.length >= 3 ? parts[parts.length - 2] : parts.length === 2 ? parts[0] : NaN)
+			if (Number.isInteger(host) && host > 0 && host < 1024) add('low-ports', host)
+		}
+	}
+	return [...found].map(([id, set]) => ({id, ...PERMISSIONS[id], what: [...set].slice(0, 6)}))
+}
+
 // Compose-style ${NAME}, $NAME, ${NAME:-default}, ${NAME-default} and ${NAME:?message}.
 export function expandVars(text, env) {
 	return String(text).replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?)([-?+])([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g, (_, name, colon, op, arg, bare) => {
@@ -483,6 +528,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				defaultUsername: a.defaultUsername || undefined,
 				defaultPassword: a.defaultPassword || undefined,
 				deterministicPassword: a.deterministicPassword === true,
+				permissions: appPermissions(compose).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1024 && n <= 65535).slice(0, 16)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port)}} : {}),
 				...(unsupported ? {unsupported} : {}),
@@ -591,6 +637,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			// TouchWorkStation listings: your own folders and this server's address, by name.
 			...Object.fromEntries(Object.entries(USER_DIRS).map(([k, d]) => [k, join(home, d)])),
 			SERVER_IP: serverIp(),
+			DOCKER_SOCKET: engineEnv.DOCKER_HOST.replace(/^unix:\/\//, ''),
 			PUID: String(APP_UID),
 			PGID: String(APP_UID),
 		}
@@ -793,6 +840,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		app.shared = !!src.shared
 		if (app.shared) await ensureSharedNetwork()
 		if (/\$\{?TOR_PROXY_IP\b/.test(text)) await ensureTor()
+		// Container managers get your own (rootless) container socket, never a root one.
+		let finalText = prepared.text
+		if ((app.permissions ?? []).includes('containers')) {
+			const sock = engineEnv.DOCKER_HOST.replace(/^unix:\/\//, '')
+			const doc = YAML.parse(finalText)
+			for (const svc of Object.values(doc.services ?? {}))
+				svc.volumes = (svc.volumes ?? []).map((v) => (typeof v === 'string' && SOCKET.test(v.split(':')[0]) ? [sock, ...v.split(':').slice(1)].join(':') : v))
+			finalText = YAML.stringify(doc)
+		}
+		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
+		const low = appPermissions(finalText).find((p) => p.id === 'low-ports')
+		if (low && (app.permissions ?? []).includes('low-ports') && firewall?.lowPorts) await firewall.lowPorts(Math.min(...low.what.map(Number)))
+		prepared.text = finalText
 		await writeFile(join(dir, 'compose.omarchy.yml'), prepared.text, {mode: 0o600})
 		await createBindSources(app, prepared.text)
 		return prepared.internalPort
@@ -801,6 +861,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// Is `need` already covered by an installed app (itself, or one that stands in for it, such
 	// as Bitcoin Knots for Bitcoin Node)?
 	const satisfied = (need) => state.apps.some((a) => a.state !== 'error' && (a.id === need || (a.implements ?? []).includes(need)))
+
+	// The extra access a listing's compose file asks for.
+	async function permissionsOf(src) {
+		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
+		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8')) : []
+	}
 
 	// What installing `id` involves: the apps it needs that aren't installed yet, then the app.
 	async function installPlan(id) {
@@ -830,6 +896,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const plan = await installPlan(id)
+		// Every extra access the apps ask for must be allowed explicitly, for this install.
+		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
+		const needs = new Map()
+		for (const src of plan) needs.set(src.id, (await permissionsOf(src)).map((p) => p.id))
+		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
+		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')
 		// Check every port first, so nothing starts installing if one of them can't.
 		const ports = new Set()
@@ -843,7 +915,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing'}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? []}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}
@@ -886,6 +958,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const app = findInstalled(String(input?.appId ?? ''))
 		const src = await findInRegistry(app.id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app is no longer in your stores')
+		// An update never adds access you didn't allow. (Apps installed before permissions existed keep what they run with.)
+		const wants = (await permissionsOf(src)).map((p) => p.id)
+		app.permissions ??= wants
+		const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
+		if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
+		app.permissions = [...new Set([...app.permissions, ...wants])]
 		busy.set(app.id, {state: 'updating', progress: 10})
 		try {
 			app.internalPort = await placeApp(src, app)
@@ -1004,7 +1082,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				run: async (input) => {
 					const plan = await installPlan(String(input?.appId ?? '')).catch(() => [])
 					const also = plan.slice(0, -1).map((a) => ({id: a.id, name: a.name, icon: a.icon}))
-					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also}
+					// Extra access, per app in the plan (shown for you to allow before installing).
+					const access = []
+					for (const a of plan) for (const p of await permissionsOf(a)) access.push({...p, appId: a.id, appName: a.name})
+					return {requiredFolders: [], gpuAccess: false, alsoInstalls: also, permissions: access}
 				},
 			},
 			'apps.uninstall': {kind: 'mutation', run: uninstall},

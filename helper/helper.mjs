@@ -466,16 +466,29 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			return 'ok'
 		},
 
+		// An app's port through the firewall (TCP and UDP). Ports below 1024 only for apps you allowed
+		// to use them (omarchyd asks you first); never SSH, omarchyd or the desktop share.
 		'firewall-open': async ([port]) => {
 			const p = Number(port)
-			if (!Number.isInteger(p) || p < 1024 || p > 65535 || p === 2021) fail('Bad port')
-			if (await ufwActive()) await run('ufw', ['allow', `${p}/tcp`, 'comment', 'Omarchy Server app'])
+			if (!Number.isInteger(p) || p < 1 || p > 65535 || [22, 2021, 5900].includes(p)) fail('Bad port')
+			if (await ufwActive()) for (const proto of ['tcp', 'udp']) await run('ufw', ['allow', `${p}/${proto}`, 'comment', 'Omarchy Server app'])
+			return 'ok'
+		},
+		// Let your (rootless) containers listen on ports from N up, for apps you allowed to use
+		// system ports such as 53 or 443. Only ever lowers the limit; kept across restarts.
+		'low-ports': async ([n]) => {
+			const want = Number(n)
+			if (!Number.isInteger(want) || want < 1 || want > 1024) fail('Bad port')
+			const now = Number((await run('sysctl', ['-n', 'net.ipv4.ip_unprivileged_port_start'])).trim())
+			if (Number.isInteger(now) && now <= want) return 'ok'
+			await fs.writeFile('/etc/sysctl.d/60-omarchy-server-ports.conf', `# Omarchy Server: apps you allowed to use system ports\nnet.ipv4.ip_unprivileged_port_start = ${want}\n`, {mode: 0o644})
+			await run('sysctl', ['-w', `net.ipv4.ip_unprivileged_port_start=${want}`])
 			return 'ok'
 		},
 		'firewall-close': async ([port]) => {
 			const p = Number(port)
-			if (!Number.isInteger(p) || p < 1024 || p > 65535 || p === 2021 || p === 7780) fail('Bad port')
-			if (await ufwActive()) await run('ufw', ['delete', 'allow', `${p}/tcp`]).catch(() => {})
+			if (!Number.isInteger(p) || p < 1 || p > 65535 || [22, 2021, 5900, 7780].includes(p)) fail('Bad port')
+			if (await ufwActive()) for (const proto of ['tcp', 'udp']) await run('ufw', ['delete', 'allow', `${p}/${proto}`]).catch(() => {})
 			return 'ok'
 		},
 	}
