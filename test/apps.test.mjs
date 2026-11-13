@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
 import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
+import https from 'node:https'
 import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
@@ -184,6 +185,33 @@ describe('omarchyd apps', () => {
 		const anonWs = new WebSocket(`ws://127.0.0.1:${appPort}/ws`)
 		await new Promise((r) => anonWs.on('error', r))
 		const ws = new WebSocket(`ws://127.0.0.1:${appPort}/ws`, {headers: {cookie}})
+		await new Promise((r, j) => (ws.once('open', r), ws.once('error', j)))
+		ws.send('hi')
+		assert.equal(await new Promise((r) => ws.once('message', (m) => r(m.toString()))), 'echo:hi')
+		ws.close()
+	})
+
+	test('gateway: https:// on the same port, with this server’s own certificate', async () => {
+		const ca = await readFile(join(data, 'tls', 'ca.crt'), 'utf8')
+		const get = (path, headers = {}) =>
+			new Promise((resolve, reject) =>
+				https.get({host: '127.0.0.1', port: appPort, path, ca, headers}, (r) => {
+					let body = ''
+					r.on('data', (c) => (body += c))
+					r.on('end', () => resolve({status: r.statusCode, headers: r.headers, body}))
+				}).on('error', reject),
+			)
+		// Strangers are sent to the web app's https:// address, not http://.
+		const anon = await get('/x')
+		assert.equal(anon.status, 302)
+		assert.match(anon.headers.location, /^https:\/\/127\.0\.0\.1:7799\/api\/app-enter/)
+		const {ticket} = await call('apps.accessTicket', {appId: 'demo-app'})
+		const cookie = (await get(`/__omarchy/enter?t=${ticket}`)).headers['set-cookie'][0].split(';')[0]
+		const ok = await get('/dash', {cookie})
+		assert.equal(ok.status, 200)
+		assert.deepEqual(JSON.parse(ok.body), {path: '/dash', cookie: ''})
+		// WebSockets over TLS too.
+		const ws = new WebSocket(`wss://127.0.0.1:${appPort}/ws`, {headers: {cookie}, ca})
 		await new Promise((r, j) => (ws.once('open', r), ws.once('error', j)))
 		ws.send('hi')
 		assert.equal(await new Promise((r) => ws.once('message', (m) => r(m.toString()))), 'echo:hi')

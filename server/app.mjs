@@ -16,10 +16,11 @@ import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
+import {dualProtocolServer} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.12'
+export const VERSION = '0.8.13'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -211,10 +212,18 @@ export function normalizeBackendUrl(input) {
 	return `${url.protocol}//${url.host}`
 }
 
-export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
+export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
+	// This server's certificate authority, for devices to trust its https:// pages (public by nature).
+	app.get('/api/tls/ca.crt', (_req, res) => {
+		const ca = tls?.ca()
+		if (!ca) return res.status(404).type('text/plain').send('HTTPS isn’t set up on this server')
+		res.set({'content-type': 'application/x-x509-ca-cert', 'content-disposition': 'attachment; filename="omarchy-server.crt"', 'cache-control': 'no-store'})
+		res.send(ca)
+	})
+	app.get('/api/tls/status', (_req, res) => res.json({available: !!tls?.get()}))
 
 	let client = null
 	const getClient = () => {
@@ -1054,7 +1063,8 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const server = http.createServer(relay.handle)
 		server.requestTimeout = 0
 		server.on('upgrade', relay.upgrade)
-		relay.server = server
+		// https:// too, so an app window works inside the https:// web app (see tls.mjs).
+		relay.server = tls ? dualProtocolServer(server, tls.get) : server
 		return relay
 	}
 	// App subdomains share Touch's port: route them before anything else.
@@ -1200,7 +1210,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		try {
 			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
 			const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
-			res.redirect(302, `http://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
+			res.redirect(302, `${req.protocol}://${h}:${port}/__omarchy/enter?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(r)}`)
 		} catch (error) {
 			if (error instanceof BackendError && error.code === 'UNAUTHORIZED') return res.redirect(302, '/')
 			res.status(error instanceof BackendError ? 404 : 500).type('text/plain').send(error instanceof BackendError ? error.message : 'Couldn’t open that app')
@@ -1238,7 +1248,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				const port = await relayFor(app, serverHost, ancestor)
 				if (!port) return res.status(503).json({error: {code: 'UNAVAILABLE', message: 'No free port for the app relay'}})
 				const h = req.hostname.includes(':') ? `[${req.hostname}]` : req.hostname
-				return res.json({url: `http://${h}:${port}${path}`, ping: `http://${h}:${port}/__touch/ping.gif`})
+				return res.json({url: `${req.protocol}://${h}:${port}${path}`, ping: `${req.protocol}://${h}:${port}/__touch/ping.gif`})
 			}
 			res.status(409).json({error: {code: 'NEEDS_APP_HOSTS', message: 'Opening apps remotely needs app addresses (see the README)'}})
 		} catch (error) {

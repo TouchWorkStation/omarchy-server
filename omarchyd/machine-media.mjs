@@ -5,7 +5,10 @@ import {randomUUID} from 'node:crypto'
 export const hostnameFor = (name, id) => name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || `machine-${id}`
 
 // cloud-init user-data. `hash` is a SHA-512 crypt hash; the password itself is never written.
-export function cloudUserData({host, username, hash, cloudInit = {}}) {
+// Public SSH keys only (never private ones): one per line, in OpenSSH's authorized_keys format.
+export const PUBLIC_KEY = /^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]{16,8192}( [^\r\n'"]{0,200})?$/
+export function cloudUserData({host, username, hash, cloudInit = {}, sshKeys = [], changePassword = false}) {
+	const keys = sshKeys.map((k) => k.trim()).filter((k) => PUBLIC_KEY.test(k))
 	const lines = [
 		'#cloud-config',
 		`hostname: ${host}`,
@@ -15,9 +18,12 @@ export function cloudUserData({host, username, hash, cloudInit = {}}) {
 		"    sudo: 'ALL=(ALL) ALL'",
 		`    shell: ${cloudInit.shell ?? '/bin/bash'}`,
 		'    lock_passwd: false',
-		`    passwd: '${hash}'`,
+		...(hash ? [`    passwd: '${hash}'`] : []),
+		...(keys.length ? ['    ssh_authorized_keys:', ...keys.map((k) => `      - '${k}'`)] : []),
 		'ssh_pwauth: true',
 	]
+	// An existing account keeps its password when cloud-init runs again; chpasswd sets a new one.
+	if (changePassword && hash) lines.push('chpasswd:', '  expire: false', '  users:', `    - {name: ${username}, password: '${hash}', type: hash}`)
 	const packages = Array.isArray(cloudInit.packages) ? cloudInit.packages.filter((p) => /^@?[A-Za-z0-9][\w.+-]*$/.test(p)) : []
 	if (packages.length) lines.push('package_update: true', 'packages:', ...packages.map((p) => `  - '${p}'`))
 	// Extra setup commands from the catalog, as argument lists (no shell).

@@ -331,7 +331,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
 			const url = appUrl(app, boot.server!.host)
 			const verdict = framesRef.current?.results[app.id]
-			if (url && (cfgRef.current.appsOpenIn === 'tab' || app.requiresHttps || verdict === 'tab')) {
+			if (url && (cfgRef.current.appsOpenIn === 'tab' || (app.requiresHttps && location.protocol !== 'https:') || verdict === 'tab')) {
 				// Same as Omarchy Server: the app gets its own browser tab.
 				setOverview(null)
 				setMenu(null)
@@ -1716,7 +1716,9 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 	// On your own network (plain http) the window simply loads the app's address: the app's
 	// gateway signs this browser in by itself (a quick hand-over through Omarchy Server) and lets
 	// the app be shown here. The checks below are only for remote HTTPS access.
-	const direct = location.protocol === 'http:' && !!app && !!url && !app.requiresHttps
+	// The same goes for https:// straight to this server (its own address and port, not a tunnel).
+	const lanHttps = location.protocol === 'https:' && location.port !== ''
+	const direct = !!app && !!url && (lanHttps || (location.protocol === 'http:' && !app.requiresHttps))
 	// How this app opens: through the relay (in a window, signed in by Omarchy Server) or directly.
 	const frame = useAppFrame(app && !direct ? [app.id] : [])
 	const relayed = !!app && !!frame.data?.relay[app.id]
@@ -1762,16 +1764,25 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				<span>Start it from Apps, then reload this window.</span>
 			</div>
 		)
-	if (app.requiresHttps)
+	if (app.requiresHttps && location.protocol !== 'https:')
 		return (
 			<div className="win-empty app-gate">
 				<AppIcon src={app.icon} name={name} size={64} />
-				<b>{name} opens in its own tab</b>
-				<span>It needs a secure (HTTPS) connection with its own certificate, which can’t be shown inside a window.</span>
-				<button className="btn primary" onClick={() => window.open(url, '_blank', 'noopener')}>
-					<Icon name="open" size={17} />
-					Open {name}
-				</button>
+				<b>{name} needs a secure connection</b>
+				<span>
+					It only works on an https:// page. Switch Omarchy Server to its secure address to use it in a window, or open it in its own tab. The first time, your
+					browser may warn about the certificate until you trust this server (Settings → Secure connection).
+				</span>
+				<div className="app-gate-actions">
+					<button className="btn primary" onClick={() => location.assign(`https://${location.host}${location.pathname}${location.search}`)}>
+						<Icon name="key" size={17} />
+						Use the secure address
+					</button>
+					<button className="btn" onClick={() => window.open(url, '_blank', 'noopener')}>
+						<Icon name="open" size={17} />
+						Open in a tab
+					</button>
+				</div>
 			</div>
 		)
 	if (direct) {

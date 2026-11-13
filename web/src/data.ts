@@ -90,6 +90,8 @@ export function useAction() {
 
 export function appUrl(app: UserApp, host: string) {
 	if (!app.port) return null
-	const protocol = app.requiresHttps ? 'https:' : 'http:'
+	// Apps answer https:// on the same port as http:// (Omarchy Server's own certificate). Use it when
+	// this page is https (a page on https can't show an http one) or when the app needs a secure page.
+	const protocol = app.requiresHttps || (typeof location !== 'undefined' && location.protocol === 'https:') ? 'https:' : 'http:'
 	return new URL(app.path ?? '', `${protocol}//${host}:${app.port}`).href
 }

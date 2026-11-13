@@ -18,12 +18,15 @@ import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {access, cp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
+import https from 'node:https'
 import net from 'node:net'
 import os from 'node:os'
 import {join, resolve} from 'node:path'
+import tls from 'node:tls'
 import YAML from 'yaml'
 
 import {RpcError} from './rpc.mjs'
+import {dualProtocolServer, tlsContext} from './tls.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
 const STORE_FILES = ['omarchy-app-store.yml', 'umbrel-app-store.yml']
@@ -227,7 +230,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	return {text: YAML.stringify(doc), internalPort}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir})}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -313,7 +316,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (cookies.length) h.cookie = cookies.join('; ')
 		else delete h.cookie
 		h['x-forwarded-for'] = req.socket.remoteAddress ?? ''
-		h['x-forwarded-proto'] = 'http'
+		h['x-forwarded-proto'] = req.socket.encrypted ? 'https' : 'http'
 		h['x-forwarded-host'] = req.headers.host ?? ''
 		return h
 	}
@@ -373,11 +376,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			}
 			if (!checkSession(parseCookies(req.headers.cookie)[APP_COOKIE])) {
 				// Not signed in on this browser yet: the web app hands it over (or asks it to sign in).
-				const back = `http://${hostOnly(req)}:${webPort}/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(safePath(req.url))}${view ? '&view=1' : ''}`
+				const back = `${req.socket.encrypted ? 'https' : 'http'}://${hostOnly(req)}:${webPort}/api/app-enter?app=${encodeURIComponent(app.id)}&r=${encodeURIComponent(safePath(req.url))}${view ? '&view=1' : ''}`
 				res.writeHead(302, {location: back, 'cache-control': 'no-store'})
 				return res.end()
 			}
-			const up = http.request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req), timeout: 120_000}, (r) => {
+			// Some apps serve their own page over https inside the container (self-signed): talk https to them.
+			const upstreamHttps = !view && app.internalHttps
+			const up = (upstreamHttps ? https : http).request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req), timeout: 120_000, ...(upstreamHttps ? {rejectUnauthorized: false} : {})}, (r) => {
 				up.setTimeout(0) // it answered: long-lived responses (live updates, downloads) are fine
 				res.writeHead(r.statusCode ?? 502, frameable(r.headers, hostOnly(req)))
 				r.pipe(res)
@@ -394,22 +399,25 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
 				return
 			}
-			const up = net.connect(target, '127.0.0.1', () => {
+			const onUp = () => {
 				const h = headersFor(req)
 				const lines = [`${req.method} ${req.url} HTTP/1.1`, ...Object.entries(h).flatMap(([k, v]) => (Array.isArray(v) ? v.map((x) => `${k}: ${x}`) : [`${k}: ${v}`]))]
 				up.write(`${lines.join('\r\n')}\r\n\r\n`)
 				if (head?.length) up.write(head)
 				up.pipe(socket)
 				socket.pipe(up)
-			})
+			}
+			const up = !view && app.internalHttps ? tls.connect({host: '127.0.0.1', port: target, rejectUnauthorized: false}, onUp) : net.connect(target, '127.0.0.1', onUp)
 			up.on('error', () => socket.destroy())
 			socket.on('error', () => up.destroy())
 		})
+		// http:// and https:// on the same port (see tls.mjs).
+		const front = dualProtocolServer(server, secure.get)
 		await new Promise((resolve, reject) => {
-			server.once('error', reject)
-			server.listen(listenPort, gatewayHost, resolve)
+			front.once('error', reject)
+			front.listen(listenPort, gatewayHost, resolve)
 		})
-		gateways.set(key, {server, port: listenPort})
+		gateways.set(key, {server, front, port: listenPort})
 	}
 	// A port for an app's view gateway (7900-7999), the same one each time where possible.
 	async function viewPortFor(app) {
@@ -444,6 +452,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		for (const key of [id, gatewayKey(id, true)]) {
 			const g = gateways.get(key)
 			if (!g) continue
+			g.front?.close()
 			g.server.close()
 			g.server.closeAllConnections?.()
 			gateways.delete(key)
@@ -528,9 +537,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				defaultUsername: a.defaultUsername || undefined,
 				defaultPassword: a.defaultPassword || undefined,
 				deterministicPassword: a.deterministicPassword === true,
+				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
+				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
 				permissions: appPermissions(compose).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
-				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port)}} : {}),
+				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
 				folder: join(dir, entry.name),
@@ -785,6 +796,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				internalPort: a.internalPort,
 				...(a.viewPort ? {viewPort: a.viewPort} : {}),
 				path: a.path ?? '',
+				...(a.requiresHttps ? {requiresHttps: true} : {}),
 				state: b?.state ?? (a.state === 'error' ? 'unknown' : (live.get(a.id) ?? 'unknown')),
 				...(b?.progress !== undefined ? {progress: b.progress} : {}),
 				...(a.state === 'error' ? {error: a.error} : {}),
@@ -922,7 +934,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? []}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? []}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}
@@ -977,7 +989,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			closeGateway(app.id)
 			await compose(app, 'pull')
 			await compose(app, 'up', '-d', '--remove-orphans')
-			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path})
+			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
 			await openGateways(app)
 			delete app.state
 			delete app.error
@@ -1079,6 +1091,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			return state.apps.length
 		},
 		close: () => {
+			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},
 		procedures: {

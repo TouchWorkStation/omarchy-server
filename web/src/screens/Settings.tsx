@@ -425,6 +425,22 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				</Group>
 			)}
 
+			<Group
+				title="Secure connection"
+				footer={
+					<>
+						Apps such as Brave (HTTPS), Vaultwarden and Actual only work on https:// pages. Omarchy Server answers https:// on the same address with its own
+						certificate. To stop the browser warning, trust it on each device: iPhone and iPad, open the downloaded profile in Settings → General → VPN &
+						Device Management, then turn it on in General → About → Certificate Trust Settings. Mac: open it, then in Keychain Access set it to Always Trust.
+						Windows: open it and install it under Trusted Root Certification Authorities. Android: Settings → Security → Install a certificate → CA certificate.
+					</>
+				}
+			>
+				<Row icon="shield" color="var(--green)" label="This connection" value={location.protocol === 'https:' ? 'Secure (https)' : 'Not secure (http)'} />
+				{location.protocol !== 'https:' && <Row icon="key" color="var(--blue)" label="Use the secure address" value={`https://${location.host}`} href={`https://${location.host}${location.pathname}`} />}
+				<Row icon="download" color="var(--teal)" label="Trust this server on this device" value="Certificate" href="/api/tls/ca.crt" />
+			</Group>
+
 			<Group title="More">
 				<Row icon="download" color="var(--blue)" label="Installer ISO" value="Set up another server" href="https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso" />
 				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}

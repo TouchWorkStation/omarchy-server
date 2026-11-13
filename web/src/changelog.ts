@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.13',
+		date: '2026-11-13',
+		title: 'Secure connections (https://)',
+		added: [
+			'Omarchy Server and every app now also answer https:// on the same address and port, with your server’s own certificate.',
+			'Apps that need a secure page (Brave (HTTPS), Vaultwarden, Actual) open over https:// automatically, and work inside windows when you use the secure address.',
+			'Settings → Secure connection: switch to the secure address, and download the certificate to trust this server on your devices so browsers stop warning.',
+		],
+	},
+	{
 		version: '0.8.12',
 		date: '2026-11-13',
 		title: 'The App Store shows every app',

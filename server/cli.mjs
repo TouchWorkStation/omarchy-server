@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // omarchy-server [--backend <address>] [--port 7780] [--host 0.0.0.0] [--data <dir>]
+import http from 'node:http'
 import {networkInterfaces, homedir} from 'node:os'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import {createApp, normalizeBackendUrl, VERSION} from './app.mjs'
 import {createStore} from './store.mjs'
+import {defaultTlsDir, dualProtocolServer, tlsContext} from '../omarchyd/tls.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => {
@@ -36,19 +38,23 @@ if (backendArg) await store.setConfig({backendUrl: normalizeBackendUrl(backendAr
 const appHosts = flag('app-hosts') ?? process.env.TOUCH_APP_HOSTS
 if (appHosts) await store.setConfig({appHosts: appHosts === 'off' ? null : appHosts})
 
-const app = createApp({store, staticDir, secureCookies: process.env.OMARCHY_SERVER_SECURE_COOKIES === '1'})
-const server = app.listen(port, host, () => {
+// https:// on the same port as http:// (see omarchyd/tls.mjs). The certificate is shared with omarchyd.
+const secure = tlsContext({dir: defaultTlsDir()})
+const app = createApp({store, staticDir, tls: secure, secureCookies: process.env.OMARCHY_SERVER_SECURE_COOKIES === '1'})
+const httpServer = http.createServer(app)
+const server = dualProtocolServer(httpServer, secure.get)
+server.listen(port, host, () => {
 	const lan = Object.values(networkInterfaces())
 		.flat()
 		.filter((i) => i && i.family === 'IPv4' && !i.internal)
-		.map((i) => `http://${i.address}:${port}`)
+		.flatMap((i) => [`http://${i.address}:${port}`, `https://${i.address}:${port}`])
 	console.log(`\n  Omarchy Server ${VERSION}`)
 	console.log(`  Backend   ${store.getConfig().backendUrl ?? '(not set: open the app to connect)'}`)
 	console.log(`  Data      ${dataDir}`)
 	for (const url of lan.length ? lan : [`http://localhost:${port}`]) console.log(`  Open      ${url}`)
 	console.log('')
 })
-app.attachConsole(server)
+app.attachConsole(httpServer)
 server.on('error', (error) => {
 	console.error(`[omarchy-server] ${error.message}`)
 	process.exit(1)
