@@ -12,6 +12,7 @@ import {openAccounts} from './accounts.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
 import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
+import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createStorage} from './storage.mjs'
 import {bridge, openShell} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
@@ -19,7 +20,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.7.3'
+export const OMARCHYD_VERSION = '0.8.0'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
@@ -95,6 +96,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
 
+	const omarchyTheme = createOmarchyTheme({home})
 	// The web app's wallpaper is the current Omarchy theme background.
 	async function wallpaper(res) {
 		for (const p of [join(home, '.config/omarchy/current/background'), join(home, '.config/omarchy/current/theme/backgrounds')]) {
@@ -116,6 +118,10 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		try {
 			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
+			// Omarchy's themes and their backgrounds (local only; the web app proxies them).
+			if (url.pathname === '/omarchy/themes' && req.method === 'GET') return sendJson(res, 200, await omarchyTheme.list())
+			const bg = /^\/omarchy\/background\/(current|[0-9a-f]{16})$/.exec(url.pathname)
+			if (bg && req.method === 'GET') return await omarchyTheme.serve(bg[1], res)
 			// The web app asks whether a browser's app session is valid (it never sees it otherwise).
 			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
 				await apps.ready

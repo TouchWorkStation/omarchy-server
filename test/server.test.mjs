@@ -33,9 +33,10 @@ async function startTouch({backendUrl, appHosts} = {}) {
 			},
 			body: body !== undefined ? JSON.stringify(body) : undefined,
 		})
-		const set = res.headers.get('set-cookie')
+		const all = res.headers.getSetCookie()
+		const set = all.find((c) => c.startsWith('omarchy_server_sid=')) ?? null
 		if (set) cookie = set.split(';')[0]
-		return {status: res.status, body: await res.json().catch(() => null), setCookie: set}
+		return {status: res.status, body: await res.json().catch(() => null), setCookie: set, setCookies: all}
 	}
 	return {dir, store, base, req, getCookie: () => cookie, close: () => (app.closeRelays(), new Promise((r) => server.close(r)))}
 }
@@ -100,8 +101,13 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(r.body.mode, 'native')
 		assert.match(r.setCookie, /HttpOnly/)
 		assert.match(r.setCookie, /SameSite=Strict/)
+		// One sign-in for everything: the browser also gets the app session, so no app asks again.
+		const appSession = r.setCookies.find((c) => c.startsWith('OMARCHY_APP_SESSION='))
+		assert.ok(appSession, 'the sign-in hands this browser its app session')
+		assert.match(appSession, /HttpOnly/)
+		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.7.3', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.8.0', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)

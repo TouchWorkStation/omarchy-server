@@ -122,6 +122,12 @@ export type RegistryApp = {
 	website?: string
 	gallery?: string[]
 	dependencies?: string[]
+	/** Every app installed along with it, in install order (what it needs comes first). */
+	needs?: string[]
+	/** Apps it can stand in for (e.g. Bitcoin Knots for Bitcoin Node). */
+	implements?: string[]
+	/** It installs, but some optional features need something else. */
+	caution?: string
 	releaseNotes?: string
 	installSize?: number
 }
@@ -150,6 +156,8 @@ export const SERVER_DESKTOP: Machine = {id: 'desktop', name: 'Omarchy desktop', 
 export type InstallReview = {
 	requiredFolders: {id: string; name: string; note: string | null; defaultSourcePath: string; readOnly: boolean}[]
 	gpuAccess: boolean
+	/** Apps it needs that aren't installed yet: installed first, together with it. */
+	alsoInstalls?: {id: string; name: string; icon?: string}[]
 }
 
 export type OsImage = {

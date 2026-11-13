@@ -5971,3 +5971,108 @@ html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) 
 .app-viewer-body .win-empty .btn {
 	margin-top: 6px;
 }
+.app-creds {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #16161b;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	font-size: 13.5px;
+	color: rgba(255, 255, 255, 0.7);
+}
+.app-creds-note {
+	flex-basis: 100%;
+}
+.app-creds-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	border-radius: 10px;
+	border: 0;
+	background: rgba(255, 255, 255, 0.09);
+	color: #fff;
+	font: 13.5px 'JetBrains Mono', ui-monospace, monospace;
+	cursor: pointer;
+}
+.app-creds-close {
+	margin-left: auto;
+	border: 0;
+	background: none;
+	color: rgba(255, 255, 255, 0.6);
+	cursor: pointer;
+}
+
+/* Omarchy desktop backgrounds picker */
+.omb {
+	margin: 4px 0 16px;
+}
+.omb-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px 10px;
+	margin-bottom: 10px;
+}
+.omb-head b {
+	font-size: 14px;
+}
+.omb-head select {
+	background: var(--glass, rgba(255, 255, 255, 0.08));
+	color: inherit;
+	border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+	border-radius: 10px;
+	padding: 6px 10px;
+	font: inherit;
+	font-size: 13.5px;
+	max-width: 100%;
+}
+.omb-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+	gap: 10px;
+}
+.omb-tile {
+	position: relative;
+	aspect-ratio: 16 / 10;
+	padding: 0;
+	border: 2px solid transparent;
+	border-radius: 12px;
+	overflow: hidden;
+	background: #1a1b26;
+	cursor: pointer;
+}
+.omb-tile img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+.omb-tile.on {
+	border-color: var(--accent);
+}
+.omb-label {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 14px 8px 6px;
+	font-size: 11.5px;
+	font-weight: 600;
+	color: #fff;
+	background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+}
+.omb-note {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 4px 0 16px;
+	font-size: 14px;
+	color: var(--muted);
+}

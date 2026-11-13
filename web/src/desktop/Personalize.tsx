@@ -5,6 +5,7 @@ import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from 'r
 import {useUser} from '../data'
 import {Icon} from '../icons'
 import {Switch} from '../screens/Settings'
+import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {PRESETS, STYLES, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockPos, type DockSize} from './config'
 import {useDesktop, useItems, type ItemInfo} from './Desktop'
@@ -156,7 +157,16 @@ function Background({cfg, setCfg, prefs, setPrefs}: P & {prefs: Prefs; setPrefs:
 	}
 	return (
 		<>
-			<Section title="Wallpapers" note="High-resolution photos from the elementary OS collection (CC0, Unsplash and Pexels licences; credits in wallpapers/CREDITS.md).">
+			<Section title="Omarchy" note="Backgrounds from your Omarchy desktop’s themes. “Same as desktop” follows whatever the desktop shows.">
+				<OmarchyBackgrounds
+					selected={cfg.wallpaper === 'omarchy' ? (prefs.omarchyBackground ?? null) : undefined}
+					onChoose={(id) => {
+						setPrefs({...prefs, omarchyBackground: id})
+						setCfg((c) => ({...c, preset: null, wallpaper: 'omarchy'}))
+					}}
+				/>
+			</Section>
+						<Section title="Wallpapers" note="High-resolution photos from the elementary OS collection (CC0, Unsplash and Pexels licences; credits in wallpapers/CREDITS.md).">
 				<div className="pz-grid walls">
 					{WALLPAPERS.map((w) => (
 						<button key={w.id} className={`pz-card wall-card${cfg.wallpaper === w.id ? ' on' : ''}`} onClick={() => pick(w.id)} title={`${w.name} · ${w.by}`}>

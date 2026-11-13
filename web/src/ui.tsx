@@ -1,6 +1,7 @@
 import {createPortal} from 'react-dom'
 import {createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode} from 'react'
 
+import {useQuery} from '@tanstack/react-query'
 import type {AppState, Machine, Wallpaper} from './api'
 import {Icon} from './icons'
 
@@ -394,6 +395,8 @@ export type Prefs = {
 	accent: (typeof ACCENTS)[number]
 	customBrandHsl?: string | null
 	backgroundVersion?: number | null
+	/** Omarchy theme: which Omarchy background (null: whatever the desktop shows right now). */
+	omarchyBackground?: string | null
 }
 const DEFAULT_PREFS: Prefs = {theme: 'horizon', accent: 'wallpaper'}
 const LOCAL_KEY = 'omarchy-server:prefs'
@@ -401,7 +404,8 @@ const LOCAL_KEY = 'omarchy-server:prefs'
 function clean(p: Partial<Prefs> | null | undefined): Prefs {
 	const theme = THEMES.some((t) => t.id === p?.theme) ? p!.theme! : DEFAULT_PREFS.theme
 	const accent = (ACCENTS as readonly string[]).includes(p?.accent as string) ? p!.accent! : DEFAULT_PREFS.accent
-	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null}
+	const omarchyBackground = typeof p?.omarchyBackground === 'string' && /^[0-9a-f]{16}$/.test(p.omarchyBackground) ? p.omarchyBackground : null
+	return {theme, accent, customBrandHsl: p?.customBrandHsl ?? null, backgroundVersion: p?.backgroundVersion ?? null, omarchyBackground}
 }
 export function readPrefs(): Prefs {
 	try {
@@ -411,15 +415,45 @@ export function readPrefs(): Prefs {
 	}
 }
 
+// ---- the Omarchy desktop's themes ------------------------------------------------------------
+export type OmarchyColors = {background?: string | null; foreground?: string | null; accent?: string | null; dots?: string[]}
+export type OmarchyThemes = {theme: string | null; label: string | null; current: string | null; colors: OmarchyColors | null; groups: {theme: string; label: string; items: {id: string; name: string}[]}[]}
+let omarchyColors: OmarchyColors | null = null
+try {
+	omarchyColors = JSON.parse(localStorage.getItem('omarchy-server:omarchy-colors') ?? 'null')
+} catch {}
+export const omarchyBackgroundUrl = (id?: string | null) => `/api/omarchy/background/${id ?? 'current'}`
+export function useOmarchyThemes(enabled = true) {
+	const q = useQuery({
+		queryKey: ['omarchy-themes'],
+		queryFn: () => fetch('/api/omarchy/themes', {credentials: 'same-origin'}).then((r) => (r.ok ? (r.json() as Promise<OmarchyThemes>) : null)),
+		enabled,
+		// Nothing yet (e.g. before signing in): ask again next time something needs it.
+		staleTime: (query) => (query.state.data ? 60_000 : 0),
+	})
+	useEffect(() => {
+		const c = q.data?.colors
+		if (!c || JSON.stringify(c) === JSON.stringify(omarchyColors)) return
+		omarchyColors = c
+		try {
+			localStorage.setItem('omarchy-server:omarchy-colors', JSON.stringify(c))
+		} catch {}
+		if (document.documentElement.dataset.theme === 'omarchy') applyPrefs(readPrefs())
+	}, [q.data])
+	return q
+}
+
 const FALLBACK_BRAND = '24 90% 50%' // Omarchy Server's default wallpaper colour
 export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	const root = document.documentElement
 	root.dataset.theme = p.theme
 	const light = p.theme === 'latte'
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
-		root.style.setProperty('--accent', '#7aa2f7')
-		root.style.setProperty('--accent-text', '#7aa2f7')
-		root.style.setProperty('--on-accent', '#1a1b26')
+		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
+		const c = omarchyColors
+		root.style.setProperty('--accent', c?.accent ?? '#7aa2f7')
+		root.style.setProperty('--accent-text', c?.accent ?? '#7aa2f7')
+		root.style.setProperty('--on-accent', c?.background ?? '#1a1b26')
 	} else if (p.accent === 'wallpaper') {
 		const source = p.theme === 'custom' ? (p.customBrandHsl ?? brandHsl) : brandHsl
 		const [h, s, l] = (source ?? FALLBACK_BRAND).split(' ').map((v) => parseFloat(v))
@@ -477,7 +511,7 @@ function savePrefs(p: Prefs) {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
-		body: JSON.stringify({theme: p.theme, accent: p.accent, customBrandHsl: p.customBrandHsl ?? null}),
+		body: JSON.stringify({theme: p.theme, accent: p.accent, customBrandHsl: p.customBrandHsl ?? null, omarchyBackground: p.omarchyBackground ?? null}),
 	}).catch(() => {})
 }
 
@@ -537,17 +571,26 @@ export const customBackgroundUrl = (version?: number | null) => (version ? `/api
 
 export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; prefs: Prefs}) {
 	const url =
-		prefs.theme === 'horizon' ? wallpaperUrl(wallpaper) : prefs.theme === 'custom' ? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper)) : null
+		prefs.theme === 'horizon'
+			? wallpaperUrl(wallpaper)
+			: prefs.theme === 'custom'
+				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
+				: prefs.theme === 'omarchy'
+					? omarchyBackgroundUrl(prefs.omarchyBackground)
+					: null
 	const [ready, setReady] = useState<string | null>(null)
+	const [failed, setFailed] = useState<string | null>(null)
+	useOmarchyThemes(prefs.theme === 'omarchy')
 	useEffect(() => {
 		if (!url) return
 		const img = new Image()
 		img.onload = () => setReady(url)
+		img.onerror = () => setFailed(url)
 		img.src = url
 	}, [url])
 	return (
 		<div className="backdrop" aria-hidden="true">
-			{url ? (
+			{url && failed !== url ? (
 				<>
 					<div className={`wall${ready === url ? ' ready' : ''}`} style={{backgroundImage: `url(${url})`}} />
 					<div className="shade" />

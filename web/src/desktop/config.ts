@@ -18,8 +18,9 @@ export const WALLPAPERS = [
 	{id: 'tower', name: "Tower", by: "Viktor Forgacs", hsl: '189 45% 55%'},
 ] as const
 export type BuiltinWallpaper = (typeof WALLPAPERS)[number]['id']
-// 'server' = your Omarchy Server wallpaper (what the phone shows); 'photo' = the photo you uploaded.
-export type WallpaperId = BuiltinWallpaper | 'server' | 'photo'
+// 'server' = your Omarchy Server wallpaper (what the phone shows); 'photo' = the photo you uploaded;
+// 'omarchy' = an Omarchy desktop background (which one: prefs.omarchyBackground, or the desktop's own).
+export type WallpaperId = BuiltinWallpaper | 'server' | 'photo' | 'omarchy'
 export const wallpaperSrc = (id: string, thumb = false) => `/wallpapers/${id}${thumb ? '-thumb' : ''}.jpg`
 
 export type DeskStyle = 'yaru' | 'glass' | 'graphite' | 'daylight'
@@ -68,7 +69,7 @@ const KEY = 'omarchy-server:desktop-config'
 export const DEFAULT_CONFIG: DeskConfig = {
 	v: 1,
 	preset: 'yosemite',
-	wallpaper: 'valley',
+	wallpaper: 'omarchy',
 	style: 'glass',
 	accent: 'wallpaper',
 	dock: {position: 'left', size: 'medium', floating: false, autohide: false, showRunning: true, items: [...SYSTEM_DOCK]},
@@ -84,7 +85,7 @@ function clean(raw: unknown): DeskConfig {
 	const c = (raw && typeof raw === 'object' ? raw : {}) as Partial<DeskConfig>
 	const d = DEFAULT_CONFIG
 	const dock = {...d.dock, ...(c.dock ?? {})}
-	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || WALLPAPERS.some((x) => x.id === w)
+	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || w === 'omarchy' || WALLPAPERS.some((x) => x.id === w)
 	// Pins from the first desktop release move into the dock.
 	let legacyPins: string[] = []
 	try {

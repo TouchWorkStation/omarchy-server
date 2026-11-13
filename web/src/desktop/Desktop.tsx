@@ -18,7 +18,7 @@ import {More} from '../screens/More'
 import {Settings} from '../screens/Settings'
 import {Store} from '../screens/Store'
 import {TerminalScreen} from '../Terminal'
-import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, setLayoutPref, useConfirm, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {AppIcon, InWindow, PortalRoot, StoreIcon, TerminalIcon, customBackgroundUrl, omarchyBackgroundUrl, setLayoutPref, useConfirm, useOmarchyThemes, useToast, wallpaperUrl, type Prefs} from '../ui'
 import {SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskConfig, type DeskIcon} from './config'
 import {Personalize} from './Personalize'
 
@@ -498,9 +498,19 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 
 	// -- wallpaper + accent for the desktop (scoped to the desktop; the phone keeps its own) --
 	const wp = WALLPAPERS.find((w) => w.id === cfg.wallpaper)
-	const wallUrl = wp ? wallpaperSrc(wp.id) : cfg.wallpaper === 'photo' ? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper)) : null
+	const omarchy = useOmarchyThemes(cfg.wallpaper === 'omarchy')
+	const wallUrl = wp
+		? wallpaperSrc(wp.id)
+		: cfg.wallpaper === 'omarchy'
+			? omarchyBackgroundUrl(prefs.omarchyBackground)
+			: cfg.wallpaper === 'photo'
+				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
+				: null
 	const deskStyle: Record<string, string> = {'--dock-thick': `${thick}px`, '--dock-icon': `${DOCK_ICON[cfg.dock.size]}px`}
-	if (cfg.accent === 'wallpaper' && wp) {
+	const omarchyAccent = cfg.wallpaper === 'omarchy' ? omarchy.data?.colors?.accent : null
+	if (cfg.accent === 'wallpaper' && omarchyAccent) {
+		Object.assign(deskStyle, {'--accent': omarchyAccent, '--accent-text': omarchyAccent, '--on-accent': omarchy.data?.colors?.background ?? '#111'})
+	} else if (cfg.accent === 'wallpaper' && wp) {
 		const [h, s] = wp.hsl.split(' ').map((v) => parseFloat(v))
 		Object.assign(deskStyle, {'--accent': `hsl(${h} ${s}% 52%)`, '--accent-text': `hsl(${h} ${Math.min(s + 10, 95)}% 68%)`, '--on-accent': '#fff'})
 	} else if (cfg.accent !== 'app' && cfg.accent !== 'wallpaper') {
@@ -646,9 +656,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 function Wall({url}: {url: string}) {
 	const [layers, setLayers] = useState<string[]>([])
 	useEffect(() => {
-		const img = new Image()
-		img.onload = () => setLayers((l) => [...l.filter((x) => x !== url).slice(-1), url])
-		img.src = url
+		const show = (u: string, fallback?: string) => {
+			const img = new Image()
+			img.onload = () => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u])
+			// No Omarchy background here (or it went away): a built-in one instead.
+			img.onerror = () => fallback && show(fallback)
+			img.src = u
+		}
+		show(url, url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined)
 	}, [url])
 	return (
 		<div className="desk-wall" aria-hidden="true">

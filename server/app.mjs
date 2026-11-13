@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.7.3'
+export const VERSION = '0.8.0'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -254,8 +254,25 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Cross-site request refused'}})
 			}
 		}
+		shareAppSession(req, res, store.getSession(req.sid))
 		next()
 	})
+
+	// One sign-in for everything: the main sign-in also gets Omarchy Server's app session
+	// (OMARCHY_APP_SESSION). Handing it to this browser as a cookie means every app's gateway
+	// (each on its own port of this same host; cookies ignore ports) lets the browser straight in,
+	// whether the app opens here, in a window or in its own tab. Over HTTPS, apps go through the
+	// relay, which adds the session itself, so the cookie is only given out on plain-HTTP access.
+	const appSessionValue = (session) => {
+		const m = /^OMARCHY_APP_SESSION=([^;]+)/.exec(session?.console?.appCookie ?? '')
+		return m ? m[1] : null
+	}
+	function shareAppSession(req, res, session) {
+		const value = appSessionValue(session)
+		if (!value || req.secure) return
+		if (parseCookies(req.headers.cookie).OMARCHY_APP_SESSION === value) return
+		res.append('Set-Cookie', `OMARCHY_APP_SESSION=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 86400}`)
+	}
 
 	const sendError = (res, error) => {
 		if (error instanceof BackendError) {
@@ -422,6 +439,34 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.status(404).end()
 	})
 
+	// The Omarchy desktop's themes and backgrounds, for the web app's Omarchy theme. The desktop's
+	// current background is shown on the sign-in screen too; the rest need a signed-in browser.
+	api.get('/omarchy/themes', async (req, res) => {
+		const backend = getClient()
+		if (!requireSession(req, res)) return
+		try {
+			const r = await fetchImpl(`${backend.baseUrl}/omarchy/themes`, {signal: AbortSignal.timeout(10_000)})
+			res.status(r.ok ? 200 : 502).json(r.ok ? await r.json() : {error: {code: 'UNAVAILABLE', message: 'Couldn’t read Omarchy’s themes'}})
+		} catch {
+			res.status(502).json({error: {code: 'UNAVAILABLE', message: 'Couldn’t read Omarchy’s themes'}})
+		}
+	})
+	api.get('/omarchy/background/:id', async (req, res) => {
+		const backend = getClient()
+		const id = req.params.id
+		if (!backend || !/^(current|[0-9a-f]{16})$/.test(id)) return res.status(404).end()
+		if (id !== 'current' && !store.getSession(req.sid)) return res.status(401).end()
+		try {
+			const r = await fetchImpl(`${backend.baseUrl}/omarchy/background/${id}`, {signal: AbortSignal.timeout(20_000)})
+			const type = r.headers.get('content-type') ?? ''
+			if (!r.ok || !type.startsWith('image/')) return res.status(404).end()
+			res.set({'Content-Type': type, 'Cache-Control': id === 'current' ? 'no-cache' : 'private, max-age=86400'})
+			res.send(Buffer.from(await r.arrayBuffer()))
+		} catch {
+			res.status(404).end()
+		}
+	})
+
 	api.get('/account-avatar', async (req, res) => {
 		const backend = getClient()
 		const path = String(req.query.path ?? '')
@@ -506,6 +551,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		const sid = newSessionId()
 		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200)})
 		setCookie(res, sid, SESSION_MAX_AGE_S)
+		shareAppSession(req, res, session)
 		res.json({ok: true, accountId: session.accountId, mode: session.mode})
 	})
 
@@ -522,6 +568,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			await store.deleteSession(req.sid)
 		}
 		setCookie(res, '', 0)
+		res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
 		res.json({ok: true})
 	})
 
@@ -551,8 +598,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.post('/prefs', async (req, res) => {
 		const session = requireSession(req, res)
 		if (!session) return
-		const {theme, accent, customBrandHsl} = req.body ?? {}
+		const {theme, accent, customBrandHsl, omarchyBackground} = req.body ?? {}
 		const patch = {}
+		if (omarchyBackground !== undefined) {
+			if (omarchyBackground !== null && !/^[0-9a-f]{16}$/.test(String(omarchyBackground))) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown background'}})
+			patch.omarchyBackground = omarchyBackground
+		}
 		if (theme !== undefined) {
 			if (!THEME_IDS.includes(theme)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Unknown theme'}})
 			patch.theme = theme

@@ -4,6 +4,22 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.0',
+		date: '2026-11-12',
+		title: 'One sign-in, every app, Omarchy backgrounds',
+		added: [
+			'Signing in to Omarchy Server now signs you in to every app too. No app asks for an Omarchy Server sign-in of its own.',
+			'Every app in the store can be installed. Apps that need others (like Mempool needing Bitcoin Node and Electrs) list them and install them first, all in one go.',
+			'Apps that talk to each other share a network, and apps that use Tor get a shared Tor connection.',
+			'The Omarchy theme uses your Omarchy desktop’s backgrounds and colours. Pick any background from any Omarchy theme, or follow whatever the desktop shows.',
+			'For apps that have a login of their own inside, the app screen shows its username and password, ready to copy.',
+		],
+		fixed: [
+			'Apps that look up their own parts by name (like Immich’s database) can find them now.',
+			'An app that other apps need can’t be uninstalled out from under them.',
+		],
+	},
+	{
 		version: '0.7.3',
 		date: '2026-11-12',
 		title: 'App windows load',

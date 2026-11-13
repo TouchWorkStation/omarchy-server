@@ -380,9 +380,11 @@ function StoreSheet({
 	const review = useInstallReview(reviewing ? app.id : null)
 
 	const live = installed.get(app.id)
-	const missingDeps = (app.dependencies ?? []).filter((d) => !installed.has(d))
+	// What it needs that isn't installed yet (an installed app can stand in, e.g. Bitcoin Knots).
+	const covered = (id: string) => installed.has(id) || [...installed.keys()].some((k) => all.find((a) => a.id === k)?.implements?.includes(id))
+	const missingDeps = (app.needs ?? app.dependencies ?? []).filter((d) => !covered(d))
 	const incompatible = app.compatible === false || !!app.unsupported
-	const canInstall = !live && !incompatible && missingDeps.length === 0
+	const canInstall = !live && !incompatible
 	const showReview = reviewing && canInstall
 
 	const install = () => {
@@ -414,7 +416,23 @@ function StoreSheet({
 							{(review.error as Error).message}
 						</div>
 					)}
-					{review.data && (review.data.requiredFolders.length > 0 || review.data.gpuAccess) && (
+					{(review.data?.alsoInstalls?.length ?? 0) > 0 && (
+						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
+							<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
+								Also installs (it needs {review.data!.alsoInstalls!.length > 1 ? 'these' : 'this'})
+							</div>
+							{review.data!.alsoInstalls!.map((d) => (
+								<div className="perm" key={d.id}>
+									<AppIcon src={d.icon} name={d.name} size={34} />
+									<span className="main">
+										<b>{d.name}</b>
+										<span>installed first</span>
+									</span>
+								</div>
+							))}
+						</div>
+					)}
+										{review.data && (review.data.requiredFolders.length > 0 || review.data.gpuAccess) && (
 						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
 							<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
 								It will have access to
@@ -457,7 +475,7 @@ function StoreSheet({
 					<div className="stack">
 						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending}>
 							<Icon name="download" size={20} />
-							Install {app.name}
+							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
 						</button>
 						<button className="btn block ghost" onClick={() => setReviewing(false)}>
 							Back
@@ -502,30 +520,42 @@ function StoreSheet({
 							<Icon name="alert" size={18} />
 							{app.unsupported ?? 'This app needs a newer version of Omarchy Server.'}
 						</div>
-					) : missingDeps.length ? (
-						<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
-							<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
-								Install these first
-							</div>
-							{missingDeps.map((d) => {
-								const dep = all.find((a) => a.id === d)
-								return (
-									<button key={d} className="row" style={{minHeight: 60}} onClick={() => dep && onSelect(dep)} disabled={!dep}>
-										<AppIcon src={dep?.icon} name={dep?.name ?? d} size={38} />
-										<span className="main">
-											<b>{dep?.name ?? d}</b>
-										</span>
-										<Icon name="chevron" size={18} className="chev" />
-									</button>
-								)
-							})}
-						</div>
 					) : (
-						<div className="primary-row">
-							<button className="btn primary" onClick={() => setReviewing(true)} disabled={action.isPending}>
-								<Icon name="download" size={20} />
-								Install
-							</button>
+						<>
+							<div className="primary-row">
+								<button className="btn primary" onClick={() => setReviewing(true)} disabled={action.isPending}>
+									<Icon name="download" size={20} />
+									Install
+								</button>
+							</div>
+							{missingDeps.length > 0 && (
+								<div className="glass" style={{marginBottom: 16, borderRadius: 18, overflow: 'hidden'}}>
+									<div style={{padding: '14px 16px 4px', fontSize: 13, fontWeight: 650, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em'}}>
+										Needs {missingDeps.length > 1 ? 'these apps' : 'this app'} · installed with it
+									</div>
+									{missingDeps.map((d) => {
+										const dep = all.find((a) => a.id === d)
+										return (
+											<button key={d} className="row" style={{minHeight: 60}} onClick={() => dep && onSelect(dep)} disabled={!dep}>
+												<AppIcon src={dep?.icon} name={dep?.name ?? d} size={38} />
+												<span className="main">
+													<b>{dep?.name ?? d}</b>
+													{dep?.tagline && <span>{dep.tagline}</span>}
+												</span>
+												<Icon name="chevron" size={18} className="chev" />
+											</button>
+										)
+									})}
+								</div>
+							)}
+						</>
+					)}
+					{app.caution && !live && (
+						<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 16, borderRadius: 18}}>
+							<span className="row-ico" style={{'--c': 'var(--blue)'} as React.CSSProperties}>
+								<Icon name="info" size={18} />
+							</span>
+							<span style={{fontSize: 14.5}}>{app.caution}</span>
 						</div>
 					)}
 

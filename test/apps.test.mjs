@@ -35,6 +35,7 @@ describe('omarchyd apps', () => {
 	let root, data, d, storeUrl, auth, appPort, upstream, wss
 	const calls = []
 	const up = new Set()
+	const networks = new Set()
 	const git = (args, cwd) => execFileSync('git', args, {cwd, stdio: 'pipe'}).toString()
 	const run = async (cmd, args, opts = {}) => {
 		if (cmd === 'git') return git(args, opts.cwd)
@@ -52,6 +53,8 @@ describe('omarchyd apps', () => {
 		if (cmd === 'podman') {
 			calls.push({podman: args})
 			if (args[1] === 'rm') execFileSync('rm', args.slice(2))
+			if (args[0] === 'network' && args[1] === 'exists' && !networks.has(args[2])) throw new Error('no such network')
+			if (args[0] === 'network' && args[1] === 'create') networks.add(args.at(-1))
 			return ''
 		}
 		if (cmd === 'setfacl') return ''
@@ -213,8 +216,9 @@ describe('omarchyd apps', () => {
 		const by = Object.fromEntries(reg.apps.map((a) => [a.id, a]))
 		assert.equal(by.plain.unsupported, undefined)
 		assert.match(by['needs-node'].unsupported, /Needs bitcoin/)
-		assert.match(by['needs-vars'].unsupported, /APP_BITCOIN_NODE_IP/)
-		await assert.rejects(call('apps.install', {appId: 'needs-node'}), /can’t be installed here yet/)
+		assert.equal(by['needs-vars'].unsupported, undefined, 'unknown settings don’t block installing')
+		assert.match(by['needs-vars'].caution, /APP_BITCOIN_NODE_IP/)
+		await assert.rejects(call('apps.install', {appId: 'needs-node'}), /needs bitcoin, which isn’t in your stores/)
 		await call('apps.install', {appId: 'plain'})
 		const plain = await until(async () => (await q('apps.list')).find((a) => a.id === 'plain' && a.state === 'running'))
 		assert.match(plain.credentials.defaultPassword, /^[0-9a-f]{64}$/, 'app-generated password is shown')
@@ -250,6 +254,44 @@ describe('omarchyd apps', () => {
 		await call('apps.install', {appId: 'demo-app'})
 		await until(async () => (await q('apps.list')).find((a) => a.id === 'demo-app' && a.state === 'running'))
 		runImpl.current = original
+	})
+
+	test('an app installs together with the apps it needs, on a shared network, in order', async () => {
+		const store = join(root, 'linked-apps')
+		const app = async (id, manifest, compose, exportsSh) => {
+			await mkdir(join(store, id), {recursive: true})
+			await writeFile(join(store, id, 'umbrel-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\nport: ${appPort + (id === 'node' ? 7 : 8)}\n${manifest}`)
+			await writeFile(join(store, id, 'docker-compose.yml'), compose)
+			if (exportsSh) await writeFile(join(store, id, 'exports.sh'), exportsSh)
+		}
+		await app('node', '', 'services:\n  app_proxy:\n    environment:\n      APP_HOST: $APP_NODE_IP\n      APP_PORT: 3000\n  app:\n    image: x\n    networks:\n      default:\n        ipv4_address: $APP_NODE_IP\n  db:\n    image: y\n', 'export APP_NODE_IP="10.21.21.8"\nexport APP_NODE_RPC_PORT="8332"\n')
+		await app('wallet', 'dependencies:\n  - node\n', 'services:\n  web:\n    image: z\n    environment:\n      NODE: ${APP_NODE_IP}:${APP_NODE_RPC_PORT}\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const reg = (await q('appStore.registry')).find((r) => r.url.endsWith('linked-apps'))
+		const wallet = reg.apps.find((a) => a.id === 'wallet')
+		assert.equal(wallet.unsupported, undefined, 'variables from the app it needs count as provided')
+		assert.deepEqual(wallet.needs, ['node'])
+		assert.deepEqual((await q('apps.installReview', {appId: 'wallet'})).alsoInstalls.map((a) => a.id), ['node'])
+		calls.length = 0
+		await call('apps.install', {appId: 'wallet'})
+		assert.deepEqual((await q('apps.list')).filter((a) => ['node', 'wallet'].includes(a.id)).map((a) => a.state), ['installing', 'installing'])
+		await until(async () => (await q('apps.list')).filter((a) => ['node', 'wallet'].includes(a.id) && a.state === 'running').length === 2, 8000)
+		const ups = calls.filter((c) => c.args?.[4] === 'up').map((c) => c.args[1])
+		assert.deepEqual(ups, ['omarchy-node', 'omarchy-wallet'], 'what it needs comes first')
+		assert.ok(calls.some((c) => c.podman?.join(' ') === 'network create --subnet 10.21.0.0/16 --gateway 10.21.0.1 omarchy_main_network'))
+		const nodeCompose = YAML.parse(await readFile(join(data, 'apps', 'installed', 'node', 'compose.omarchy.yml'), 'utf8'))
+		assert.deepEqual(nodeCompose.networks.default, {name: 'omarchy_main_network', external: true})
+		assert.equal(nodeCompose.services.db.container_name, 'node_db_1')
+		assert.match(nodeCompose.services.app.ports.at(-1), /^127\.0\.0\.1:\d+:3000$/, 'the web service found by its fixed address')
+		const walletUp = calls.find((c) => c.args?.[1] === 'omarchy-wallet' && c.args?.[4] === 'up')
+		assert.equal(walletUp.env.APP_NODE_IP, '10.21.21.8', 'it gets the variables of the app it needs')
+		await assert.rejects(call('apps.uninstall', {appId: 'node'}), /wallet needs node/)
+		await call('apps.uninstall', {appId: 'wallet'})
+		await call('apps.uninstall', {appId: 'node'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 
 	test('logs, stop, uninstall', async () => {

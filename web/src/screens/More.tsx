@@ -4,7 +4,8 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
-import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, preparePhoto, useConfirm, useToast, wallpaperUrl, type Prefs} from '../ui'
+import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
+import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useToast, wallpaperUrl, type Prefs} from '../ui'
 
 // One point per successful poll (keyed on fetch time, so flat values still plot).
 function useHistory(value: number | undefined, stamp: number, size = 40) {
@@ -229,14 +230,17 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 					const on = prefs.theme === t.id
 					const isWall = t.id === 'horizon'
 					const isPhoto = t.id === 'custom'
-					const bg = isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
+					const isOmarchy = t.id === 'omarchy'
+					const bg = isOmarchy
+						? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.5)), url(${omarchyBackgroundUrl(prefs.omarchyBackground)}) center/cover, ${t.bg}`
+						: isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
 					return (
 						<button
 							key={t.id}
 							role="radio"
 							aria-checked={on}
 							className={`theme-card${on ? ' on' : ''}`}
-							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto ? 104 : undefined}}
+							style={{background: bg, color: t.fg, minHeight: isWall || isPhoto || isOmarchy ? 104 : undefined}}
 							onClick={() => {
 								haptic(6)
 								if (isPhoto && !photo) return fileRef.current?.click()
@@ -269,7 +273,10 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 					)
 				})}
 			</div>
-			{photo && (
+			{prefs.theme === 'omarchy' && (
+				<OmarchyBackgrounds selected={prefs.omarchyBackground ?? null} onChoose={(id) => setPrefs({...prefs, theme: 'omarchy', omarchyBackground: id})} />
+			)}
+						{photo && (
 				<div className="photo-actions">
 					<button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
 						{uploading ? <span className="spinner" /> : <Icon name="photo-up" size={18} />}
