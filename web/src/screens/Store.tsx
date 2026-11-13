@@ -29,7 +29,7 @@ const catIcon = (c: string) => (hasIcon(c) ? c : 'category')
 // Shown first in "Featured" when present in the catalog; otherwise any app with screenshots.
 const FEATURED = ['immich', 'nextcloud', 'home-assistant', 'jellyfin', 'plex', 'bitcoin', 'ollama', 'vaultwarden', 'pi-hole', 'tailscale']
 
-export function Store({onOpenInstalled, onOpenApp, onBack}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void}) {
+export function Store({onOpenInstalled, onBack}: {onOpenInstalled: (app: UserApp) => void; onOpenApp?: (app: UserApp) => void; onBack?: () => void}) {
 	const registry = useRegistry()
 	const apps = useApps()
 	const [q, setQ] = useState('')
@@ -206,7 +206,6 @@ export function Store({onOpenInstalled, onOpenApp, onBack}: {onOpenInstalled: (a
 					installed={installed}
 					onSelect={(a) => setSelected({app: a})}
 					onClose={() => setSelected(null)}
-					onOpenApp={onOpenApp}
 				/>
 			)}
 		</div>
@@ -362,7 +361,6 @@ function StoreSheet({
 	installed,
 	onSelect,
 	onClose,
-	onOpenApp,
 }: {
 	app: StoreApp
 	startInstall?: boolean
@@ -502,8 +500,7 @@ function StoreSheet({
 											haptic(6)
 											onClose()
 											if (desk) desk.launch(live)
-											else if (onOpenApp) onOpenApp(live)
-											else if (liveUrl) window.open(liveUrl, '_blank', 'noopener')
+											else if (liveUrl) location.assign(liveUrl)
 										}}
 									>
 										<Icon name="open" size={20} />

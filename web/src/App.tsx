@@ -3,7 +3,6 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User} from './api'
 import {AppSheet} from './AppSheet'
-import {AppViewer} from './AppViewer'
 import {BootstrapContext, useAction, useApps, useNotifications, useUpdates, useUser} from './data'
 import {Icon, type IconName} from './icons'
 import {Apps} from './screens/Apps'
@@ -94,7 +93,6 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 	const [tab, setTab] = useState<Tab>(tabFromHash)
 	const [appId, setAppId] = useState<string | null>(null)
 	const [bellOpen, setBellOpen] = useState(false)
-	const [viewing, setViewing] = useState<string | null>(null)
 	const [terminal, setTerminal] = useState<{app?: {id: string; name?: string; icon?: string}} | null>(null)
 	const user = useUser()
 	// omarchyd only gives the owner a shell.
@@ -124,7 +122,6 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 
 	const app = apps.data?.find((a) => a.id === appId) ?? null
 	const update = updates.data?.find((u) => u.id === appId)
-	const viewed = apps.data?.find((a) => a.id === viewing) ?? null
 	const online = !apps.error
 	const updateCount = updates.data?.length ?? 0
 	const notes = notifications.data ?? []
@@ -169,7 +166,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 					{tab === 'home' && <Home onOpenApp={(a) => setAppId(a.id)} go={go} onTerminal={openTerminal} />}
 					{tab === 'apps' && <Apps onOpenApp={(a) => setAppId(a.id)} onTerminal={openTerminal} onStore={() => go('store')} />}
 					{tab === 'files' && <Files />}
-					{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onOpenApp={(a) => setViewing(a.id)} onBack={() => history.back()} />}
+					{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} />}
 					{tab === 'machines' && <Machines />}
 					{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} />}
 					{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
@@ -185,8 +182,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 					</button>
 				))}
 			</nav>
-			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onOpenApp={(a) => setViewing(a.id)} onTerminal={openTerminal} />
-			{viewed && <AppViewer app={viewed} onClose={() => setViewing(null)} />}
+			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onTerminal={openTerminal} />
+
 			{terminal && <TerminalScreen app={terminal.app} onClose={() => setTerminal(null)} />}
 			<NotificationsSheet
 				open={bellOpen}

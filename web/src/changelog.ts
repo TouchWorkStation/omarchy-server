@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.4',
+		date: '2026-11-13',
+		title: 'Open goes to the app’s own link',
+		added: [
+			'Open now takes this tab straight to the app’s own address and port, like clicking a container’s link in Docker. Nothing is wrapped around the app, so nothing can stop it showing. Your browser’s back button returns to Omarchy Server.',
+			'The Address on an app’s page is a link you can tap.',
+		],
+		fixed: ['In the desktop layout, a window that hasn’t shown its app after 8 seconds offers Open in a tab.'],
+	},
+	{
 		version: '0.8.3',
 		date: '2026-11-12',
 		title: 'Apps open straight away',

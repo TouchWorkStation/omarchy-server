@@ -10,7 +10,7 @@ import {AppIcon, KV, Sheet, SheetHeader, StatusPill, appStatus, haptic, isAppBus
 type Props = {app: UserApp | null; update?: {version: string}; onClose: () => void; onOpenApp?: (app: UserApp) => void; onTerminal?: (app: {id: string; name?: string; icon?: string}) => void}
 type A = {id: string; label: string; icon: IconName; onClick: () => void; disabled?: boolean}
 
-export function AppSheet({app, update, onClose, onOpenApp, onTerminal}: Props) {
+export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const desk = useDesktop()
 	const boot = useBootstrap()
 	const action = useAction()
@@ -38,13 +38,11 @@ export function AppSheet({app, update, onClose, onOpenApp, onTerminal}: Props) {
 			desk.launch(app)
 			return
 		}
-		if (onOpenApp) {
-			onClose()
-			onOpenApp(app)
-			return
-		}
+		// Straight to the app's own address and port, in this tab (like a container's link in Docker).
+		// The browser's back button returns to Omarchy Server.
 		mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
-		window.open(url, '_blank', 'noopener')
+		onClose()
+		location.assign(url)
 	}
 	const copy = async () => {
 		if (!url) return
@@ -92,7 +90,7 @@ export function AppSheet({app, update, onClose, onOpenApp, onTerminal}: Props) {
 	if (creds?.defaultUsername) rows.push(['Username', creds.defaultUsername])
 	if (creds?.defaultPassword) rows.push(['Password', creds.defaultPassword])
 	rows.push(['Version', update ? `${app.version} → ${update.version}` : (app.version ?? '–')])
-	if (url) rows.push(['Address', new URL(url).host])
+	if (url) rows.push(['Address', <a key="addr" href={url} style={{color: 'var(--accent-text)'}}>{new URL(url).host}</a>])
 
 	return (
 		<>

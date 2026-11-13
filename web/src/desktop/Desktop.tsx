@@ -1644,7 +1644,7 @@ function RelayedFrame({app}: {app: UserApp}) {
 function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetry?: () => void}) {
 	const [slow, setSlow] = useState(false)
 	useEffect(() => {
-		const t = window.setTimeout(() => setSlow(true), 15000)
+		const t = window.setTimeout(() => setSlow(true), 8000)
 		return () => window.clearTimeout(t)
 	}, [])
 	const name = app.name ?? app.id
