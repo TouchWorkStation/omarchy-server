@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.12',
+		date: '2026-11-13',
+		title: 'The App Store shows every app',
+		fixed: [
+			'The App Store kept showing the apps from when the store was first downloaded; it now picks up new apps within the hour, and all 586 appear right after this update.',
+		],
+	},
+	{
 		version: '0.8.11',
 		date: '2026-11-13',
 		title: 'Updates that fit in less memory',

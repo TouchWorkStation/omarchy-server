@@ -547,15 +547,20 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	async function syncStore(url) {
 		const dir = storeDir(url)
-		if (await exists(join(dir, '.git'))) await run('git', ['-C', dir, 'pull', '--ff-only', '--depth', '1'], {timeout: 120_000})
-		else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
+		if (await exists(join(dir, '.git'))) {
+			// A shallow clone can't `pull --ff-only` once the store has moved on (the new tip doesn't
+			// connect to the one commit it has), so take the store's latest commit as it is.
+			await run('git', ['-C', dir, 'fetch', '--depth', '1', 'origin', 'HEAD'], {timeout: 120_000})
+			await run('git', ['-C', dir, 'reset', '--hard', 'FETCH_HEAD'], {timeout: 60_000})
+			await run('git', ['-C', dir, 'clean', '-fdx'], {timeout: 60_000})
+		} else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
 	}
 	async function registry({refresh = false} = {}) {
 		await ready
 		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
 		const list = []
 		for (const s of state.stores) {
-			if (refresh || Date.now() - (s.syncedAt ?? 0) > 6 * 60 * 60_000) {
+			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
 				try {
 					await syncStore(s.url)
 					s.syncedAt = Date.now()
