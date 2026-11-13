@@ -63,5 +63,11 @@ export async function createStore(dataDir) {
 			await persistSessions()
 		},
 		sessionCount: () => Object.keys(sessions).length,
+		// Every stored session with its key (sha256 of the cookie), for Settings › Signed-in devices.
+		sessionEntries: () => Object.entries(sessions).map(([key, session]) => ({key, session})),
+		async deleteSessionByKey(key) {
+			delete sessions[key]
+			await persistSessions()
+		},
 	}
 }

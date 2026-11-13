@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.5'
+export const VERSION = '0.8.6'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -27,6 +27,7 @@ const REFRESH_MARGIN_MS = 2 * 60 * 1000
 // Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
 export const ALLOWED = {
+	'user.revokeAppPasses': 'mutation',
 	'system.desktopSignIn': 'mutation',
 	'system.desktopShare': 'mutation',
 	'apps.probe': 'query',
@@ -1322,6 +1323,70 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	}
 
 	// ---- Allowlisted proxy ---------------------------------------------------
+	// ---- Settings › Signed-in devices and Factory reset ----------------------------------------
+	// This web server holds each signed-in browser's session, so it lists and ends them itself.
+	async function endStoredSession(key, session) {
+		const backend = getClient()
+		if (session.console) await backend?.mutation('user.logout', undefined, {token: session.console.token, cookie: session.console.cookie}).catch(() => {})
+		if (session.mode === 'native' && session.deviceToken) {
+			const fresh = await backend?.mutation('user.refreshNativeAccess', {deviceToken: session.deviceToken}).catch(() => null)
+			if (fresh?.accessToken) await backend.mutation('user.logout', undefined, {token: fresh.accessToken}).catch(() => {})
+		}
+		await store.deleteSessionByKey(key)
+	}
+	// Signing other devices out also ends their app passes; this browser gets a new one.
+	async function renewAppPass(req, res) {
+		const cookie = await authedCall(req, 'user.revokeAppPasses', 'mutation').catch(() => null)
+		const session = store.getSession(req.sid)
+		if (typeof cookie !== 'string' || !session?.console) return
+		const appCookie = cookie.split(';')[0]
+		await store.updateSession(req.sid, {console: {...session.console, appCookie}})
+		shareAppSession(req, res, store.getSession(req.sid))
+	}
+	const mine = (req) => {
+		const me = store.getSession(req.sid)
+		if (!me) throw new BackendError('Signed out', {code: 'UNAUTHORIZED', status: 401})
+		const myKey = hashId(req.sid)
+		return {me, myKey, list: store.sessionEntries().filter(({session}) => session.accountId === me.accountId)}
+	}
+	const LOCAL = {
+		'user.listSessions': async (req) => {
+			const {myKey, list} = mine(req)
+			return list
+				.map(({key, session}) => ({
+					id: key.slice(0, 32),
+					createdAt: session.createdAt ?? 0,
+					lastSeenAt: session.lastSeenAt ?? session.createdAt ?? 0,
+					current: key === myKey,
+					client: {type: 'browser', userAgent: session.userAgent ?? ''},
+				}))
+				.sort((a, b) => Number(b.current) - Number(a.current) || b.lastSeenAt - a.lastSeenAt)
+		},
+		'user.revokeSession': async (req, res, input) => {
+			const {myKey, list} = mine(req)
+			const target = list.find(({key}) => key.slice(0, 32) === String(input?.sessionId ?? ''))
+			if (!target) throw new BackendError('That device is already signed out', {code: 'NOT_FOUND', status: 404})
+			if (target.key === myKey) throw new BackendError('Use Sign out to sign this device out', {code: 'BAD_REQUEST', status: 400})
+			await endStoredSession(target.key, target.session)
+			await renewAppPass(req, res)
+			return true
+		},
+		'user.revokeOtherSessions': async (req, res) => {
+			const {myKey, list} = mine(req)
+			for (const {key, session} of list) if (key !== myKey) await endStoredSession(key, session)
+			await renewAppPass(req, res)
+			return true
+		},
+		// The reset itself happens in omarchyd; every sign-in here ends with it.
+		'system.factoryReset': async (req, res, input) => {
+			await authedCall(req, 'system.factoryReset', 'mutation', input)
+			await store.clearSessions()
+			setCookie(res, '', 0)
+			res.append('Set-Cookie', 'OMARCHY_APP_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0')
+			return true
+		},
+	}
+
 	const proxy = async (req, res) => {
 		const path = req.params.path
 		const kind = ALLOWED[path]
@@ -1336,6 +1401,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'Malformed input'}})
 		}
 		try {
+			if (LOCAL[path]) return res.json({data: (await LOCAL[path](req, res, input)) ?? null})
 			const data = await authedCall(req, path, kind, input)
 			res.json({data: data ?? null})
 		} catch (error) {

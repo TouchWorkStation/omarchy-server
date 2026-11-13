@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.6',
+		date: '2026-11-13',
+		title: 'Every Settings button works',
+		fixed: [
+			'Home Assistant (and other apps on the server’s own network) spun forever when opened: its port was never let through Omarchy’s firewall. It is now.',
+			'Restart server and Shut down server now do what they say.',
+			'System logs, Device name, Wi-Fi, Two-factor authentication and Signed-in devices (Sign out, Sign out all other devices) now work. Signing a device out also ends its access to your apps.',
+			'Factory reset now resets Omarchy Server: its apps, machines and accounts go, and it starts first-time setup. Your own files, storage pools and the Omarchy desktop are left alone.',
+		],
+	},
+	{
 		version: '0.8.5',
 		date: '2026-11-13',
 		title: 'Sign in the desktop from anywhere',

@@ -5,7 +5,7 @@ import os from 'node:os'
 import {join} from 'node:path'
 import {after, before, describe, test} from 'node:test'
 
-import {openAccounts} from '../omarchyd/accounts.mjs'
+import {openAccounts, secretFromUri, totpCode} from '../omarchyd/accounts.mjs'
 import {startOmarchyd} from '../omarchyd/server.mjs'
 
 describe('omarchyd', () => {
@@ -52,6 +52,27 @@ describe('omarchyd', () => {
 		assert.equal((await call('query', 'files.list', {path: '/Home'})).status, 401)
 		// A browser bearer without its cookie is refused.
 		assert.equal((await call('query', 'user.get', undefined, {authorization: browser.authorization})).status, 401)
+	})
+	test('two-factor: turning it on needs a right code, then signing in needs one; off again with a code', async () => {
+		assert.equal((await call('query', 'user.is2faEnabled', undefined, native)).body.result.data, false)
+		const uri = (await call('query', 'user.generateTotpUri', undefined, native)).body.result.data
+		assert.match(uri, /^otpauth:\/\/totp\/Omarchy%20Server%3AChris\?secret=[A-Z2-7]{32}&issuer=Omarchy%20Server/)
+		const secret = secretFromUri(uri)
+		assert.equal((await call('mutation', 'user.enable2fa', {totpUri: uri, totpToken: '000000'}, native)).status, 400)
+		assert.equal((await call('mutation', 'user.enable2fa', {totpUri: uri, totpToken: totpCode(secret)}, native)).status, 200)
+		const login = (input) => call('mutation', 'user.loginNative', {userId: 'owner', password: 'correct horse', client: {id: 't'}, ...input})
+		const noCode = await login({})
+		assert.equal(noCode.status, 401)
+		assert.match(noCode.body.error.message, /2FA/, 'the sign-in page asks for the code')
+		assert.equal((await login({totpToken: '123456'})).status, 401)
+		assert.equal((await login({totpToken: totpCode(secret)})).status, 200)
+		assert.equal((await call('mutation', 'user.disable2fa', {totpToken: totpCode(secret)}, native)).status, 200)
+		assert.equal((await login({})).status, 200)
+	})
+	test('settings: owner-only power actions; logs answer', async () => {
+		const logs = await call('query', 'system.logs', {type: 'server', lines: 50}, native)
+		assert.equal(logs.status, 200)
+		assert.equal(typeof logs.body.result.data, 'string')
 	})
 	test('files: lists Home without dotfiles; stats are real numbers', async () => {
 		const list = (await call('query', 'files.list', {path: '/Home'}, native)).body.result.data

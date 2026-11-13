@@ -235,6 +235,14 @@ export async function startFakeserverd({
 			},
 		},
 		'user.renewToken': {kind: 'mutation', run: () => 'renewed'},
+		'user.revokeAppPasses': {
+			kind: 'mutation',
+			run: () => {
+				const t = newToken()
+				appSessionTokens.add(t)
+				return `OMARCHY_APP_SESSION=${t}; Path=/; HttpOnly; SameSite=Lax`
+			},
+		},
 		'user.logout': {
 			kind: 'mutation',
 			run: (_, auth) => {

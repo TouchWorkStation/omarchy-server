@@ -20,7 +20,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.8.5'
+export const OMARCHYD_VERSION = '0.8.6'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
@@ -34,8 +34,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
-	const ownerOnly = (auth) => {
-		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change the desktop’s theme')
+	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
+		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
 	}
 	const themeCall = async (fn) => {
 		try {
@@ -98,6 +98,59 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
 
+		// ---- Settings: power, logs, device name, two-factor, sessions, reset ----------------------
+		'system.restart': {kind: 'mutation', run: (_i, {auth}) => (ownerOnly(auth, 'restart the server'), power('reboot'))},
+		'system.shutdown': {kind: 'mutation', run: (_i, {auth}) => (ownerOnly(auth, 'shut down the server'), power('poweroff'))},
+		'system.logs': {
+			kind: 'query',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'read the logs')
+				const lines = Math.max(50, Math.min(5000, Number(input?.lines) || 1000))
+				const args =
+					input?.type === 'system'
+						? ['-n', String(lines), '--no-pager', '-o', 'short-iso']
+						: ['--user', '-u', 'omarchyd.service', '-u', 'omarchy-server-web.service', '-u', 'omarchy-server-desktop.service', '-n', String(lines), '--no-pager', '-o', 'short-iso']
+				const r = await sh('journalctl', args, 20_000)
+				const text = r.out || r.err || 'No log lines.'
+				const max = Math.max(10_000, Math.min(1_000_000, Number(input?.maxOutputBytes) || 400_000))
+				return text.length > max ? text.slice(-max) : text
+			},
+		},
+		'system.setHostname': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'change the device name')
+				const name = String(input?.hostname ?? '').trim().toLowerCase()
+				await storage.helper('hostname', [name])
+				settings.hostname = name
+				return true
+			},
+		},
+		'user.is2faEnabled': {kind: 'query', run: (_i, {auth}) => accounts.is2faEnabled(auth.userId)},
+		'user.generateTotpUri': {kind: 'query', run: (_i, {auth}) => accounts.totpUri(auth.userId)},
+		'user.enable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.enable2fa(auth.userId, input ?? {}), true)},
+		'user.disable2fa': {kind: 'mutation', run: async (input, {auth}) => (await accounts.disable2fa(auth.userId, input ?? {}), true)},
+		// A fresh app pass for this person, ending the ones their other devices hold.
+		'user.revokeAppPasses': {kind: 'mutation', run: async (_i, {auth}) => apps.sessionCookie(await apps.revokePasses(auth.userId))},
+		'system.factoryReset': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'reset Omarchy Server')
+				await accounts.confirmPassword(auth.userId, input?.password)
+				// Answer first; the reset carries on by itself.
+				setTimeout(async () => {
+					await apps.uninstallAll().catch((e) => console.error('[omarchyd] reset apps', e.message))
+					await machines.uninstallAll().catch((e) => console.error('[omarchyd] reset machines', e.message))
+					await accounts.reset()
+					console.log('[omarchyd] factory reset done')
+				}, 500)
+				return true
+			},
+		},
+		'wifi.supported': {kind: 'query', run: () => wifi.supported()},
+		'wifi.connect': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth, 'change Wi-Fi'), wifi.connect(input))},
+		'wifi.disconnect': {kind: 'mutation', run: (_i, {auth}) => (ownerOnly(auth, 'change Wi-Fi'), wifi.disconnect())},
+
 		// ---- not built yet: answer empty so the web app shows empty states, not errors ----------
 		// The bell: an update waiting (until it's installed or you dismiss that version).
 		'system.desktopShare': {
@@ -141,8 +194,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 				return true
 			},
 		},
-		'wifi.connected': {kind: 'query', run: () => ({status: 'disconnected'})},
-		'wifi.networks': {kind: 'query', run: () => []},
+		'wifi.connected': {kind: 'query', run: () => wifi.connected()},
+		'wifi.networks': {kind: 'query', run: () => wifi.networks()},
 
 		...files.procedures,
 		...storage.procedures,
@@ -177,6 +230,63 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		}
 		return false
 	}
+	// Restart / shut down: through logind as yourself when allowed, otherwise through the helper.
+	async function power(what) {
+		if (machineOptions.run) return true // dev/test stand-in
+		setTimeout(async () => {
+			const r = await sh('systemctl', ['--no-block', what], 10_000)
+			if (!r.ok) await storage.helper('power', [what]).catch((e) => console.error('[omarchyd] power', e.message))
+		}, 1500)
+		return true
+	}
+
+	// Wi-Fi through iwd (what Omarchy uses; its Wi-Fi menu is impala on iwctl).
+	const wifi = {
+		async iface() {
+			const nets = await readdir('/sys/class/net').catch(() => [])
+			for (const n of nets) if (await readdir(`/sys/class/net/${n}/wireless`).then(() => true, () => false)) return n
+			return null
+		},
+		async supported() {
+			return !!(await this.iface()) && (await sh('iwctl', ['--version'], 5000)).ok
+		},
+		clean: (t) => t.replace(/\x1b\[[0-9;]*m/g, ''),
+		async connected() {
+			const i = await this.iface()
+			if (!i) return {status: 'disconnected'}
+			const r = await sh('iwctl', ['station', i, 'show'], 8000)
+			const ssid = /Connected network\s+(.+?)\s*$/m.exec(this.clean(r.out))?.[1]
+			return ssid ? {status: 'connected', ssid} : {status: 'disconnected'}
+		},
+		async networks() {
+			const i = await this.iface()
+			if (!i) return []
+			await sh('iwctl', ['station', i, 'scan'], 8000)
+			const r = await sh('iwctl', ['station', i, 'get-networks'], 8000)
+			const out = []
+			for (const raw of this.clean(r.out).split('\n')) {
+				const m = /^\s*(>?)\s*(.+?)\s{2,}(psk|open|8021x|wep)\s+(\*+)\s*$/.exec(raw)
+				if (m) out.push({ssid: m[2].trim(), signal: Math.round((m[4].length / 4) * 100), authenticated: m[3] !== 'open', active: m[1] === '>'})
+			}
+			return out
+		},
+		async connect(input) {
+			const i = await this.iface()
+			const ssid = String(input?.ssid ?? '')
+			if (!i) throw new RpcError('PRECONDITION_FAILED', 'This server has no Wi-Fi')
+			if (!ssid || ssid.length > 64 || /[\x00-\x1f]/.test(ssid)) throw new RpcError('BAD_REQUEST', 'Pick a network')
+			const pw = typeof input?.password === 'string' ? input.password : null
+			const r = await sh('iwctl', [...(pw ? ['--passphrase', pw] : []), 'station', i, 'connect', ssid], 30_000)
+			if (!r.ok) throw new RpcError('BAD_GATEWAY', /passphrase|authentication|operation failed/i.test(r.err + r.out) ? 'Couldn’t connect. Check the password.' : `Couldn’t connect to ${ssid}`)
+			return true
+		},
+		async disconnect() {
+			const i = await this.iface()
+			if (i) await sh('iwctl', ['station', i, 'disconnect'], 10_000)
+			return true
+		},
+	}
+
 	async function desktopShare() {
 		if (machineOptions.run) return true // the dev/test stand-in has no desktop
 		if (await reachable(desktopVncPort)) return true

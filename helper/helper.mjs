@@ -221,6 +221,18 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				await run('rm', ['-f', SDDM_ONCE]).catch(() => {})
 			}
 		},
+		// Restart or shut down the server (Settings → Restart server / Shut down server).
+		power: async ([what]) => {
+			if (what !== 'reboot' && what !== 'poweroff') fail('Use reboot or poweroff')
+			await run('systemctl', ['--no-block', what])
+			return 'ok'
+		},
+		// The server's device name on the network (Settings → Device name).
+		hostname: async ([name]) => {
+			if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name ?? '')) fail('Use letters, numbers and dashes for the device name')
+			await run('hostnamectl', ['set-hostname', name])
+			return 'ok'
+		},
 		// Remove a one-time sign-in left behind by an interrupted attempt.
 		'desktop-sign-in-cleanup': async () => (await run('rm', ['-f', SDDM_ONCE]), 'ok'),
 

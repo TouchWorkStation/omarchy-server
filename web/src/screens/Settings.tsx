@@ -12,7 +12,7 @@ import {StoragePage} from './Storage'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 
 
-function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false} = {}) {
+function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
 }
 
@@ -528,7 +528,9 @@ function PasswordSheet({open, onClose, onSignedOut}: {open: boolean; onClose: ()
 function TwoFactorSheet({open, enabled, onClose}: {open: boolean; enabled: boolean; onClose: () => void}) {
 	const save = useSave()
 	const toast = useToast()
-	const uri = useQ<string>('user.generateTotpUri', undefined, {enabled: open && !enabled})
+	// One setup key for the whole setup: fetching again (e.g. after switching to the authenticator
+	// app and back) would make a new key, and the code from the app would never match.
+	const uri = useQ<string>('user.generateTotpUri', undefined, {enabled: open && !enabled, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false})
 	const [code, setCode] = useState('')
 	useEffect(() => setCode(''), [open])
 	const secret = uri.data ? (new URL(uri.data).searchParams.get('secret') ?? '') : ''
@@ -737,9 +739,9 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 		<FormSheet
 			open={open}
 			title="Factory reset"
-			subtitle="Erases everything on this server"
+			subtitle="Erases Omarchy Server’s apps, machines and accounts"
 			onClose={onClose}
-			submit="Erase everything"
+			submit="Reset Omarchy Server"
 			danger
 			busy={save.isPending}
 			disabled={!password || typed !== 'RESET'}
@@ -747,7 +749,7 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 		>
 			<div className="error" style={{marginBottom: 16}}>
 				<Icon name="alert" size={18} />
-				All apps, their data, machines, files and settings are permanently deleted, and Omarchy Server goes back to its first-time setup. This can’t be undone.
+				Every app and its data, every machine and its disks, and all Omarchy Server accounts and settings are permanently deleted, and Omarchy Server goes back to its first-time setup. This can’t be undone. Your own files, storage pools and the Omarchy desktop are left as they are.
 			</div>
 			<Field id="reset-pw" label="Your password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
 			<Field id="reset-type" label="Type RESET to confirm" autoCapitalize="characters" autoCorrect="off" value={typed} onChange={(e) => setTyped(e.target.value)} />

@@ -567,8 +567,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return sock
 	}
 
+	// Factory reset: remove every machine and its disks.
+	async function uninstallAll() {
+		await ready
+		for (const m of [...machines]) {
+			busy.delete(m.id)
+			await uninstall({id: m.id}).catch(() => {})
+		}
+	}
+
 	return {
 		ready,
+		uninstallAll,
 		vncSocket,
 		procedures: {
 			'machines.capabilities': {kind: 'query', run: capabilities},

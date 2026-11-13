@@ -202,7 +202,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// ---- app sessions ---------------------------------------------------------------------------
 	const sign = (body) => createHmac('sha256', secret).update(body).digest('base64url')
 	function issueSession(userId) {
-		const body = Buffer.from(JSON.stringify({u: userId, e: Date.now() + SESSION_DAYS * 86_400_000})).toString('base64url')
+		// g: the person's pass generation; signing out other devices moves it on, ending older passes.
+		const body = Buffer.from(JSON.stringify({u: userId, e: Date.now() + SESSION_DAYS * 86_400_000, g: state.passGen?.[userId] ?? 0})).toString('base64url')
 		return `v1.${body}.${sign(body)}`
 	}
 	function checkSession(token) {
@@ -213,7 +214,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (want.length !== got.length || !timingSafeEqual(want, got)) return null
 		try {
 			const p = JSON.parse(Buffer.from(body, 'base64url').toString())
-			return p.e > Date.now() ? p : null
+			return p.e > Date.now() && (p.g ?? 0) === (state.passGen?.[p.u] ?? 0) ? p : null
 		} catch {
 			return null
 		}
@@ -347,6 +348,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await firewall?.open(app.port)
 			return
 		}
+		// The app holds its own port (host network, e.g. Home Assistant on 8123): Open goes straight
+		// there, so that port has to be let through the firewall too.
+		await firewall?.open(app.port)
 		app.viewPort = app.viewPort ?? (await viewPortFor(app))
 		if (!app.viewPort) return
 		await openGateway(app, {view: true})
@@ -900,6 +904,23 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		checkSession,
 		issueSession,
 		sessionCookie,
+		// End every app pass this person holds (signing out their other devices). Returns a new one.
+		async revokePasses(userId) {
+			state.passGen = {...(state.passGen ?? {}), [userId]: (state.passGen?.[userId] ?? 0) + 1}
+			await save()
+			return issueSession(userId)
+		},
+		// Factory reset: uninstall every app (apps others need go last).
+		async uninstallAll() {
+			for (let round = 0; round < 20 && state.apps.length; round++) {
+				const before = state.apps.length
+				for (const a of [...state.apps]) await uninstall({appId: a.id}).catch(() => {})
+				if (state.apps.length === before) break
+			}
+			state.passGen = {}
+			await save()
+			return state.apps.length
+		},
 		close: () => {
 			for (const id of [...gateways.keys()]) closeGateway(id)
 		},

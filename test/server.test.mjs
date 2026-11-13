@@ -107,7 +107,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.8.5', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.8.6', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -174,8 +174,23 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.equal(fake.settings.tor, true)
 		const wrong = await touch.req('POST', '/api/rpc/user.changePassword', {input: {oldPassword: 'nope', newPassword: 'abcdefg'}})
 		assert.equal(wrong.status, 401)
-		const sessions = await touch.req('GET', '/api/rpc/user.listSessions')
-		assert.equal(sessions.body.data.length, 2)
+		// Signed-in devices are the browsers this web server holds sessions for.
+		const second = await fetch(`${touch.base}/api/auth/login`, {method: 'POST', headers: {'content-type': 'application/json', 'x-omarchy-server': '1', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Firefox/130.0'}, body: JSON.stringify({username: 'chris', password: 'correct horse'})})
+		assert.equal(second.status, 200)
+		let sessions = (await touch.req('GET', '/api/rpc/user.listSessions')).body.data
+		assert.equal(sessions.length, 2)
+		assert.equal(sessions[0].current, true)
+		assert.match(sessions[0].client.userAgent, /iPhone/)
+		const other = sessions.find((x) => !x.current)
+		assert.match(other.client.userAgent, /Firefox/)
+		assert.equal((await touch.req('POST', '/api/rpc/user.revokeSession', {input: {sessionId: sessions[0].id}})).status, 400, 'this device signs out with Sign out')
+		const r = await touch.req('POST', '/api/rpc/user.revokeSession', {input: {sessionId: other.id}})
+		assert.equal(r.status, 200)
+		assert.ok(fake.calls.some((c) => c.path === 'user.revokeAppPasses'), 'their app passes end too')
+		sessions = (await touch.req('GET', '/api/rpc/user.listSessions')).body.data
+		assert.deepEqual(sessions.map((x) => x.current), [true])
+		const secondCookie = second.headers.getSetCookie().find((c) => c.startsWith('omarchy_server_sid=')).split(';')[0]
+		assert.equal((await fetch(`${touch.base}/api/rpc/apps.list`, {headers: {cookie: secondCookie}})).status, 401, 'the other browser is signed out')
 	})
 
 	test('theme settings are saved per account and validated', async () => {
