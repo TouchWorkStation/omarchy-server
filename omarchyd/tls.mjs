@@ -86,10 +86,14 @@ export async function ensureTls({dir = defaultTlsDir(), names = serverNames()} =
 }
 
 // A secure context for servers, kept current (addresses change; certificates renew).
-export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000} = {}) {
+export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000, lazy = false} = {}) {
 	let ctx = null
 	let ca = null
+	let started = null
+	let timer = null
+	let closed = false
 	const load = async () => {
+		if (closed) return
 		try {
 			const t = await ensureTls({dir})
 			ctx = tls.createSecureContext({key: t.key, cert: t.cert})
@@ -98,10 +102,28 @@ export function tlsContext({dir = defaultTlsDir(), refreshMs = 10 * 60_000} = {}
 			console.error('[omarchy-server] HTTPS unavailable:', error.message)
 		}
 	}
-	const ready = load()
-	const timer = setInterval(load, refreshMs)
-	timer.unref?.()
-	return {ready, get: () => ctx, ca: () => ca, close: () => clearInterval(timer)}
+	// Made on first use when lazy (nothing to do on a server with no apps yet).
+	const start = () => {
+		if (!started) {
+			started = load()
+			timer = setInterval(load, refreshMs)
+			timer.unref?.()
+		}
+		return started
+	}
+	if (!lazy) start()
+	return {
+		get ready() {
+			return start()
+		},
+		start,
+		get: () => ctx,
+		ca: () => ca,
+		close: () => {
+			closed = true
+			if (timer) clearInterval(timer)
+		},
+	}
 }
 
 // Listen for both http:// and https:// on one port and hand every connection to `server` (an

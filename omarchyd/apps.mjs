@@ -230,7 +230,7 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 	return {text: YAML.stringify(doc), internalPort}
 }
 
-export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir})}) {
+export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = execP, gatewayHost = '0.0.0.0', allowFileStores = false, firewall = null, defaultStores = DEFAULT_STORES, tlsDir = join(dataDir, 'tls'), secure = tlsContext({dir: tlsDir, lazy: true})}) {
 	const base = join(dataDir, 'apps')
 	const storesDir = join(base, 'stores')
 	const installedDir = join(base, 'installed')
@@ -412,6 +412,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			socket.on('error', () => up.destroy())
 		})
 		// http:// and https:// on the same port (see tls.mjs).
+		await secure.start()
 		const front = dualProtocolServer(server, secure.get)
 		await new Promise((resolve, reject) => {
 			front.once('error', reject)
