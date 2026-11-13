@@ -103,6 +103,22 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 					}
 					onClose={onClose}
 				/>
+				{app.error && (
+					<div className="error" style={{marginBottom: 14, display: 'block'}}>
+						<div style={{display: 'flex', gap: 8, alignItems: 'flex-start'}}>
+							<Icon name="alert" size={18} />
+							<span style={{wordBreak: 'break-word'}}>{app.error}</span>
+						</div>
+						<button
+							className="btn small"
+							style={{marginTop: 10}}
+							disabled={busy}
+							onClick={() => (haptic(10), action.mutate({path: 'apps.install', input: {appId: app.id}, optimistic: {appId: app.id, state: 'installing'}, done: `${name} installed`}))}
+						>
+							<Icon name="restart" size={16} /> Try again
+						</button>
+					</div>
+				)}
 				<div className="primary-row">
 					<button className="btn primary" onClick={primary.onClick} disabled={primary.disabled || busy}>
 						{busy ? <span className="spinner" /> : <Icon name={primary.icon} size={20} />}

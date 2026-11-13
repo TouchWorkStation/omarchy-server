@@ -26,6 +26,9 @@ test('prepareCompose swaps app_proxy for a 127.0.0.1-only port on the named serv
 	const host = prepareCompose('demo', `services:\n  app_proxy:\n    environment:\n      APP_HOST: $GATEWAY_IP\n      APP_PORT: 38790\n  web:\n    image: x\n    network_mode: host\n`, () => 1)
 	assert.equal(host.internalPort, 38790)
 	assert.equal(YAML.parse(host.text).services.web.ports, undefined)
+	// Hosts given as a container name.
+	const named = prepareCompose('searxng', `services:\n  app_proxy:\n    environment:\n      APP_HOST: searxng-web\n      APP_PORT: 8080\n  redis:\n    image: r\n  web:\n    image: x\n    container_name: searxng-web\n`, () => 21000)
+	assert.deepEqual(YAML.parse(named.text).services.web.ports, ['127.0.0.1:21000:8080'])
 })
 
 describe('omarchyd apps', () => {
@@ -61,7 +64,9 @@ describe('omarchyd apps', () => {
 		throw new Error(`${cmd} not simulated`)
 	}
 
+	const runImpl = {current: null}
 	before(async () => {
+		runImpl.current = run
 		root = await mkdtemp(join(os.tmpdir(), 'omarchyd-a-'))
 		data = join(root, 'data')
 		const sock = join(root, 'podman.sock')
@@ -82,7 +87,7 @@ describe('omarchyd apps', () => {
 		storeUrl = `file://${store}`
 		const accounts = await openAccounts(data)
 		await accounts.createOwner({name: 'Chris', password: 'correct horse'})
-		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run, allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: []}})
+		d = await startOmarchyd({port: 0, dataDir: data, home: join(root, 'home'), webPort: 7799, appOptions: {run: (...a) => runImpl.current(...a), allowFileStores: true, gatewayHost: '127.0.0.1', defaultStores: []}})
 		const login = await (await fetch(`${d.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't'}})})).json()
 		auth = {authorization: `Bearer ${login.result.data.accessToken}`}
 	})
@@ -134,7 +139,8 @@ describe('omarchyd apps', () => {
 		assert.deepEqual(composed.services.web.ports, [`127.0.0.1:${app.internalPort}:8080`])
 		// The app's data folder was created for it.
 		await readFile(join(data, 'apps/installed/demo-app/omarchy-app.yml'))
-		assert.ok(calls.some((c) => c.podman?.join(' ') === `unshare chown -R 1000:1000 ${join(data, 'apps/installed/demo-app')}`), 'app folder handed to the container user')
+		assert.ok(calls.some((c) => c.podman?.join(' ') === `unshare chown -R 1000:1000 ${join(data, 'apps/installed/demo-app/data')}`), 'data folder handed to the container user')
+		assert.ok(!calls.some((c) => c.podman?.join(' ') === `unshare chown -R 1000:1000 ${join(data, 'apps/installed/demo-app')}`), 'the app’s own files stay readable')
 		await assert.rejects(call('apps.install', {appId: 'demo-app'}), /already installed/)
 		// Stand in for the container: an HTTP + WebSocket server on the internal port.
 		upstream = http.createServer((req, res) => res.end(JSON.stringify({path: req.url, cookie: req.headers.cookie ?? ''})))
@@ -218,6 +224,25 @@ describe('omarchyd apps', () => {
 		assert.equal(env.OMARCHY_ENTROPY_KEY, undefined, 'the entropy key isn’t passed on')
 		await call('apps.uninstall', {appId: 'with-exports'})
 		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('a failed install shows its error, and installing again starts over', async () => {
+		const failOnce = {left: 1}
+		const original = run
+		calls.length = 0
+		up.clear()
+		const failing = async (cmd, args, opts) => {
+			if (cmd === 'docker-compose' && args[4] === 'pull' && failOnce.left-- > 0) throw new Error('docker-compose: pull access denied')
+			return original(cmd, args, opts)
+		}
+		runImpl.current = failing
+		await call('apps.uninstall', {appId: 'demo-app'})
+		await call('apps.install', {appId: 'demo-app'}).catch(() => {})
+		const failed = await until(async () => (await q('apps.list')).find((a) => a.id === 'demo-app' && a.error))
+		assert.match(failed.error, /pull access denied/)
+		await call('apps.install', {appId: 'demo-app'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'demo-app' && a.state === 'running'))
+		runImpl.current = original
 	})
 
 	test('logs, stop, uninstall', async () => {

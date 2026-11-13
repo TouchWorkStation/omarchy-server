@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.7.1',
+		date: '2026-11-12',
+		title: 'App installs fixed',
+		fixed: [
+			'Store apps failed to install and showed “Unknown”: their own files were handed to the container user, so Omarchy Server couldn’t read them anymore. Only their data folders are handed over now.',
+			'A failed install shows what went wrong on the app’s page, with a Try again button.',
+			'Apps that name their web container differently (like SearXNG) now install.',
+		],
+	},
+	{
 		version: '0.7.0',
 		date: '2026-11-12',
 		title: 'Software update',

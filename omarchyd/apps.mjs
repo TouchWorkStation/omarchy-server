@@ -16,7 +16,7 @@
 // first opens an app. Cookies belong to a host, not a port, so one sign-in covers every app.
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
-import {access, cp, mkdir, readFile, readdir, rename, rm, symlink, writeFile} from 'node:fs/promises'
+import {access, cp, mkdir, readFile, readdir, rename, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -110,7 +110,8 @@ export function prepareCompose(appId, text, allocatePort) {
 			internalPort = appPort // the app is on the host network, bound to 127.0.0.1 (GATEWAY_IP)
 		} else {
 			const name = host.replace(new RegExp(`^${appId}[_-]`), '').replace(/[_-]\d+$/, '')
-			const key = services[name] ? name : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
+			const byContainer = Object.keys(services).find((k) => services[k]?.container_name === host)
+			const key = services[name] ? name : byContainer ? byContainer : Object.keys(services).length === 1 ? Object.keys(services)[0] : null
 			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
 			internalPort = allocatePort()
 			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
@@ -412,6 +413,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const env = composeEnv(app)
 		const shared = join(base, 'shared-root')
 		const doc = YAML.parse(text) ?? {}
+		app.dataDirs = []
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
 				const src = typeof v === 'string' ? v.split(':')[0] : v?.source
@@ -420,6 +422,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				// Only inside the app's own folder, or the shared folders (e.g. a Downloads subfolder).
 				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
+				// Folders inside the app's own folder are its data: they get handed to its container user.
+				if (path.startsWith(`${appDir(app.id)}/`) && (await stat(path).then((st) => st.isDirectory(), () => false))) app.dataDirs.push(path)
 			}
 		}
 	}
@@ -427,7 +431,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// 1000 (as on the systems they were written for), so give the app's own folder to that user,
 	// and let it into Downloads with an access entry (your ownership of Downloads is unchanged).
 	async function prepareOwnership(app) {
-		await run('podman', ['unshare', 'chown', '-R', `${APP_UID}:${APP_UID}`, appDir(app.id)], {env: engineEnv})
+		// Only the data folders: the app's compose file and manifests stay yours, so omarchyd can read them.
+		const dirs = [...new Set(app.dataDirs ?? [])]
+		if (dirs.length) await run('podman', ['unshare', 'chown', '-R', `${APP_UID}:${APP_UID}`, ...dirs], {env: engineEnv})
 		const sub = await subordinateId()
 		if (sub !== null) {
 			const downloads = join(home, 'Downloads')
@@ -550,6 +556,14 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	async function install(input) {
 		await ready
 		const id = String(input?.appId ?? '')
+		const failed = state.apps.find((a) => a.id === id && a.state === 'error')
+		if (failed) {
+			// A failed install: clear it away and start over.
+			if (await exists(join(appDir(id), 'compose.omarchy.yml'))) await compose(failed, 'down', '--remove-orphans').catch(() => {})
+			await removeAppDir(id)
+			state.apps = state.apps.filter((a) => a !== failed)
+			await save()
+		}
 		if (state.apps.some((a) => a.id === id)) throw new RpcError('CONFLICT', 'That app is already installed')
 		const src = await findInRegistry(id)
 		if (!src) throw new RpcError('NOT_FOUND', 'That app isn’t in your stores')
