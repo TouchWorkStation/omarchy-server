@@ -38,7 +38,7 @@ command -v systemctl >/dev/null || die "systemd is required."
 #    (libisoburn) for cloud-init seeds. Apps: rootless Podman driven by docker-compose. NAS: Btrfs,
 #    drive health (smartmontools), drive sleep (hdparm) and network shares (samba).
 need=()
-for pkg in nodejs npm git openssl wayvnc qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
+for pkg in nodejs npm git openssl wayvnc bubblewrap qemu-base libvirt passt libisoburn edk2-ovmf podman docker-compose btrfs-progs smartmontools hdparm samba; do pacman -Qi "$pkg" >/dev/null 2>&1 || need+=("$pkg"); done
 if [ ${#need[@]} -gt 0 ]; then
 	say "Installing ${need[*]} (sudo needed)"
 	sudo pacman -S --needed --noconfirm "${need[@]}"

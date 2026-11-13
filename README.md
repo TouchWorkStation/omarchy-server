@@ -91,7 +91,9 @@ copied into Omarchy Server): the TouchWorkStation store and a large public store
 (shown as "Popular apps"). Add or remove stores under App Store → Stores.
 Apps that rely on things Omarchy Server doesn't provide yet (apps that depend on other apps, fixed
 internal network addresses, or settings it doesn't supply) are listed with the reason and can't be
-installed. Store apps mostly run as user 1000, so each app's folder is handed to that user inside
+installed. An app's own `exports.sh` (extra settings such as ports or derived passwords) runs in a
+bubblewrap sandbox with no network, a read-only system and only its own app folder. Store apps
+mostly run as user 1000, so each app's folder is handed to that user inside
 its container, and it gets access to Downloads through an ACL.
 Stores use the community-store layout: a store manifest at the root and a folder per app with its
 manifest and compose file. Apps run in **rootless Podman** as you (no root, no docker group, no

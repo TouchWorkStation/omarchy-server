@@ -97,6 +97,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			machines = JSON.parse(await readFile(stateFile, 'utf8')).machines ?? []
 		} catch {}
 		// A create that was interrupted by a restart can't resume: show it as failed.
+		// Machines from before 0.6.1 asked for a virtio display, which QEMU on Arch only has with an
+		// extra package: use the built-in standard VGA instead.
+		for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
 		for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
 	})()
 	const save = async () => {
@@ -229,10 +232,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	// setting (port forwards) can rebuild the same definition.
 	function layoutFor(kind, dir, img) {
 		const disk = {file: join(dir, 'disk.qcow2'), device: 'disk', bus: 'virtio', format: 'qcow2'}
-		if (kind === 'cloud') return {firmware: img?.firmware === 'efi' ? 'efi' : 'bios', nic: 'virtio', video: 'virtio', disks: [disk, {file: join(dir, 'seed.iso'), device: 'cdrom', bus: 'sata', format: 'raw'}]}
+		if (kind === 'cloud') return {firmware: img?.firmware === 'efi' ? 'efi' : 'bios', nic: 'virtio', video: 'vga', disks: [disk, {file: join(dir, 'seed.iso'), device: 'cdrom', bus: 'sata', format: 'raw'}]}
 		// Windows installs without extra drivers on SATA, e1000e and a standard display.
 		if (kind === 'windows') return {firmware: 'efi', nic: 'e1000e', video: 'vga', disks: [{...disk, bus: 'sata'}]}
-		return {firmware: 'efi', nic: 'virtio', video: 'virtio', disks: [disk]}
+		return {firmware: 'efi', nic: 'virtio', video: 'vga', disks: [disk]}
 	}
 	function domainXml(m, kvm) {
 		const dir = join(vmsDir, m.id)
@@ -495,7 +498,14 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input?.id)
 		if (busy.has(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
-		if (m.state === 'error') throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up`)
+		if (m.state === 'error') {
+			// If setup got as far as the disk, Start finishes it: define the machine again and boot.
+			if (pending !== 'starting' || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
+			await define(m)
+			delete m.state
+			delete m.errorMessage
+			await save()
+		}
 		busy.set(m.id, {state: pending})
 		try {
 			await virsh(...verb(domain(m.id)))

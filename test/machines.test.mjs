@@ -59,6 +59,7 @@ describe('omarchyd machines', () => {
 				case 'list':
 					return ` Id   Name   State\n------------------\n${[...doms].map(([n, s]) => ` -    ${n}   ${s}`).join('\n')}\n`
 				case 'define': {
+					if (seen.failDefine) throw new Error("virsh define: error: unsupported configuration: domain configuration does not support video model 'virtio'")
 					seen.xml = await readFile(a[1], 'utf8')
 					const name = /<name>(.+?)<\/name>/.exec(seen.xml)[1]
 					if (!doms.has(name)) doms.set(name, 'shut off')
@@ -271,6 +272,18 @@ describe('omarchyd machines', () => {
 		assert.match(seen.xml, /archlinux\.iso'\/><target dev='sda' bus='sata'\/><boot order='2'\/>/)
 		assert.ok(!/seed\.iso|answer\.iso/.test(seen.xml))
 		await call('machines.uninstall', {id: a})
+	})
+
+	test('a setup that failed at the last step is finished by Start; displays use standard VGA', async () => {
+		seen.failDefine = true
+		const {id: f} = await call('machines.create', {...spec, name: 'Flaky', osId: 'testos-amd64'})
+		const m = await until(async () => (await q('machines.list')).find((x) => x.id === f && x.state === 'error'))
+		assert.match(m.errorMessage, /video model/)
+		seen.failDefine = false
+		await call('machines.start', {id: f})
+		await until(async () => (await q('machines.list')).find((x) => x.id === f && x.state === 'running'))
+		assert.match(seen.xml, /<video><model type='vga'\/><\/video>/)
+		await call('machines.uninstall', {id: f})
 	})
 
 	test('stop, start, uninstall', async () => {

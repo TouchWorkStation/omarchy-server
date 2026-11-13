@@ -42,18 +42,18 @@ export const DEFAULT_STORES = [
 const GALLERIES = {'https://github.com/getumbrel/umbrel-apps': 'https://getumbrel.github.io/umbrel-apps-gallery'}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_ID', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ'])
 // Container user most store apps run as (PUID/PGID 1000).
 const APP_UID = 1000
 
 // Variables a compose file uses with no default, that we don't provide.
-export function missingVars(text) {
+export function missingVars(text, alsoProvided = []) {
 	const out = new Set()
 	for (const m of String(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
 		const name = m[1] ?? m[3]
 		const rest = m[2] ?? ''
 		if (/^:?[-=]/.test(rest)) continue // has a default
-		if (!PROVIDED.has(name)) out.add(name)
+		if (!PROVIDED.has(name) && !alsoProvided.includes(name)) out.add(name)
 	}
 	return [...out]
 }
@@ -286,7 +286,9 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const a = m.data
 			const compose = await readFile(join(dir, entry.name, (await readYaml(join(dir, entry.name), COMPOSE_FILES)).name), 'utf8')
 			const deps = (a.dependencies ?? []).filter((x) => typeof x === 'string')
-			const missing = missingVars(compose)
+			const exportsText = await readFile(join(dir, entry.name, 'exports.sh'), 'utf8').catch(() => '')
+			const exported = [...exportsText.matchAll(/^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1])
+			const missing = missingVars(compose, exported)
 			const unsupported = deps.length
 				? `Needs ${deps.join(', ')} installed alongside it, which Omarchy Server can’t connect apps to yet.`
 				: /ipv4_address/.test(compose)
@@ -362,19 +364,32 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 
 	// ---- engine ---------------------------------------------------------------------------------
+	// Per-app secrets: HMAC-SHA256 of an identifier with this server's secret (the same scheme the
+	// store apps' own exports.sh scripts use through derive_entropy).
+	// A key just for app secrets, separate from the one that signs app sessions, so nothing an app
+	// or its exports.sh sees can be used to forge a sign-in.
+	const entropyKey = () => createHmac('sha256', secret).update('omarchy-server app entropy v1').digest('hex')
+	const deriveEntropy = (identifier) => createHmac('sha256', entropyKey()).update(identifier).digest('hex')
+	const appPassword = (id) => deriveEntropy(`app-${id}-seed-APP_PASSWORD`)
 	function composeEnv(app) {
 		const dir = appDir(app.id)
-		const host = os.hostname()
-		const derive = (what) => createHmac('sha256', secret).update(`${what}:${app.id}`).digest('hex')
+		const host = os.hostname().split('.')[0]
 		return {
 			...engineEnv,
+			...(app.exports ?? {}),
 			APP_DATA_DIR: dir,
+			APP_DATA_ROOT: dir,
 			APP_ID: app.id,
+			APP_DOMAIN: `${host}.local`,
+			APP_VERSION: String(app.version ?? ''),
+			APP_PROXY_PORT: String(app.port ?? ''),
+			APP_HIDDEN_SERVICE: 'not-enabled.onion',
+			TZ: process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
 			GATEWAY_IP: '127.0.0.1',
 			DEVICE_HOSTNAME: host,
 			DEVICE_DOMAIN_NAME: `${host}.local`,
-			APP_PASSWORD: derive('password'),
-			APP_SEED: derive('seed'),
+			APP_PASSWORD: appPassword(app.id),
+			APP_SEED: deriveEntropy(`app-${app.id}-seed`),
 			// Community-store compose files reach shared folders through this root; it maps
 			// <root>/data/storage/downloads to your Downloads folder.
 			UMBREL_ROOT: join(base, 'shared-root'),
@@ -428,6 +443,39 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// App folders end up owned by container users, so remove them from inside the user namespace.
 	const removeAppDir = (id) => run('podman', ['unshare', 'rm', '-rf', appDir(id)], {env: engineEnv}).catch(() => rm(appDir(id), {recursive: true, force: true}))
 
+	// An app's exports.sh (bash from its store) sets extra variables, such as ports or derived
+	// passwords. It runs in a bubblewrap sandbox: no network, read-only system, only its own app folder
+	// (read-only), a clean environment, and a time limit. Its exported variables are returned.
+	async function runExports(app) {
+		const dir = appDir(app.id)
+		if (!(await exists(join(dir, 'exports.sh')))) return {}
+		const base = composeEnv({...app, exports: {}})
+		const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address).join(' ')
+		const script = [
+			'derive_entropy() { printf "%s" "$1" | openssl dgst -sha256 -hmac "$OMARCHY_ENTROPY_KEY" | sed "s/^.* //"; }',
+			'hostname() { case "$1" in -I|--all-ip-addresses) echo "$OMARCHY_HOST_IPS" ;; *) echo "$DEVICE_HOSTNAME" ;; esac; }',
+			'app_entropy_identifier="app-${APP_ID}-seed"',
+			'cd "$APP_DATA_DIR" && . ./exports.sh >/dev/null 2>&1',
+			'unset OMARCHY_ENTROPY_KEY',
+			'env -0',
+		].join('\n')
+		const env = {...base, OMARCHY_ENTROPY_KEY: entropyKey(), OMARCHY_HOST_IPS: ips, PATH: '/usr/bin'}
+		delete env.DOCKER_HOST
+		const setenv = Object.entries(env).flatMap(([k, v]) => ['--setenv', k, String(v)])
+		const out = await run(
+			'bwrap',
+			['--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib', '/lib64', '--ro-bind', '/etc/ssl', '/etc/ssl', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--ro-bind', dir, dir, '--unshare-all', '--die-with-parent', '--clearenv', ...setenv, '/usr/bin/bash', '-c', script],
+			{timeout: 15_000},
+		).catch(() => '')
+		const result = {}
+		for (const pair of out.split('\0')) {
+			const i = pair.indexOf('=')
+			const k = pair.slice(0, i)
+			if (i > 0 && /^[A-Z][A-Z0-9_]*$/.test(k) && !(k in env) && k !== 'PWD' && k !== 'SHLVL' && k !== 'OLDPWD' && k !== '_') result[k] = pair.slice(i + 1)
+		}
+		return result
+	}
+
 	async function engineAvailable() {
 		const ok = await run('docker-compose', ['version'], {env: engineEnv}).then(() => true, () => false)
 		const sock = engineEnv.DOCKER_HOST.replace(/^unix:\/\//, '')
@@ -471,7 +519,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				...(b?.progress !== undefined ? {progress: b.progress} : {}),
 				...(a.state === 'error' ? {error: a.error} : {}),
 				credentials: (() => {
-					const password = a.deterministicPassword ? createHmac('sha256', secret).update(`password:${a.id}`).digest('hex') : a.defaultPassword
+					const password = a.deterministicPassword ? appPassword(a.id) : a.defaultPassword
 					return {defaultUsername: a.defaultUsername, defaultPassword: password, showBeforeOpen: !!password}
 				})(),
 			}
@@ -519,6 +567,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			try {
 				await sharedRoot()
 				app.internalPort = await placeApp(src, app)
+				app.exports = await runExports(app)
 				await prepareOwnership(app)
 				busy.set(id, {state: 'installing', progress: 15})
 				await compose(app, 'pull')
@@ -548,6 +597,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		busy.set(app.id, {state: 'updating', progress: 10})
 		try {
 			app.internalPort = await placeApp(src, app)
+			app.exports = await runExports(app)
 			closeGateway(app.id)
 			await compose(app, 'pull')
 			await compose(app, 'up', '-d', '--remove-orphans')

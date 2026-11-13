@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.6.1',
+		date: '2026-11-12',
+		title: 'Fixes',
+		fixed: [
+			'Machines failed to start with “does not support video model virtio”. They now use the standard display, and Start finishes a machine that failed that way.',
+			'Apps like Gitea that need their own settings (from the app’s exports.sh) now install: about 300 apps install, up from about 200.',
+		],
+	},
+	{
 		version: '0.6.0',
 		date: '2026-11-12',
 		title: 'Terminal, desktop and 400 apps',
