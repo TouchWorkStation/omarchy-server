@@ -87,6 +87,8 @@ export async function openAccounts(dataDir) {
 			access.clear()
 			await save()
 		},
+		// Asked again before sensitive actions (signing in the desktop).
+		confirmPassword: async (userId, password) => (await verify({userId, password}), true),
 		listAccounts: () => state.users.map(publicUser),
 		getUser: (userId) => {
 			const u = userById(userId)

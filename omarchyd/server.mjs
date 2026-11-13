@@ -20,7 +20,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.8.4'
+export const OMARCHYD_VERSION = '0.8.5'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
@@ -100,7 +100,31 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 
 		// ---- not built yet: answer empty so the web app shows empty states, not errors ----------
 		// The bell: an update waiting (until it's installed or you dismiss that version).
-		'system.desktopShare': {kind: 'mutation', run: () => desktopShare()},
+		'system.desktopShare': {
+			kind: 'mutation',
+			run: async () => {
+				// Right after a sign-in the desktop takes a few seconds to come up.
+				for (let i = 0; ; i++) {
+					try {
+						return await desktopShare()
+					} catch (e) {
+						if (i >= 5 || !/DESKTOP_SIGNED_OUT/.test(e.message) || !recentSignIn()) throw e
+						await new Promise((r) => setTimeout(r, 2000))
+					}
+				}
+			},
+		},
+		// Sign the owner in to the Omarchy desktop when it's at its sign-in screen or locked out.
+		'system.desktopSignIn': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth)
+				await accounts.confirmPassword(auth.userId, input?.password)
+				const r = await storage.helper('desktop-sign-in')
+				signedInAt = Date.now()
+				return {result: r}
+			},
+		},
 		'notifications.get': {
 			kind: 'query',
 			run: async () => {
@@ -129,6 +153,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	}
 
 	const omarchyTheme = createOmarchyTheme({home})
+	let signedInAt = 0
+	const recentSignIn = () => Date.now() - signedInAt < 60_000
 
 	// The Omarchy desktop's screen, shared by wayvnc on 127.0.0.1 only. Start it when it isn't
 	// running (the session may have started before it was installed), or explain why it can't run.
@@ -164,7 +190,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		const runtime = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`
 		const socket = (await readdir(runtime).catch(() => [])).find((f) => /^wayland-\d+$/.test(f))
 		const hypr = (await readdir(join(runtime, 'hypr')).catch(() => []))[0]
-		if (!socket) throw new RpcError('PRECONDITION_FAILED', 'No one is signed in to the Omarchy desktop on the server, so there’s no screen to show. Sign in on the server itself, then try again.')
+		if (!socket) throw new RpcError('PRECONDITION_FAILED', 'DESKTOP_SIGNED_OUT: The Omarchy desktop is at its sign-in screen, so there’s no screen to show yet.')
 		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '127.0.0.1', String(desktopVncPort)])
 		if (await waitFor(desktopVncPort, 5)) return true
 		const log = await sh('journalctl', ['--user', '-u', 'omarchy-server-desktop.service', '-u', 'omarchy-server-desktop-now.service', '-n', '3', '--no-pager', '-o', 'cat'])
@@ -269,6 +295,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		server.once('error', reject)
 		server.listen(port, host, resolve)
 	})
+	// Remove a one-time desktop sign-in an interrupted attempt may have left.
+	if (!machineOptions.run) storage.helper('desktop-sign-in-cleanup').catch(() => {})
+
 	// Once: put the Omarchy Server icon in the Omarchy top bar (servers installed before the
 	// icon supported Omarchy's own bar never got it). `omarchy-server widget off` removes it for good.
 	const widgetMark = join(dataDir, '.top-bar-widget-added')

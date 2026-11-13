@@ -218,6 +218,7 @@ export function createStorage({dataDir, home = os.homedir(), files, run = execP,
 	}
 
 	return {
+		helper,
 		procedures: {
 			'storage.status': {kind: 'query', run: status},
 			'storage.disks': {kind: 'query', run: disks},

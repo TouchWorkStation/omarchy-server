@@ -1,7 +1,8 @@
-import {useEffect, useState} from 'react'
+import {useEffect, useRef, useState} from 'react'
 import {useQuery} from '@tanstack/react-query'
 
-import {mutate, query, type UserApp} from './api'
+import {openApp} from './openApp'
+import {query, type UserApp} from './api'
 import {appUrl, useAction, useBootstrap} from './data'
 import {useDesktop} from './desktop/Desktop'
 import {Icon, type IconName} from './icons'
@@ -17,6 +18,10 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const confirm = useConfirm()
 	const toast = useToast()
 	const [logsOpen, setLogsOpen] = useState(false)
+	const [waiting, setWaiting] = useState<number | null>(null)
+	const waitCtrl = useRef<AbortController | null>(null)
+	useEffect(() => () => waitCtrl.current?.abort(), [])
+	useEffect(() => (waitCtrl.current?.abort(), setWaiting(null)), [app?.id])
 	useEffect(() => setLogsOpen(false), [app?.id])
 
 	if (!app) return null
@@ -38,11 +43,12 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 			desk.launch(app)
 			return
 		}
-		// Straight to the app's own address and port, in this tab (like a container's link in Docker).
-		// The browser's back button returns to Omarchy Server.
-		mutate('apps.trackOpen', {appId: app.id}).catch(() => {})
-		onClose()
-		location.assign(url)
+		// Straight to the app's own address and port, in this tab (like a container's link in Docker),
+		// once it answers. The browser's back button returns to Omarchy Server.
+		const ctrl = new AbortController()
+		waitCtrl.current?.abort()
+		waitCtrl.current = ctrl
+		openApp(app, url, {signal: ctrl.signal, onWaiting: (s) => setWaiting(s)}).finally(() => waitCtrl.current === ctrl && setWaiting(null))
 	}
 	const copy = async () => {
 		if (!url) return
@@ -55,7 +61,7 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	}
 
 	const all: Record<string, A> = {
-		open: {id: 'open', label: 'Open', icon: 'open', onClick: open, disabled: !url || stopped},
+		open: {id: 'open', label: waiting !== null ? `Starting… ${waiting}s` : 'Open', icon: 'open', onClick: open, disabled: !url || stopped || waiting !== null},
 		start: {id: 'start', label: 'Start', icon: 'play', onClick: () => run('apps.start', 'starting', `${name} started`)},
 		stop: {id: 'stop', label: 'Stop', icon: 'stop', onClick: () => run('apps.stop', 'stopping', `${name} stopped`)},
 		restart: {id: 'restart', label: 'Restart', icon: 'restart', onClick: () => run('apps.restart', 'restarting', `${name} restarted`), disabled: stopped},
@@ -94,7 +100,21 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 
 	return (
 		<>
-			<Sheet open={!logsOpen} onClose={onClose} label={`${name} actions`}>
+			<Sheet
+				open={!logsOpen}
+				onClose={() => {
+					waitCtrl.current?.abort()
+					setWaiting(null)
+					onClose()
+				}}
+				label={`${name} actions`}
+			>
+				{waiting !== null && (
+					<div className="glass card" style={{display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12, borderRadius: 16}}>
+						<span className="spinner" />
+						<span style={{fontSize: 14.5}}>{name} is still starting. It opens as soon as it answers.</span>
+					</div>
+				)}
 				<SheetHeader
 					icon={<AppIcon src={app.icon} name={name} size={64} dim={stopped} progress={isAppBusy(app.state) ? (app.progress || 'spin') : undefined} />}
 					title={name}

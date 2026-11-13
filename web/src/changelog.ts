@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.5',
+		date: '2026-11-13',
+		title: 'Sign in the desktop from anywhere',
+		added: [
+			'When the Omarchy desktop is at its sign-in screen, its console in Machines now offers “Sign in to the desktop”. Confirm your Omarchy Server password and the desktop signs you in once, the same way Omarchy’s own first boot does. It also clears a lockout after too many wrong passwords.',
+			'Open waits for an app that’s still starting (Home Assistant often takes a minute), then goes to it, instead of landing on a page that doesn’t load.',
+		],
+	},
+	{
 		version: '0.8.4',
 		date: '2026-11-13',
 		title: 'Open goes to the app’s own link',

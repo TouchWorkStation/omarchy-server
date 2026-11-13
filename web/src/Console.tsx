@@ -13,7 +13,7 @@ import {useCallback, useEffect, useRef, useState} from 'react'
 import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
-import type {Machine} from './api'
+import {mutate, type Machine} from './api'
 import {Icon} from './icons'
 import {haptic, settleViewport, usePortalRoot, useToast} from './ui'
 import {useScreenLock} from './Terminal'
@@ -97,6 +97,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 	const [typing, setTyping] = useState<string | null>(null)
 	const [state, setState] = useState<State>('connecting')
 	const [message, setMessage] = useState('')
+	const [signedOut, setSignedOut] = useState(false)
 	const [mods, setMods] = useState({Ctrl: false, Alt: false, Shift: false})
 	const [attempt, setAttempt] = useState(0)
 	const [mode, setModeState] = useState<Mode>(readMode)
@@ -128,12 +129,14 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		const connect = async () => {
 			if (disposed || !canvasHost.current) return
 			setState((s) => (s === 'lost' ? s : 'connecting'))
+			setSignedOut(false)
 			// Ask first so a refusal comes back with a readable reason (sockets only give a code).
 			const check = await fetch(`/api/console/check?machineId=${encodeURIComponent(machine.id)}`, {credentials: 'same-origin'}).catch(() => null)
 			if (disposed) return
 			if (!check?.ok) {
 				const body = await check?.json().catch(() => null)
-				setMessage(body?.error?.message ?? 'Can’t reach your server right now.')
+				setMessage((body?.error?.message ?? 'Can’t reach your server right now.').replace(/^DESKTOP_SIGNED_OUT: /, ''))
+				setSignedOut(machine.id === 'desktop' && /^DESKTOP_SIGNED_OUT/.test(body?.error?.message ?? ''))
 				setState('error')
 				return
 			}
@@ -977,6 +980,14 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 						{state === 'connecting' || state === 'lost' ? (
 							<span className="spinner" style={{width: 28, height: 28}} />
 						) : (
+							signedOut ? (
+								<DesktopSignIn
+									onDone={() => {
+										setState('connecting')
+										setAttempt((a) => a + 1)
+									}}
+								/>
+							) : (
 							<>
 								<Icon name={state === 'superseded' ? 'machine' : 'alert'} size={34} />
 								<b>{state === 'superseded' ? 'This console was opened somewhere else' : 'Console unavailable'}</b>
@@ -991,6 +1002,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 									{state === 'superseded' ? 'Use it here' : 'Try again'}
 								</button>
 							</>
+							)
 						)}
 					</div>
 				)}
@@ -1067,5 +1079,41 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			/>}
 		</div>,
 		portalRoot,
+	)
+}
+
+// The Omarchy desktop is at its sign-in screen (or locked out after wrong passwords): sign the
+// owner in from here, once, after confirming their Omarchy Server password.
+function DesktopSignIn({onDone}: {onDone: () => void}) {
+	const [password, setPassword] = useState('')
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
+	const submit = async (e: React.FormEvent) => {
+		e.preventDefault()
+		setBusy(true)
+		setError(null)
+		try {
+			await mutate('system.desktopSignIn', {password})
+			setPassword('')
+			onDone()
+		} catch (err) {
+			setError((err as Error).message)
+		} finally {
+			setBusy(false)
+		}
+	}
+	return (
+		<form className="desk-signin" onSubmit={submit}>
+			<Icon name="key" size={34} />
+			<b>The desktop is signed out</b>
+			<span>
+				The Omarchy desktop is at its sign-in screen, so there’s nothing to show yet. Sign it in from here: this also clears a lockout after too many wrong passwords.
+			</span>
+			<input type="password" autoComplete="current-password" placeholder="Your Omarchy Server password" value={password} onChange={(e) => setPassword(e.target.value)} aria-label="Your Omarchy Server password" />
+			{error && <span className="desk-signin-error">{error}</span>}
+			<button className="btn primary small" disabled={busy || !password}>
+				{busy ? <span className="spinner" /> : 'Sign in to the desktop'}
+			</button>
+		</form>
 	)
 }

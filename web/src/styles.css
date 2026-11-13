@@ -6201,3 +6201,31 @@ html.page-locked body {
 .top-clock .note-dot {
 	box-shadow: 0 0 8px var(--accent);
 }
+
+/* Signing in the Omarchy desktop from its console */
+.desk-signin {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	max-width: 340px;
+	text-align: center;
+	pointer-events: auto;
+}
+.desk-signin span {
+	font-size: 14px;
+	opacity: 0.8;
+}
+.desk-signin input {
+	width: 100%;
+	padding: 11px 14px;
+	border-radius: 12px;
+	border: 1px solid rgba(255, 255, 255, 0.18);
+	background: rgba(255, 255, 255, 0.08);
+	color: #fff;
+	font: inherit;
+}
+.desk-signin .desk-signin-error {
+	color: #ff8a8a;
+	opacity: 1;
+}

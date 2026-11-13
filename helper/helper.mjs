@@ -44,6 +44,10 @@ const SMB_CONF = '/etc/samba/smb.conf'
 const SMB_INCLUDE = '/etc/samba/omarchy-server-shares.conf'
 const SMB_MARK = '# Managed by Omarchy Server'
 const UDEV_SLEEP = '/etc/udev/rules.d/69-omarchy-server-sleep.rules'
+// One-time sign-in to the Omarchy desktop (the same drop-in Omarchy's own first boot writes, removed again
+// as soon as the session starts).
+const SDDM_ONCE = '/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'
+const SESSIONS = ['/usr/share/wayland-sessions/omarchy.desktop', '/usr/share/wayland-sessions/hyprland-uwsm.desktop', '/usr/share/wayland-sessions/hyprland.desktop']
 const SLEEP_MINUTES = {0: 0, 10: 120, 20: 240, 30: 241, 60: 242, 120: 244, 240: 248}
 
 export class HelperError extends Error {}
@@ -171,8 +175,54 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 		for (const unit of ['zfs-import-cache.service', 'zfs-mount.service', 'zfs-import.target', 'zfs.target']) await run('systemctl', ['enable', unit]).catch(() => {})
 	}
 
+	// Graphical sessions on this machine: [{user, type, state}].
+	async function graphicalSessions() {
+		const out = []
+		for (const line of (await run('loginctl', ['list-sessions', '--no-legend']).catch(() => '')).split('\n')) {
+			const id = line.trim().split(/\s+/)[0]
+			if (!id || !/^[\w-]+$/.test(id)) continue
+			const props = Object.fromEntries(
+				(await run('loginctl', ['show-session', id, '-p', 'Name', '-p', 'Type', '-p', 'State', '-p', 'Class']).catch(() => ''))
+					.split('\n')
+					.map((l) => l.split('='))
+					.filter((kv) => kv.length === 2),
+			)
+			if ((props.Type === 'wayland' || props.Type === 'x11') && props.Class === 'user') out.push({user: props.Name, type: props.Type, state: props.State})
+		}
+		return out
+	}
+	const exists = (p) => fs.readFile(p).then(() => true, () => false)
+
 	const verbs = {
 		ping: async () => 'ok',
+		// Sign the owner in to the Omarchy desktop when it's sitting at the sign-in screen (or after
+		// too many wrong passwords): clear the failed-attempt lockout, then let SDDM start the owner's
+		// session once. Only when nobody has a desktop session, so no one's open session is touched.
+		'desktop-sign-in': async () => {
+			const sessions = await graphicalSessions()
+			if (sessions.some((x) => x.user === user.name)) return 'already'
+			if (sessions.length) fail('Someone else is signed in to this desktop, so it was left alone.')
+			if (!(await exists('/usr/lib/systemd/system/sddm.service'))) fail('This desktop doesn’t use SDDM, so Omarchy Server can’t sign it in.')
+			let session = null
+			for (const f of SESSIONS) if (await exists(f)) (session ??= f.split('/').pop())
+			if (!session) fail('No Omarchy desktop session was found to start.')
+			await run('faillock', ['--user', user.name, '--reset']).catch(() => {})
+			await fs.mkdir('/etc/sddm.conf.d', {recursive: true})
+			await fs.writeFile(SDDM_ONCE, `# Omarchy Server: one-time sign-in, removed once the session starts\n[Autologin]\nUser=${user.name}\nSession=${session}\nRelogin=false\n`, {mode: 0o644})
+			try {
+				await run('systemctl', ['restart', 'sddm.service'])
+				for (let i = 0; i < 40; i++) {
+					if ((await graphicalSessions()).some((x) => x.user === user.name)) return 'signed-in'
+					await new Promise((r) => setTimeout(r, 500))
+				}
+				fail('The desktop didn’t start a session. Check the server’s screen.')
+			} finally {
+				// Never left in place: later sign-ins need the password as usual.
+				await run('rm', ['-f', SDDM_ONCE]).catch(() => {})
+			}
+		},
+		// Remove a one-time sign-in left behind by an interrupted attempt.
+		'desktop-sign-in-cleanup': async () => (await run('rm', ['-f', SDDM_ONCE]), 'ok'),
 
 		smart: async ([dev]) => {
 			await disk(dev)

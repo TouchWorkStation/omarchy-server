@@ -50,6 +50,38 @@ function fakeRun(log, extra = {}) {
 }
 
 describe('helper', () => {
+	test('desktop sign-in: once, for the owner only, never over someone’s session, file always removed', async () => {
+		const files = {'/usr/lib/systemd/system/sddm.service': '', '/usr/share/wayland-sessions/omarchy.desktop': ''}
+		let sessions = [] // [{user, type}]
+		const log = []
+		const loginctl = (args) =>
+			args[0] === 'list-sessions'
+				? sessions.map((x, i) => `${i + 1} 1000 ${x.user} seat0 tty1`).join('\n')
+				: (({user: u, type}) => `Name=${u}\nType=${type}\nState=active\nClass=user\n`)(sessions[Number(args[1]) - 1])
+		const fs = fakeFs(files)
+		const h = createHelper({
+			user,
+			fs,
+			run: fakeRun(log, {
+				loginctl,
+				systemctl: (args) => {
+					assert.match(fs.files.get('/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'), /\[Autologin\]\nUser=chris\nSession=omarchy\.desktop\nRelogin=false/)
+					if (args[0] === 'restart') sessions = [{user: 'chris', type: 'wayland'}]
+					return ''
+				},
+				rm: (args) => (fs.files.delete(args.at(-1)), ''),
+			}),
+		})
+		assert.equal(await h.handle('desktop-sign-in'), 'signed-in')
+		assert.equal(fs.files.has('/etc/sddm.conf.d/zz-omarchy-server-sign-in.conf'), false, 'the one-time sign-in is gone')
+		assert.ok(log.some((l) => l.join(' ') === 'faillock --user chris --reset'), 'a lockout is cleared')
+		assert.equal(await h.handle('desktop-sign-in'), 'already', 'signed in already: nothing touched')
+		sessions = [{user: 'guest', type: 'wayland'}]
+		log.length = 0
+		await assert.rejects(h.handle('desktop-sign-in'), /Someone else is signed in/)
+		assert.ok(!log.some((l) => l[0] === 'systemctl'), 'another person’s session is never restarted')
+	})
+
 	test('refuses to run for root or an unknown user, and unknown verbs', async () => {
 		assert.throws(() => createHelper({user: {...user, uid: 0}}), /sudo/)
 		const h = createHelper({user, run: fakeRun([]), fs: fakeFs()})

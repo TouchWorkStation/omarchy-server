@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.4'
+export const VERSION = '0.8.5'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -27,6 +27,7 @@ const REFRESH_MARGIN_MS = 2 * 60 * 1000
 // Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
 export const ALLOWED = {
+	'system.desktopSignIn': 'mutation',
 	'system.desktopShare': 'mutation',
 	'apps.probe': 'query',
 	'omarchy.themes': 'query',
@@ -157,7 +158,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
