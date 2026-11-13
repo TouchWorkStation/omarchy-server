@@ -3,6 +3,7 @@
 import {readFile, realpath} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
+import {fileURLToPath} from 'node:url'
 import net from 'node:net'
 import os from 'node:os'
 import {extname, join} from 'node:path'
@@ -13,17 +14,19 @@ import {createFiles} from './files.mjs'
 import {createMachines} from './machines.mjs'
 import {createStorage} from './storage.mjs'
 import {bridge, openShell} from './terminal.mjs'
+import {createUpdater} from './updater.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.6.1'
+export const OMARCHYD_VERSION = '0.7.0'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, desktopVncPort = 5900}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
+	const updater = createUpdater({appDir: fileURLToPath(new URL('..', import.meta.url)), dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
 	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions})
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
@@ -78,8 +81,6 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
-		'system.checkUpdate': {kind: 'query', run: () => ({available: false, version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`})},
-		'system.updateStatus': {kind: 'query', run: () => ({running: false, progress: 0, description: '', error: false})},
 
 		// ---- not built yet: answer empty so the web app shows empty states, not errors ----------
 		'notifications.get': {kind: 'query', run: () => []},
@@ -90,6 +91,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		...storage.procedures,
 		...machines.procedures,
 		...apps.procedures,
+		...updater.procedures,
 		'apps.getTorEnabled': {kind: 'query', run: () => false},
 	}
 

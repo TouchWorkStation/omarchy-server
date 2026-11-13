@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.7.0',
+		date: '2026-11-12',
+		title: 'Software update',
+		added: [
+			'Check for updates now checks GitHub for a newer Omarchy Server and shows what’s new in it.',
+			'Update installs it from the web app: download, build and restart, and it rolls back if anything fails.',
+			'When an update also needs the installer (new packages or storage changes), Settings says so and shows the command.',
+		],
+		fixed: ['Removed the Beta channel switch, since there are only stable updates for now.'],
+	},
+	{
 		version: '0.6.1',
 		date: '2026-11-12',
 		title: 'Fixes',

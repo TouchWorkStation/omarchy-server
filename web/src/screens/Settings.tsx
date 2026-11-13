@@ -174,11 +174,11 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const [updating, setUpdating] = useState(false)
 	const [updateError, setUpdateError] = useState<string | null>(null)
 	const [notes, setNotes] = useState(false)
+	const [updateNotes, setUpdateNotes] = useState(false)
 	const status = useQ<{running: boolean; progress: number; description: string; error: boolean | string}>('system.updateStatus', undefined, {
 		enabled: owner && updating,
 		refetchInterval: updating ? 1500 : false,
 	})
-	const channel = useQ<'stable' | 'beta'>('system.getReleaseChannel', undefined, {enabled: owner})
 	const hostname = useQ<string>('system.getHostname', undefined, {enabled: owner})
 	const ips = useQ<string[]>('system.getIpAddresses')
 	const wifiSupported = useQ<boolean>('wifi.supported', undefined, {enabled: owner})
@@ -328,7 +328,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 			{owner && (
 				<Group title="Software update">
-					<Row icon="sparkle" color="var(--pink)" label="Touch" value={`${boot.touch.version} · What’s new`} onClick={() => setNotes(true)} />
+					<Row icon="sparkle" color="var(--pink)" label="What’s new" value={boot.touch.version} onClick={() => setNotes(true)} />
 					{notes && <WhatsNewSheet releases={allReleases(boot.touch.version)} version={boot.touch.version} onClose={() => setNotes(false)} />}
 					<Row icon="server" color="var(--blue)" label="Omarchy Server" value={boot.server?.version} />
 					{updateError && !updating && (
@@ -354,19 +354,29 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							<span className="progress">
 								<i style={{width: `${status.data?.progress ?? 2}%`}} />
 							</span>
-							<span className="muted" style={{fontSize: 12.5}}>Your server restarts when this finishes. Reopen Touch in a few minutes.</span>
+							<span className="muted" style={{fontSize: 12.5}}>Omarchy Server restarts when this finishes, and this page reloads by itself.</span>
 						</div>
 					) : check.data?.available ? (
-						<Row
-							icon="update"
-							color="var(--accent)"
-							label={`${check.data.name ?? check.data.version} available`}
-							trailing={
-								<button className="btn primary small" onClick={startUpdate}>
-									Update
-								</button>
-							}
-						/>
+						<>
+							<Row
+								icon="update"
+								color="var(--accent)"
+								label={`${check.data.name ?? check.data.version} available`}
+								trailing={
+									<button className="btn primary small" onClick={startUpdate}>
+										Update
+									</button>
+								}
+							/>
+							{check.data.releaseNotes && (
+								<div className="row static" style={{display: 'block', paddingBlock: 12}}>
+									<button className="link-btn" onClick={() => setUpdateNotes((n) => !n)}>
+										{updateNotes ? 'Hide what’s new' : `What’s new in ${check.data.version}`}
+									</button>
+									{updateNotes && <UpdateNotes text={check.data.releaseNotes} />}
+								</div>
+							)}
+						</>
 					) : (
 						<Row
 							icon="check"
@@ -379,25 +389,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 							}
 						/>
 					)}
-					<div className="row static" style={{minHeight: 64}}>
-						<span className="row-ico" style={{'--c': 'var(--peach)'} as CSSProperties}>
-							<Icon name="sparkle" size={19} />
-						</span>
-						<span className="main">
-							<b style={{fontWeight: 550}}>Channel</b>
-						</span>
-						<div style={{width: 150}}>
-							<Segmented
-								label="Release channel"
-								value={channel.data ?? 'stable'}
-								options={[
-									{id: 'stable', label: 'Stable'},
-									{id: 'beta', label: 'Beta'},
-								]}
-								onChange={(v) => save.mutate({path: 'system.setReleaseChannel', input: {channel: v}, done: v === 'beta' ? 'You’ll get beta updates' : 'You’ll get stable updates', refresh: ['system.getReleaseChannel', 'system.checkUpdate']})}
-							/>
-						</div>
-					</div>
+
 				</Group>
 			)}
 
@@ -765,5 +757,36 @@ function ResetSheet({open, onClose, onDone}: {open: boolean; onClose: () => void
 			<Field id="reset-pw" label="Your password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
 			<Field id="reset-type" label="Type RESET to confirm" autoCapitalize="characters" autoCorrect="off" value={typed} onChange={(e) => setTyped(e.target.value)} />
 		</FormSheet>
+	)
+}
+
+// Release notes: **bold** headings, "- " bullets, and an indented command line.
+function UpdateNotes({text}: {text: string}) {
+	return (
+		<div className="update-notes" style={{marginTop: 10, fontSize: 13.5, lineHeight: 1.45}}>
+			{text.split('\n').map((line, i) => {
+				const bold = /^\*\*(.+?)\*\*(.*)$/.exec(line)
+				if (bold)
+					return (
+						<p key={i} style={{margin: '10px 0 4px'}}>
+							<b>{bold[1]}</b>
+							{bold[2]}
+						</p>
+					)
+				if (line.startsWith('- '))
+					return (
+						<p key={i} style={{margin: '2px 0 2px 12px', textIndent: -10}}>
+							• {line.slice(2)}
+						</p>
+					)
+				if (/^\s{4}/.test(line))
+					return (
+						<code key={i} className="mono" style={{display: 'block', fontSize: 12, userSelect: 'all', margin: '4px 0', wordBreak: 'break-all'}}>
+							{line.trim()}
+						</code>
+					)
+				return line ? <p key={i}>{line}</p> : null
+			})}
+		</div>
 	)
 }
