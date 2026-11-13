@@ -5,8 +5,9 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {logout, mutate, query, type ActiveSession} from '../api'
 import {useBootstrap, useUser} from '../data'
 import {Icon, type IconName} from '../icons'
-import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useToast, type LayoutPref, type Prefs} from '../ui'
+import {InWindow, Segmented, Sheet, SheetHeader, haptic, initials, setLayoutPref, useConfirm, useLayout, useOmarchyThemes, useToast, type LayoutPref, type Prefs} from '../ui'
 import {Appearance} from './More'
+import {OmarchyThemes} from '../OmarchyThemes'
 import {StoragePage} from './Storage'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 
@@ -156,8 +157,9 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
 	const layout = useLayout()
-	const [page, setPage] = useState<'main' | 'appearance' | 'storage'>(() => (sessionStorage.getItem('omarchy-server:settings-page') as 'appearance' | 'storage') || 'main')
-	const openPage = (p: 'main' | 'appearance' | 'storage') => {
+	type Page = 'main' | 'appearance' | 'storage' | 'omarchy-themes'
+	const [page, setPage] = useState<Page>(() => (sessionStorage.getItem('omarchy-server:settings-page') as Page) || 'main')
+	const openPage = (p: Page) => {
 		haptic(5)
 		if (p === 'main') sessionStorage.removeItem('omarchy-server:settings-page')
 		else sessionStorage.setItem('omarchy-server:settings-page', p)
@@ -166,6 +168,7 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 	}
 	const close = () => setSheet(null)
 	const owner = user.data?.role !== 'member'
+	const omarchyTheme = useOmarchyThemes(page === 'appearance')
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const sessions = useQ<ActiveSession[]>('user.listSessions')
@@ -227,6 +230,18 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 
 
 	if (page === 'storage') return <StoragePage onBack={() => openPage('main')} />
+	if (page === 'omarchy-themes')
+		return (
+			<div className="stagger">
+				<div className="page-head" style={{margin: '6px 0 14px'}}>
+					<button className="round-btn" aria-label="Back" onClick={() => openPage('appearance')}>
+						<Icon name="back" size={20} />
+					</button>
+					<h1 className="title">Themes</h1>
+				</div>
+				<OmarchyThemes owner={owner} />
+			</div>
+		)
 	if (page === 'appearance')
 		return (
 			<div className="stagger">
@@ -237,6 +252,17 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 					<h1 className="title">Appearance</h1>
 				</div>
 				<Appearance prefs={prefs} setPrefs={setPrefs} wallpaper={user.data?.wallpaper} />
+				<section>
+					<div className="section-head">
+						<h2>Omarchy</h2>
+					</div>
+					<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+						<Row icon="palette" color="var(--blue)" label="Themes" value={omarchyTheme.data?.label ?? undefined} onClick={() => openPage('omarchy-themes')} />
+					</div>
+					<p className="footer-note" style={{textAlign: 'left', margin: '10px 6px 0'}}>
+						Your Omarchy desktop’s themes. Switch the whole desktop, or get more from the Omarchy manual.
+					</p>
+				</section>
 				<section>
 					<div className="section-head">
 						<h2>Layout</h2>

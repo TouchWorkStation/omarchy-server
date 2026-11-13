@@ -6080,3 +6080,108 @@ html:not(.desk-mode) .upload-panel { bottom: calc(var(--safe-b) + var(--dock-h) 
 	z-index: 1;
 	background: var(--bg-solid);
 }
+
+/* Settings → Appearance → Omarchy → Themes */
+.omt-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+	gap: 12px;
+}
+.omt-card {
+	position: relative;
+	border-radius: 16px;
+	overflow: hidden;
+	background: var(--bg-solid);
+	border: 2px solid rgba(255, 255, 255, 0.08);
+}
+.omt-card.on {
+	border-color: var(--accent);
+}
+.omt-pick {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+	font: inherit;
+}
+.omt-pick:disabled {
+	cursor: default;
+}
+.omt-pick img,
+.omt-noimg {
+	display: block;
+	width: 100%;
+	aspect-ratio: 16 / 10;
+	object-fit: cover;
+	background: rgba(127, 127, 127, 0.15);
+}
+.omt-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 9px 10px 4px;
+	font-weight: 650;
+	font-size: 14px;
+}
+.omt-dots {
+	display: flex;
+	gap: 5px;
+	padding: 0 10px 10px;
+}
+.omt-dots i {
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+}
+.omt-busy {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	background: rgba(0, 0, 0, 0.45);
+}
+.omt-remove {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	width: 28px;
+	height: 28px;
+	display: grid;
+	place-items: center;
+	border: 0;
+	border-radius: 50%;
+	background: rgba(0, 0, 0, 0.55);
+	color: #fff;
+	cursor: pointer;
+}
+.omt-get {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 0 10px 10px;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--accent-text);
+}
+.omt-search {
+	width: 100%;
+	margin-bottom: 12px;
+	padding: 11px 14px;
+	border-radius: 12px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(255, 255, 255, 0.06);
+	color: inherit;
+	font: inherit;
+}
+
+html.page-locked body {
+	overflow: hidden;
+}
+.omt-pick:disabled {
+	opacity: 1;
+}

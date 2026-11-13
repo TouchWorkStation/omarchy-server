@@ -6,7 +6,7 @@ import {createContext, memo, useCallback, useContext, useEffect, useMemo, useRef
 import {createPortal} from 'react-dom'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {SERVER_DESKTOP, logout, mutate, type Bootstrap, type Machine, type UserApp} from '../api'
+import {SERVER_DESKTOP, logout, mutate, query, type Bootstrap, type Machine, type UserApp} from '../api'
 import {AppSheet} from '../AppSheet'
 import {Console} from '../Console'
 import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory, useNotifications, useUpdates, useUser} from '../data'
@@ -502,7 +502,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	const wallUrl = wp
 		? wallpaperSrc(wp.id)
 		: cfg.wallpaper === 'omarchy'
-			? omarchyBackgroundUrl(prefs.omarchyBackground)
+			? omarchyBackgroundUrl(prefs.omarchyBackground, omarchy.data?.current)
 			: cfg.wallpaper === 'photo'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
 				: null
@@ -1648,6 +1648,24 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 		return () => window.clearTimeout(t)
 	}, [])
 	const name = app.name ?? app.id
+	// Ask the server whether the app answers at all, so the message can say what's going on.
+	const probe = useQuery({
+		queryKey: ['apps.probe', app.id],
+		queryFn: () => query<{result: string; status?: number; location?: string | null; error?: string}>('apps.probe', {appId: app.id}),
+		enabled: slow,
+		staleTime: 0,
+	})
+	const why = !probe.data
+		? null
+		: probe.data.result === 'refused'
+			? `${name} isn’t listening yet. It may still be starting up (some apps take several minutes the first time), or it stopped: check its logs on the app’s page.`
+			: probe.data.result === 'timeout'
+				? `${name} accepted the connection but hasn’t answered in 6 seconds. It’s probably still starting.`
+				: probe.data.result === 'answered'
+					? `${name} answered (${probe.data.status}${probe.data.location ? `, sending the browser to ${probe.data.location}` : ''}), so it’s likely your browser won’t show it inside Omarchy Server. Open it in its own tab.`
+					: probe.data.result === 'error'
+						? `Couldn’t reach ${name}: ${probe.data.error}.`
+						: null
 	if (!slow)
 		return (
 			<div className="frame-loading">
@@ -1660,8 +1678,8 @@ function SlowLoad({app, url, onRetry}: {app: UserApp; url: string | null; onRetr
 			<AppIcon src={app.icon} name={name} size={64} />
 			<b>{name} is taking a while</b>
 			<span>
-				It may still be starting (some apps need a few minutes the first time), or it may not allow being shown inside Omarchy Server. You can keep waiting, try again, or
-				open it in its own tab.
+				{why ??
+					'It may still be starting (some apps need a few minutes the first time), or it may not allow being shown inside Omarchy Server. You can keep waiting, try again, or open it in its own tab.'}
 			</span>
 			<div className="app-gate-actions">
 				<button className="btn" onClick={() => (onRetry ? onRetry() : location.reload())}>

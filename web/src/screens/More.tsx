@@ -5,7 +5,7 @@ import {logout, mutate, query, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
-import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
+import {ACCENTS, AppIcon, KV, Segmented, THEMES, bytes, customBackgroundUrl, duration, haptic, omarchyBackgroundUrl, useOmarchyThemes, preparePhoto, useConfirm, useToast, type Prefs} from '../ui'
 
 // One point per successful poll (keyed on fetch time, so flat values still plot).
 function useHistory(value: number | undefined, stamp: number, size = 40) {
@@ -192,7 +192,8 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 	const toast = useToast()
 	const fileRef = useRef<HTMLInputElement>(null)
 	const [uploading, setUploading] = useState(false)
-	const wp = omarchyBackgroundUrl(prefs.omarchyBackground)
+	const desktopBg = useOmarchyThemes().data?.current
+	const wp = omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
 	const photo = customBackgroundUrl(prefs.backgroundVersion)
 	const brand = wallpaper?.brandColorHsl ? `hsl(${wallpaper.brandColorHsl})` : 'hsl(24 90% 50%)'
 	const photoBrand = prefs.customBrandHsl ? `hsl(${prefs.customBrandHsl})` : brand
@@ -232,7 +233,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 					const isPhoto = t.id === 'custom'
 					const isOmarchy = t.id === 'omarchy'
 					const bg = isOmarchy
-						? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.5)), url(${omarchyBackgroundUrl(prefs.omarchyBackground)}) center/cover, ${t.bg}`
+						? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.5)), url(${omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)}) center/cover, ${t.bg}`
 						: isWall && wp ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${wp}) center/cover` : isPhoto && photo ? `linear-gradient(180deg, rgba(0,0,0,.05), rgba(0,0,0,.45)), url(${photo}) center/cover` : isPhoto ? 'linear-gradient(140deg, #2a2a33, #15151a)' : t.bg
 					return (
 						<button

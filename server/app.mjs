@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.1'
+export const VERSION = '0.8.2'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -27,6 +27,11 @@ const REFRESH_MARGIN_MS = 2 * 60 * 1000
 // Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
 export const ALLOWED = {
+	'apps.probe': 'query',
+	'omarchy.themes': 'query',
+	'omarchy.setTheme': 'mutation',
+	'omarchy.installTheme': 'mutation',
+	'omarchy.removeTheme': 'mutation',
 	'system.version': 'query',
 	'system.status': 'query',
 	'system.uptime': 'query',
@@ -151,7 +156,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -461,6 +466,22 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 			const type = r.headers.get('content-type') ?? ''
 			if (!r.ok || !type.startsWith('image/')) return res.status(404).end()
 			res.set({'Content-Type': type, 'Cache-Control': id === 'current' ? 'no-cache' : 'private, max-age=86400'})
+			res.send(Buffer.from(await r.arrayBuffer()))
+		} catch {
+			res.status(404).end()
+		}
+	})
+
+	// A theme's preview picture, for Settings → Appearance → Omarchy → Themes.
+	api.get('/omarchy/preview/:slug', async (req, res) => {
+		const backend = getClient()
+		const slug = req.params.slug
+		if (!backend || !/^[a-z0-9_][a-z0-9._+-]{0,80}$/.test(slug) || !store.getSession(req.sid)) return res.status(404).end()
+		try {
+			const r = await fetchImpl(`${backend.baseUrl}/omarchy/preview/${slug}`, {signal: AbortSignal.timeout(20_000)})
+			const type = r.headers.get('content-type') ?? ''
+			if (!r.ok || !type.startsWith('image/')) return res.status(404).end()
+			res.set({'Content-Type': type, 'Cache-Control': 'private, max-age=3600'})
 			res.send(Buffer.from(await r.arrayBuffer()))
 		} catch {
 			res.status(404).end()

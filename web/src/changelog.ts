@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.2',
+		date: '2026-11-12',
+		title: 'Omarchy themes',
+		added: [
+			'Settings → Appearance → Omarchy → Themes: every Omarchy theme with its preview and colours. Tap one to switch your whole desktop, like Takeout.',
+			'Get more themes: the community themes from the Omarchy manual, ready to download in one tap. Themes you added can be removed again.',
+			'When an app is slow to show, Omarchy Server now checks it and says why: still starting, not listening, or not allowed inside a window.',
+		],
+		fixed: [
+			'The page sometimes stopped scrolling until you reloaded (after closing two sheets in a row). Fixed for good.',
+			'Backgrounds and colours now work with current Omarchy, which keeps its theme in ~/.local/state, and follow the desktop when it changes theme.',
+		],
+	},
+	{
 		version: '0.8.1',
 		date: '2026-11-12',
 		title: 'Apps load, wallpapers in Appearance',

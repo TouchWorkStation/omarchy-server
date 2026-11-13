@@ -33,7 +33,7 @@ export function OmarchyBackgrounds({selected, onChoose}: {selected: string | nul
 			</div>
 			<div className="omb-grid" role="radiogroup" aria-label="Background">
 				<button role="radio" aria-checked={selected === null} className={`omb-tile${selected === null ? ' on' : ''}`} onClick={() => choose(null)} title="Follows the Omarchy desktop">
-					<img src={omarchyBackgroundUrl(null)} alt="" loading="lazy" decoding="async" />
+					<img src={omarchyBackgroundUrl(null, themes.data.current)} alt="" loading="lazy" decoding="async" />
 					<span className="omb-label">
 						<Icon name="sparkle" size={13} /> Same as desktop
 					</span>

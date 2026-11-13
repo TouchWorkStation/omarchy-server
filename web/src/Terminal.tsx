@@ -7,7 +7,7 @@ import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
 import {Icon} from './icons'
-import {AppIcon, haptic, usePortalRoot, useToast} from './ui'
+import {AppIcon, haptic, lockPageScroll, usePortalRoot, useToast} from './ui'
 
 type State = 'connecting' | 'connected' | 'closed' | 'error'
 const BASE_FONT = 13
@@ -46,8 +46,8 @@ export function useScreenLock(ref: React.RefObject<HTMLElement>, guardTouch = tr
 		const html = document.documentElement
 		const b = document.body.style
 		const y = window.scrollY
-		const saved = {position: b.position, top: b.top, left: b.left, right: b.right, width: b.width, overflow: b.overflow}
-		Object.assign(b, {position: 'fixed', top: `-${y}px`, left: '0', right: '0', width: '100%', overflow: 'hidden'})
+		Object.assign(b, {position: 'fixed', top: `-${y}px`, left: '0', right: '0', width: '100%'})
+		const release = lockPageScroll()
 		html.classList.add('screen-locked')
 		const el = ref.current
 		const scrollers = '.xterm-viewport, .console-keys, .term-paste textarea'
@@ -64,7 +64,9 @@ export function useScreenLock(ref: React.RefObject<HTMLElement>, guardTouch = tr
 		return () => {
 			if (guardTouch) el?.removeEventListener('touchmove', onMove)
 			window.removeEventListener('scroll', onScroll)
-			Object.assign(b, saved)
+			// Back to the page's normal layout (not a saved copy, which another overlay may have changed).
+			Object.assign(b, {position: '', top: '', left: '', right: '', width: ''})
+			release()
 			html.classList.remove('screen-locked')
 			window.scrollTo(0, y)
 		}

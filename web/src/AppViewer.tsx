@@ -5,7 +5,7 @@ import {mutate, type UserApp} from './api'
 import {appUrl, useBootstrap} from './data'
 import {AppFrame} from './desktop/Desktop'
 import {Icon} from './icons'
-import {AppIcon, haptic, usePortalRoot, useToast} from './ui'
+import {AppIcon, haptic, lockPageScroll, usePortalRoot, useToast} from './ui'
 
 // An app opened full screen inside Omarchy Server, in this same tab, the way a phone opens an app.
 // The back button (on screen, or the browser's / phone's own) returns to where you were.
@@ -45,6 +45,8 @@ export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 	const close = useRef(onClose)
 	close.current = onClose
 
+	// The page behind stays put while the app is open.
+	useEffect(() => lockPageScroll(), [])
 	// One history entry while the app is open, so the system back gesture closes it instead of leaving.
 	useEffect(() => {
 		closed.current = false

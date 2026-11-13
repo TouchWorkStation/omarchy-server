@@ -294,10 +294,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				res.writeHead(302, {location: back, 'cache-control': 'no-store'})
 				return res.end()
 			}
-			const up = http.request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req)}, (r) => {
+			const up = http.request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req), timeout: 120_000}, (r) => {
+				up.setTimeout(0) // it answered: long-lived responses (live updates, downloads) are fine
 				res.writeHead(r.statusCode ?? 502, frameable(r.headers, hostOnly(req)))
 				r.pipe(res)
 			})
+			up.on('timeout', () => up.destroy(new Error('timeout')))
 			up.on('error', () => {
 				if (!res.headersSent) res.writeHead(502, {'content-type': 'text/plain'})
 				res.end(`${app.name ?? app.id} isn’t answering yet. If it just started, give it a moment.`)
@@ -939,6 +941,24 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			},
 			'apps.recentlyOpened': {kind: 'query', run: async () => (await ready, state.recent.filter((id) => state.apps.some((a) => a.id === id)))},
 			// A one-time hand-over for a browser that opens an app before it has an app session.
+			// Does the app answer behind its gateway? Used when its window is slow, to say why.
+			'apps.probe': {
+				kind: 'query',
+				run: async (input) => {
+					const app = findInstalled(String(input?.appId ?? ''))
+					const target = app.internalPort ?? app.port
+					if (!target) return {result: 'no-web'}
+					return await new Promise((resolve) => {
+						const req = http.request({host: '127.0.0.1', port: target, path: app.path || '/', method: 'GET', timeout: 6000, headers: {accept: 'text/html'}}, (r) => {
+							r.resume()
+							resolve({result: 'answered', status: r.statusCode, location: r.headers.location ?? null, gateway: gateways.has(app.id) || gateways.has(gatewayKey(app.id, true))})
+						})
+						req.on('timeout', () => (req.destroy(), resolve({result: 'timeout'})))
+						req.on('error', (e) => resolve({result: e.code === 'ECONNREFUSED' ? 'refused' : 'error', error: e.code ?? e.message}))
+						req.end()
+					})
+				},
+			},
 			'apps.accessTicket': {
 				kind: 'mutation',
 				run: async (input, {auth}) => {

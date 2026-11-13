@@ -20,7 +20,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.8.1'
+export const OMARCHYD_VERSION = '0.8.2'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
@@ -34,6 +34,16 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
 
+	const ownerOnly = (auth) => {
+		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', 'Only the server’s owner can change the desktop’s theme')
+	}
+	const themeCall = async (fn) => {
+		try {
+			return await fn()
+		} catch (e) {
+			throw new RpcError(e.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'PRECONDITION_FAILED', e.message)
+		}
+	}
 	const procedures = {
 		// ---- who's here -----------------------------------------------------------------------
 		'system.version': {kind: 'query', public: true, run: () => ({version: OMARCHYD_VERSION, name: `Omarchy Server ${OMARCHYD_VERSION}`})},
@@ -57,6 +67,11 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		},
 		'user.renewToken': {kind: 'mutation', run: async (_i, {auth}) => (auth.kind === 'browser' && (await accounts.renewBrowser(auth.bearer)), 'renewed')},
 		'user.logout': {kind: 'mutation', run: async (_i, {auth}) => (await accounts.logout(auth), true)},
+		// ---- the Omarchy desktop's themes (Settings → Appearance → Omarchy) ---------------------------
+		'omarchy.themes': {kind: 'query', run: () => omarchyTheme.themes()},
+		'omarchy.setTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.setTheme(String(input?.slug ?? ''))))},
+		'omarchy.installTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.installTheme(String(input?.slug ?? ''))))},
+		'omarchy.removeTheme': {kind: 'mutation', run: (input, {auth}) => (ownerOnly(auth), themeCall(() => omarchyTheme.removeTheme(String(input?.slug ?? ''))))},
 		'user.get': {kind: 'query', run: (_i, {auth}) => ({...accounts.getUser(auth.userId), wallpaper: {id: '1'}, sambaUsername: os.userInfo().username})},
 		'user.set': {kind: 'mutation', run: async (input, {auth}) => (await accounts.updateUser(auth.userId, input), true)},
 		'user.changePassword': {kind: 'mutation', run: async (input, {auth}) => (await accounts.setPassword(auth.userId, input ?? {}), true)},
@@ -99,18 +114,15 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	const omarchyTheme = createOmarchyTheme({home})
 	// The web app's wallpaper is the current Omarchy theme background.
 	async function wallpaper(res) {
-		for (const p of [join(home, '.config/omarchy/current/background'), join(home, '.config/omarchy/current/theme/backgrounds')]) {
-			try {
-				const real = await realpath(p)
-				const type = {'.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}[extname(real).toLowerCase()]
-				if (!type) continue
-				const data = await readFile(real)
-				res.writeHead(200, {'content-type': type, 'content-length': data.length, 'cache-control': 'no-cache'})
-				return res.end(data)
-			} catch {}
+		const real = await omarchyTheme.currentBackground()
+		const type = real && {'.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}[extname(real).toLowerCase()]
+		const data = type ? await readFile(real).catch(() => null) : null
+		if (!data) {
+			res.writeHead(404)
+			return res.end()
 		}
-		res.writeHead(404)
-		res.end()
+		res.writeHead(200, {'content-type': type, 'content-length': data.length, 'cache-control': 'no-cache'})
+		res.end(data)
 	}
 
 	const server = http.createServer(async (req, res) => {
@@ -122,6 +134,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 			if (url.pathname === '/omarchy/themes' && req.method === 'GET') return sendJson(res, 200, await omarchyTheme.list())
 			const bg = /^\/omarchy\/background\/(current|[0-9a-f]{16})$/.exec(url.pathname)
 			if (bg && req.method === 'GET') return await omarchyTheme.serve(bg[1], res)
+			const preview = /^\/omarchy\/preview\/([a-z0-9_][a-z0-9._+-]{0,80})$/.exec(url.pathname)
+			if (preview && req.method === 'GET') return await omarchyTheme.servePreview(preview[1], res)
 			// The web app asks whether a browser's app session is valid (it never sees it otherwise).
 			if (url.pathname === '/app-auth/v1/account/session' && req.method === 'GET') {
 				await apps.ready

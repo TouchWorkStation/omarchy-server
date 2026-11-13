@@ -214,6 +214,28 @@ export function Segmented<T extends string>({
 	)
 }
 
+// ---- page scroll lock -------------------------------------------------------
+// Sheets and full-screen views stop the page behind them from scrolling. Several can be open at
+// once (a sheet over a sheet, a confirm over a sheet), so it's counted: the page scrolls again only
+// when the last one closes, whatever order they close in. (Saving and restoring the old style
+// instead left the page stuck when two closed out of order, until a reload.)
+let pageLocks = 0
+export function lockPageScroll() {
+	pageLocks++
+	document.documentElement.classList.add('page-locked')
+	let released = false
+	return () => {
+		if (released) return
+		released = true
+		pageLocks = Math.max(0, pageLocks - 1)
+		if (pageLocks === 0) {
+			document.documentElement.classList.remove('page-locked')
+			// Clear anything an older version (or an interrupted lock) left behind.
+			document.body.style.overflow = ''
+		}
+	}
+}
+
 // ---- bottom sheet -----------------------------------------------------------
 export function Sheet({open, onClose, label, children, tall}: {open: boolean; onClose: () => void; label: string; children: ReactNode; tall?: boolean}) {
 	const ref = useRef<HTMLDivElement>(null)
@@ -224,12 +246,11 @@ export function Sheet({open, onClose, label, children, tall}: {open: boolean; on
 		if (!open) return
 		const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
 		document.addEventListener('keydown', onKey)
-		const prev = document.body.style.overflow
-		document.body.style.overflow = 'hidden'
+		const release = lockPageScroll()
 		ref.current?.focus({preventScroll: true})
 		return () => {
 			document.removeEventListener('keydown', onKey)
-			document.body.style.overflow = prev
+			release()
 		}
 	}, [open, onClose])
 	if (!open) return null
@@ -422,7 +443,9 @@ let omarchyColors: OmarchyColors | null = null
 try {
 	omarchyColors = JSON.parse(localStorage.getItem('omarchy-server:omarchy-colors') ?? 'null')
 } catch {}
-export const omarchyBackgroundUrl = (id?: string | null) => `/api/omarchy/background/${id ?? 'current'}`
+// `current`: the desktop's background right now. Pass the current background's id as `key` so the
+// picture reloads when the desktop changes it.
+export const omarchyBackgroundUrl = (id?: string | null, key?: string | null) => `/api/omarchy/background/${id ?? 'current'}${!id && key ? `?v=${key}` : ''}`
 export function useOmarchyThemes(enabled = true) {
 	const q = useQuery({
 		queryKey: ['omarchy-themes'],
@@ -570,17 +593,17 @@ export const wallpaperUrl = (w?: Wallpaper | null) => (w?.id ? `/api/wallpaper/$
 export const customBackgroundUrl = (version?: number | null) => (version ? `/api/background?v=${version}` : null)
 
 export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; prefs: Prefs}) {
+	const desktopBg = useOmarchyThemes(prefs.theme === 'omarchy' || prefs.theme === 'horizon').data?.current
 	const url =
 		prefs.theme === 'horizon'
-			? omarchyBackgroundUrl(prefs.omarchyBackground)
+			? omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
 			: prefs.theme === 'custom'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(wallpaper))
 				: prefs.theme === 'omarchy'
-					? omarchyBackgroundUrl(prefs.omarchyBackground)
+					? omarchyBackgroundUrl(prefs.omarchyBackground, desktopBg)
 					: null
 	const [ready, setReady] = useState<string | null>(null)
 	const [failed, setFailed] = useState<string | null>(null)
-	useOmarchyThemes(prefs.theme === 'omarchy')
 	useEffect(() => {
 		if (!url) return
 		const img = new Image()
