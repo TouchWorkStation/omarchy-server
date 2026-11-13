@@ -140,6 +140,37 @@ fi
 rm -f "$tmp"
 mkdir -p "$HOME/Pools"
 
+# 2d. Everyday controls: the `omarchy-server` command, launcher entries (Super + Space), and the first
+#     time only, a status icon in the top bar (`omarchy-server widget off` removes it).
+mkdir -p "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+chmod +x "$APP/bin/omarchy-server"
+ln -sf "$APP/bin/omarchy-server" "$HOME/.local/bin/omarchy-server"
+APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+cat >"$APPS/omarchy-server.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Omarchy Server
+Comment=Open the Omarchy Server web app
+Exec=$HOME/.local/bin/omarchy-server open
+Icon=network-server
+Terminal=false
+Categories=System;
+EOF
+cat >"$APPS/omarchy-server-restart.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Restart Omarchy Server
+Comment=Restart the Omarchy Server services
+Exec=$HOME/.local/bin/omarchy-server restart
+Icon=view-refresh
+Terminal=false
+Categories=System;
+EOF
+if [ ! -e "$BASE/.widget-offered" ] && [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/config.jsonc" ]; then
+	"$HOME/.local/bin/omarchy-server" widget on || true
+	touch "$BASE/.widget-offered"
+fi
+
 # 3. Your account, created here in the terminal so the password never crosses the network.
 if ! node "$APP/omarchyd/cli.mjs" has-owner --data "$BASE/omarchyd" >/dev/null 2>&1; then
 	say "Create your Omarchy Server account"

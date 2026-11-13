@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# omarchy-server: check, open, start, stop and restart Omarchy Server on this machine.
+#   omarchy-server              status and address
+#   omarchy-server open         open the web app
+#   omarchy-server restart      restart both services (also: start, stop)
+#   omarchy-server logs [-f]    recent log lines (follow with -f)
+#   omarchy-server widget on    add the status icon to the top bar (off to remove)
+set -u
+UNITS=(omarchyd.service omarchy-server-web.service)
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+PORT=$(sed -n 's/.*server\/cli\.mjs --port \([0-9]*\).*/\1/p' "$UNIT_DIR/omarchy-server-web.service" 2>/dev/null | head -1)
+PORT=${PORT:-7780}
+WAYBAR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar/config.jsonc"
+MARK='omarchy-server widget'
+
+ip_addr() { ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'; }
+running() { systemctl --user is-active --quiet omarchyd.service 2>/dev/null && systemctl --user is-active --quiet omarchy-server-web.service 2>/dev/null; }
+notify() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Omarchy Server" "Omarchy Server" "$1"; printf '%s\n' "$1"; }
+reload_bar() { if command -v omarchy-restart-waybar >/dev/null 2>&1; then omarchy-restart-waybar >/dev/null 2>&1; else pkill -SIGUSR2 waybar 2>/dev/null; fi; }
+
+case "${1:-status}" in
+	status)
+		for u in "${UNITS[@]}"; do printf '%-28s %s\n' "$u" "$(systemctl --user is-active "$u")"; done
+		running && printf '\nOpen http://%s:%s (or http://localhost:%s on this machine)\n' "$(ip_addr)" "$PORT" "$PORT"
+		;;
+	open) xdg-open "http://localhost:$PORT" >/dev/null 2>&1 & ;;
+	start | stop | restart)
+		systemctl --user "$1" "${UNITS[@]}"
+		sleep 1
+		if [ "$1" = stop ]; then notify "Stopped"; elif running; then notify "Running at http://$(ip_addr):$PORT"; else notify "Didn't start. See: omarchy-server logs"; fi
+		;;
+	logs)
+		if [ "${2:-}" = -f ]; then journalctl --user -u omarchyd -u omarchy-server-web -f; else journalctl --user -u omarchyd -u omarchy-server-web -n 80 --no-pager; fi
+		;;
+	waybar)
+		# One line of JSON for Waybar's custom module.
+		if running; then
+			printf '{"text":"󰒋","class":"running","tooltip":"Omarchy Server is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
+		else
+			printf '{"text":"<span color=\\"#e06c75\\">󰒋</span>","class":"stopped","tooltip":"Omarchy Server is stopped\\n\\nRight-click: start it"}\n'
+		fi
+		;;
+	widget)
+		[ -f "$WAYBAR" ] || { echo "No Waybar config at $WAYBAR"; exit 1; }
+		case "${2:-on}" in
+			on)
+				grep -q "$MARK" "$WAYBAR" && { echo "The widget is already on."; exit 0; }
+				cp "$WAYBAR" "$WAYBAR.omarchy-server.bak"
+				node - "$WAYBAR" "$MARK" <<'EOF' || { echo "Couldn't find where to add it in $WAYBAR; your config is unchanged."; exit 1; }
+const fs = require('node:fs')
+const [file, mark] = process.argv.slice(2)
+let text = fs.readFileSync(file, 'utf8')
+const list = /"modules-right"\s*:\s*\[/
+if (!list.test(text) || !/^\s*\{/.test(text)) process.exit(1)
+text = text.replace(list, (m) => `${m}\n    "custom/omarchy-server", // ${mark}`)
+const bin = `${process.env.HOME}/.local/bin/omarchy-server`
+const def = `\n  // ${mark} start\n  "custom/omarchy-server": {\n    "exec": "${bin} waybar",\n    "return-type": "json",\n    "interval": 10,\n    "on-click": "${bin} open",\n    "on-click-right": "${bin} restart"\n  },\n  // ${mark} end`
+text = text.replace(/^(\s*)\{/, (m) => `${m}${def}`)
+fs.writeFileSync(file, text)
+EOF
+				reload_bar
+				echo "Added the Omarchy Server icon to the top bar. Remove it with: omarchy-server widget off"
+				;;
+			off)
+				grep -q "$MARK" "$WAYBAR" || { echo "The widget isn't on."; exit 0; }
+				sed -i "/\/\/ $MARK start/,/\/\/ $MARK end/d; /\/\/ $MARK\$/d" "$WAYBAR"
+				reload_bar
+				echo "Removed the Omarchy Server icon."
+				;;
+			*) echo "Use: omarchy-server widget on|off"; exit 2 ;;
+		esac
+		;;
+	-h | --help | help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+	*) echo "Unknown command: $1 (try: omarchy-server help)"; exit 2 ;;
+esac
