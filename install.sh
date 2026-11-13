@@ -244,8 +244,9 @@ if systemctl --user is-active --quiet omarchy-server-web.service && systemctl --
 		case "$ip" in 10.*) ;; *) private_only=no ;; esac
 	done
 	if [ "$private_only" = yes ] && [ -n "$ips" ]; then
-		printf '\n    This machine only has a private address, so it is probably a VM behind NAT. Your other\n'
-		printf '    devices cannot open that address directly: on the VM host, forward a port to %s.\n\n' "$PORT"
+		printf '\n    Note: this machine only has a private address (a VM behind NAT), so other devices reach it\n'
+		printf '    through a port forward on the VM host to port %s. If you already set one up, it still\n' "$PORT"
+		printf '    works after updates and restarts: keep using http://<host-ip>:<forwarded port>.\n\n'
 	fi
 	printf '    Logs: journalctl --user -u omarchyd -u omarchy-server-web -f\n'
 else
