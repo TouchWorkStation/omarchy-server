@@ -46,7 +46,7 @@ export const useMachines = () =>
 	useQuery({
 		queryKey: ['machines.list'],
 		queryFn: () => query<Machine[]>('machines.list'),
-		refetchInterval: (q) => ((q.state.data ?? []).some((m) => !['running', 'stopped', 'error', 'suspended'].includes(m.state)) ? 2000 : 8000),
+		refetchInterval: (q) => ((q.state.data ?? []).some((m) => !['running', 'stopped', 'error', 'suspended', 'hibernated'].includes(m.state)) ? 2000 : 8000),
 	})
 export const useRegistry = (enabled = true) =>
 	useQuery({queryKey: ['appStore.registry'], queryFn: () => query<Registry>('appStore.registry'), staleTime: 10 * 60_000, enabled})

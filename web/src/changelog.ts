@@ -4,6 +4,21 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.0',
+		date: '2026-11-13',
+		title: 'Machines, the Proxmox way',
+		added: [
+			'On the desktop, Machines looks like Proxmox: a server and machine tree, a toolbar (Start, Shutdown, Reboot, Stop, Pause, Hibernate, Console, Clone, Remove), settings panels and a task log.',
+			'Summary with live CPU, memory, network and disk graphs, plus notes for each machine.',
+			'Hardware: memory in MiB, sockets and cores, CPU type, BIOS (SeaBIOS or UEFI), display, chipset, network model, MAC address and disconnect; add, grow, tune and remove disks; add CD/DVD drives and insert or eject ISOs from your Home folder.',
+			'Options: rename, start at boot with order and delay, boot order (disks, CD/DVD, network), boot menu, protection against deletion, QEMU Guest Agent, tablet pointer, ACPI and KVM.',
+			'Cloud-Init: change the user, hostname, SSH public keys and password (only a hash is kept); applied at the next start.',
+			'Snapshots (take, roll back, delete), Backups to Home → Backups → Machines (live for running machines) with restore as a new machine, full clones, the QEMU monitor and a task history.',
+			'On phones and tablets, the machine sheet has every one of these settings in tabs.',
+		],
+		fixed: ['The https:// certificate is only made once an app needs it.'],
+	},
+	{
 		version: '0.8.13',
 		date: '2026-11-13',
 		title: 'Secure connections (https://)',

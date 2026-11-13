@@ -5,8 +5,10 @@ import {Console} from '../Console'
 import {useDesktop} from '../desktop/Desktop'
 import {CreateMachine} from '../CreateMachine'
 import {useAction, useMachines} from '../data'
+import {useMachineDetails} from '../machines/api'
+import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
 import {Icon, type IconName} from '../icons'
-import {KV, Sheet, SheetHeader, StatusPill, haptic, machineStatus, useConfirm} from '../ui'
+import {Sheet, SheetHeader, StatusPill, haptic, machineStatus} from '../ui'
 
 export function osLook(osId = ''): {icon: IconName; bg: string; name: string} {
 	const id = osId.toLowerCase()
@@ -89,7 +91,11 @@ export function Machines() {
 							</span>
 							<span className="main" style={{flex: 1, minWidth: 0}}>
 								<b style={{display: 'block', fontSize: 16.5, fontWeight: 650}}>{m.name}</b>
-								<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>{m.ipAddress ?? os.name}</span>
+								<span style={{display: 'block', fontSize: 13, color: 'var(--muted)', marginTop: 2}}>
+									{m.vmid !== undefined ? `${m.vmid} · ` : ''}
+									{os.name}
+									{m.pending ? ' · changes pending' : ''}
+								</span>
 							</span>
 							<StatusPill {...machineStatus(m.state)} />
 						</span>
@@ -151,44 +157,17 @@ export function Machines() {
 }
 
 function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClose: () => void; onConsole: () => void}) {
-	const action = useAction()
-	const confirm = useConfirm()
 	const status = machineStatus(m.state)
-	const busy = status.kind === 'busy' || action.isPending
+	const details = useMachineDetails(m.id)
+	const d = details.data
+	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
+	const busy = status.kind === 'busy' || power.pending
 	const os = osLook(m.osId)
-	const run = (path: string, done: string) => {
-		haptic(10)
-		action.mutate({path, input: {id: m.id}, done})
-	}
-	const shutDown = async () => {
-		if (await confirm({title: `Shut down ${m.name}?`, body: 'The machine is asked to shut down, like pressing its power button.', confirm: 'Shut down', icon: 'power'}))
-			run('machines.stop', `${m.name} is shutting down`)
-	}
-	const remove = async () => {
-		const ok = await confirm({
-			title: `Delete ${m.name}?`,
-			body: `${m.name} and its virtual disk will be permanently deleted. This can’t be undone.`,
-			confirm: `Delete ${m.name}`,
-			danger: true,
-			icon: 'trash',
-		})
-		if (ok) {
-			run('machines.uninstall', `${m.name} deleted`)
-			onClose()
-		}
-	}
-	const forceStop = async () => {
-		const ok = await confirm({
-			title: `Force stop ${m.name}?`,
-			body: 'This cuts power to the machine immediately. Unsaved work inside it will be lost.',
-			confirm: 'Force stop',
-			danger: true,
-		})
-		if (ok) run('machines.forceStop', `${m.name} stopped`)
-	}
+	const [tab, setTab] = useState<PanelId>('summary')
+	const tabs = PANELS.filter((p) => p.id !== 'console' && (p.id !== 'cloudinit' || d?.cloudInit))
 
 	return (
-		<Sheet open onClose={onClose} label={m.name}>
+		<Sheet open onClose={onClose} label={m.name} tall>
 			<SheetHeader
 				icon={
 					<span className="vm-os" style={{width: 64, height: 64, borderRadius: 19, background: os.bg}}>
@@ -196,7 +175,12 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 					</span>
 				}
 				title={m.name}
-				subtitle={<StatusPill {...status} />}
+				subtitle={
+					<span style={{display: 'inline-flex', gap: 8, alignItems: 'center'}}>
+						<StatusPill {...status} />
+						{m.vmid !== undefined && <span className="muted mono">ID {m.vmid}</span>}
+					</span>
+				}
 				onClose={onClose}
 			/>
 			{m.errorMessage && (
@@ -212,42 +196,71 @@ function MachineSheet({machine: m, onClose, onConsole}: {machine: Machine; onClo
 						Open console
 					</button>
 				) : (
-					<button className="btn primary" onClick={() => run('machines.start', `${m.name} is starting`)} disabled={busy || m.state === 'installing'}>
+					<button className="btn primary" onClick={power.paused ? power.resume : power.start} disabled={busy || !(power.canStart || power.paused)}>
 						{busy ? <span className="spinner" /> : <Icon name="play" size={20} />}
-						{busy ? 'Working…' : 'Start'}
+						{busy ? 'Working…' : m.state === 'hibernated' || power.paused ? 'Resume' : 'Start'}
 					</button>
 				)}
 			</div>
-			{m.state === 'running' && (
-				<div className="actions" style={{gridTemplateColumns: 'repeat(2, minmax(0, 1fr))'}}>
-					<button className="action" onClick={() => run('machines.restart', `${m.name} is restarting`)} disabled={busy}>
-						<Icon name="restart" size={22} />
-						Restart
+			<div className="actions mx-power">
+				<button className="action" onClick={power.reboot} disabled={busy || m.state !== 'running'}>
+					<Icon name="restart" size={22} />
+					Reboot
+				</button>
+				<button className="action" onClick={power.shutdown} disabled={busy || !power.on}>
+					<Icon name="power" size={22} />
+					Shut down
+				</button>
+				<button className="action" onClick={power.paused ? power.resume : power.pause} disabled={busy || !power.on}>
+					<Icon name={power.paused ? 'play' : 'pulse'} size={22} />
+					{power.paused ? 'Resume' : 'Pause'}
+				</button>
+				<button className="action" onClick={power.hibernate} disabled={busy || m.state !== 'running'}>
+					<Icon name="download" size={22} />
+					Hibernate
+				</button>
+				<button className="action" onClick={power.stop} disabled={busy || !power.on}>
+					<Icon name="stop" size={22} />
+					Stop
+				</button>
+				<button className="action" onClick={power.clone} disabled={busy || !power.canStart || m.state === 'error'}>
+					<Icon name="copy" size={22} />
+					Clone
+				</button>
+			</div>
+			<div className="mx-tabs" role="tablist" aria-label={`${m.name} settings`}>
+				{tabs.map((p) => (
+					<button key={p.id} role="tab" aria-selected={tab === p.id} className={`chip${tab === p.id ? ' on' : ''}`} onClick={(e) => (haptic(5), setTab(p.id), e.currentTarget.scrollIntoView({behavior: 'smooth', inline: 'center', block: 'nearest'}))}>
+						<Icon name={p.icon} size={15} />
+						{p.label}
 					</button>
-					<button className="action" onClick={shutDown} disabled={busy}>
-						<Icon name="power" size={22} />
-						Shut down
-					</button>
-				</div>
-			)}
-			<KV
-				rows={[
-					['System', os.name],
-					['CPU', m.cores ? `${m.cores} cores` : '–'],
-					['Memory', m.memoryGb ? `${m.memoryGb} GB` : '–'],
-					['Disk', m.diskSizeGb ? `${m.diskSizeGb} GB` : '–'],
-					['IP address', m.ipAddress ?? '–'],
-				]}
-			/>
-			<PortForwarding machine={m} />
-			<div className="stack">
-				{m.state !== 'stopped' && (
-					<button className="btn danger block" onClick={forceStop} disabled={action.isPending}>
-						<Icon name="stop" size={18} />
-						Force stop
-					</button>
+				))}
+			</div>
+			<div className="mx-touch">
+				{!d ? (
+					<div className="skeleton" style={{height: 160, borderRadius: 20}} />
+				) : tab === 'summary' ? (
+					<SummaryPanel d={d} />
+				) : tab === 'hardware' ? (
+					<HardwarePanel d={d} />
+				) : tab === 'cloudinit' ? (
+					<CloudInitPanel d={d} />
+				) : tab === 'options' ? (
+					<OptionsPanel d={d} />
+				) : tab === 'network' ? (
+					<PortForwarding machine={m} />
+				) : tab === 'snapshots' ? (
+					<SnapshotsPanel d={d} />
+				) : tab === 'backups' ? (
+					<BackupsPanel d={d} />
+				) : tab === 'history' ? (
+					<HistoryPanel d={d} />
+				) : (
+					<MonitorPanel d={d} />
 				)}
-				<button className="btn danger block" onClick={remove} disabled={action.isPending}>
+			</div>
+			<div className="stack" style={{marginTop: 18}}>
+				<button className="btn danger block" onClick={() => power.remove(onClose)} disabled={busy}>
 					<Icon name="trash" size={18} />
 					Delete machine
 				</button>
@@ -267,7 +280,7 @@ const PRESETS = [
 	{label: 'Web (443)', guestPort: 443, hostPort: 48443},
 	{label: 'Remote desktop', guestPort: 3389, hostPort: 43389},
 ]
-function PortForwarding({machine: m}: {machine: Machine}) {
+export function PortForwarding({machine: m}: {machine: Machine}) {
 	const action = useAction()
 	const forwards = m.portForwards ?? []
 	const [adding, setAdding] = useState(false)

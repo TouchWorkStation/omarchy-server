@@ -130,8 +130,48 @@ export async function startFakeserverd({
 		requiresHttps: false,
 	}))
 	const machines = [
-		{id: 'ubuntu-1', name: 'Ubuntu Desktop', osId: 'ubuntu', cores: 4, memoryGb: 8, diskSizeGb: 64, state: process.env.FAKE_VM_RUNNING ? 'running' : 'stopped', ipAddress: '10.21.0.2'},
+		{id: 'ubuntu-1', vmid: 100, name: 'Ubuntu Desktop', osId: 'ubuntu', cores: 4, memoryGb: 8, memoryMb: 8192, diskSizeGb: 64, state: process.env.FAKE_VM_RUNNING ? 'running' : 'stopped', ipAddress: '10.21.0.2'},
+		{id: 'debian-1', vmid: 101, name: 'Debian Server', osId: 'debian', cores: 2, memoryGb: 2, memoryMb: 2048, diskSizeGb: 32, state: 'running', pending: true},
 	]
+	// Sample settings and history for the machine administration screens.
+	const machineDetails = (m) => ({
+		id: m.id,
+		vmid: m.vmid,
+		name: m.name,
+		osId: m.osId,
+		state: m.state,
+		pending: !!m.pending,
+		createdAt: now - 86_400_000 * 3,
+		hardware: {
+			sockets: 1,
+			cores: m.cores,
+			cpuType: 'host',
+			memoryMb: m.memoryMb ?? m.memoryGb * 1024,
+			firmware: 'bios',
+			machineType: 'q35',
+			video: 'vga',
+			nic: 'virtio',
+			mac: '52:54:00:4f:1a:20',
+			linkDown: false,
+			disks: [
+				{id: 'disk0', device: 'disk', bus: 'virtio', target: 'vda', format: 'qcow2', role: null, cache: 'default', discard: true, sizeGb: m.diskSizeGb, usedGb: 7.4, media: null, inMachineFolder: true},
+				{id: 'seed', device: 'cdrom', bus: 'sata', target: 'sda', format: 'raw', role: 'seed', cache: 'default', sizeGb: null, usedGb: null, media: 'seed.iso', inMachineFolder: true},
+				{id: 'cd0', device: 'cdrom', bus: 'sata', target: 'sdb', format: 'raw', role: null, cache: 'default', sizeGb: null, usedGb: null, media: null, inMachineFolder: false},
+			],
+		},
+		boot: ['disk0'],
+		options: {onBoot: m.id === 'debian-1', startupOrder: null, startupDelay: 0, protection: false, tablet: true, acpi: true, kvm: true, agent: false, bootMenu: false, notes: m.id === 'debian-1' ? 'Runs the home web server.\nLogin: chris' : ''},
+		cloudInit: {username: 'chris', hostname: m.name.toLowerCase().replace(/\W+/g, '-'), sshKeys: []},
+		portForwards: [],
+		snapshots: [{name: 'fresh-install', description: 'Right after setup', createdAt: now - 86_400_000 * 2}],
+		tasks: [
+			{id: 't3', type: 'start', status: 'ok', startedAt: now - 3_600_000, endedAt: now - 3_598_000},
+			{id: 't2', type: 'snapshot', detail: 'fresh-install', status: 'ok', startedAt: now - 86_400_000 * 2, endedAt: now - 86_400_000 * 2 + 4000},
+			{id: 't1', type: 'create', status: 'ok', startedAt: now - 86_400_000 * 3, endedAt: now - 86_400_000 * 3 + 90_000},
+		],
+		guestIps: [],
+	})
+	const statPoints = () => Array.from({length: 120}, (_, i) => ({t: now - (120 - i) * 10_000, cpu: Math.round((18 + 14 * Math.sin(i / 9) + (i % 7)) * 10) / 10, memMb: 1300 + Math.round(200 * Math.sin(i / 15)), netIn: 20_000 + 15_000 * Math.abs(Math.sin(i / 5)), netOut: 8000 + 6000 * Math.abs(Math.cos(i / 6)), diskRead: 50_000 * Math.abs(Math.sin(i / 11)), diskWrite: 120_000 * Math.abs(Math.cos(i / 13))}))
 	let notifications = ['update-available']
 
 	// Each app gets a tiny web server standing in for Omarchy Server's app gateway + the app:
@@ -338,6 +378,14 @@ export async function startFakeserverd({
 			},
 		},
 		'machines.list': {kind: 'query', run: () => machines},
+		'machines.details': {kind: 'query', run: ({id}) => machineDetails(machines.find((m) => m.id === id))},
+		'machines.stats': {kind: 'query', run: ({id}) => ({memoryMb: 2048, vcpus: 2, points: machines.find((m) => m.id === id)?.state === 'running' ? statPoints() : []})},
+		'machines.node': {
+			kind: 'query',
+			run: () => ({hostname: 'omarchy', cpuModel: 'Intel(R) Xeon(R) CPU E5-2470 v2 @ 2.40GHz', threads: 8, loadAverage: [0.42, 0.51, 0.47], memoryTotalMb: 32768, memoryFreeMb: 21000, uptimeSeconds: 400_000, storage: {totalGb: 930, freeGb: 610}, libvirtVersion: '11.2.0', qemuVersion: '10.0.2', hostArchitecture: 'amd64', libvirtAvailable: true, kvmAvailable: true, videoModels: ['vga', 'bochs', 'none'], cpuTypes: ['host', 'host-model', 'max', 'qemu64'], nicModels: ['virtio', 'e1000e', 'e1000', 'rtl8139'], diskBuses: ['virtio', 'sata', 'scsi', 'ide'], diskCaches: ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe'], counts: {total: machines.length, running: machines.filter((m) => m.state === 'running').length}}),
+		},
+		'machines.tasks': {kind: 'query', run: () => machines.flatMap((m) => machineDetails(m).tasks.map((t) => ({...t, machineId: m.id, machineName: m.name, vmid: m.vmid}))).sort((a, b) => b.startedAt - a.startedAt)},
+		'machines.backups': {kind: 'query', run: () => [{id: '101-debian-server-20261112-030000', name: 'Debian Server', vmid: 101, sourceId: 'debian-1', createdAt: now - 70_000_000, notes: 'nightly', live: true, sizeBytes: 1_830_000_000, path: '/Home/Backups/Machines/101-debian-server-20261112-030000'}]},
 		'system.checkUpdate': {kind: 'query', run: () => (process.env.FAKE_UPDATE_FAIL ? {available: true, version: '2.1.0', name: 'Omarchy Server 2.1'} : {available: false, version: '2.0.0', name: 'Omarchy Server 2.0'})},
 		'apps.uninstall': {kind: 'mutation', run: ({appId}) => (apps.splice(apps.findIndex((a) => a.id === appId), 1), true)},
 		'machines.start': {kind: 'mutation', run: ({id}) => ((machines.find((m) => m.id === id).state = 'running'), true)},

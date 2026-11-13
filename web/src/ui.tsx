@@ -66,7 +66,7 @@ export function appStatus(state: AppState | undefined, hasUpdate = false): {kind
 export const isAppBusy = (state?: AppState) => !!state && BUSY.includes(state)
 export function machineStatus(state: Machine['state']): {kind: StatusKind; label: string} {
 	if (state === 'running') return {kind: 'running', label: 'running'}
-	if (state === 'stopped' || state === 'suspended') return {kind: 'stopped', label: state}
+	if (state === 'stopped' || state === 'suspended' || state === 'hibernated') return {kind: 'stopped', label: state === 'suspended' ? 'paused' : state}
 	if (state === 'error') return {kind: 'error', label: 'error'}
 	return {kind: 'busy', label: state}
 }

@@ -139,13 +139,18 @@ export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number
 
 export type Machine = {
 	id: string
+	vmid?: number
 	name: string
 	osId?: string
 	cores?: number
 	memoryGb?: number
+	memoryMb?: number
 	diskSizeGb?: number
 	ipAddress?: string
-	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'suspended' | 'error'
+	state: 'installing' | 'stopped' | 'starting' | 'running' | 'stopping' | 'restarting' | 'suspended' | 'hibernated' | 'error'
+	pending?: boolean
+	protected?: boolean
+	onBoot?: boolean
 	installProgress?: number
 	errorMessage?: string
 	networkMode?: 'nat' | 'bridged'

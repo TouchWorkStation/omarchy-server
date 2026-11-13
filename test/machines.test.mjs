@@ -47,13 +47,39 @@ test('install media: desktop cloud-init, Omarchy disk layout, Windows answer fil
 describe('omarchyd machines', () => {
 	let root, data, d, fixture, fixtureUrl, auth
 	const doms = new Map()
-	const seen = {userData: '', xml: '', media: {}}
+	const seen = {userData: '', xml: '', media: {}, calls: []}
 	const image = randomBytes(256 * 1024)
 
 	const run = async (cmd, args, opts = {}) => {
+		if (cmd === 'virsh' || cmd === 'qemu-img') seen.calls.push([cmd, ...(args[0] === '-c' ? args.slice(2) : args)].join(' '))
 		if (cmd === 'virsh') {
 			const a = args[0] === '-c' ? args.slice(2) : args
 			switch (a[0]) {
+				case 'suspend':
+					doms.set(a[1], 'paused')
+					return ''
+				case 'resume':
+					doms.set(a[1], 'running')
+					return ''
+				case 'managedsave':
+					doms.set(a[1], 'shut off')
+					return ''
+				case 'blockresize':
+				case 'change-media':
+				case 'domstats':
+				case 'domifaddr':
+					return ''
+				case 'version':
+					return 'Compiled against library: libvirt 10.0.0\nRunning hypervisor: QEMU 9.0.0\n'
+				case 'qemu-monitor-command':
+					return `VM status: running (${a.at(-1)})\n`
+				case 'backup-begin': {
+					const bx = await readFile(a[3], 'utf8')
+					for (const [, f] of bx.matchAll(/<target file='([^']+)'/g)) await writeFile(f, 'live-copy')
+					return 'Backup started\n'
+				}
+				case 'domjobinfo':
+					return a.includes('--completed') ? 'Job type:         Completed\n' : 'Job type:         None\n'
 				case '--version':
 					return '10.0.0\n'
 				case 'list':
@@ -81,7 +107,7 @@ describe('omarchyd machines', () => {
 			throw new Error(`virsh ${a[0]} not simulated`)
 		}
 		if (cmd === 'qemu-img') {
-			if (args[0] === 'convert') await copyFile(args[3], args[4])
+			if (args[0] === 'convert') await copyFile(args.at(-2), args.at(-1))
 			if (args[0] === 'create') await writeFile(args[3], 'blank')
 			return 'qemu-img version 9.0\n'
 		}
@@ -284,6 +310,152 @@ describe('omarchyd machines', () => {
 		await until(async () => (await q('machines.list')).find((x) => x.id === f && x.state === 'running'))
 		assert.match(seen.xml, /<video><model type='vga'\/><\/video>/)
 		await call('machines.uninstall', {id: f})
+	})
+
+	test('details: hardware, drives, boot order and options of a machine', async () => {
+		const det = await q('machines.details', {id})
+		assert.equal(det.vmid >= 100, true)
+		assert.deepEqual([det.hardware.sockets, det.hardware.cores, det.hardware.memoryMb, det.hardware.cpuType, det.hardware.machineType], [1, 1, 1024, 'host', 'q35'])
+		assert.deepEqual(det.hardware.disks.map((x) => [x.id, x.device, x.bus, x.target, x.role]), [['disk0', 'disk', 'virtio', 'vda', null], ['seed', 'cdrom', 'sata', 'sda', 'seed']])
+		assert.deepEqual(det.boot, ['disk0'])
+		assert.equal(det.cloudInit.username, 'chris')
+		assert.match(det.hardware.mac, /^52:54:00:/)
+		const node = await q('machines.node')
+		assert.ok(node.threads >= 1 && node.memoryTotalMb > 0)
+		assert.equal(node.libvirtVersion, '10.0.0')
+		assert.ok(node.videoModels.includes('vga'))
+	})
+
+	test('hardware: changes while running are kept for the next start; Restart applies them', async () => {
+		await assert.rejects(call('machines.updateHardware', {id, sockets: 1, cores: 9999}), /Sockets × cores/)
+		await assert.rejects(call('machines.updateHardware', {id, mac: '01:00:5e:00:00:01'}), /unicast MAC/)
+		await call('machines.updateHardware', {id, memoryMb: 1536, cpuType: 'qemu64', nic: 'e1000', linkDown: true, mac: '52:54:00:aa:bb:cc'})
+		assert.match(seen.xml, /<memory unit='MiB'>1536<\/memory>/)
+		assert.match(seen.xml, /<model fallback='allow'>qemu64<\/model><topology sockets='1' dies='1' cores='1' threads='1'\/>/)
+		assert.match(seen.xml, /<mac address='52:54:00:aa:bb:cc'\/><model type='e1000'\/><link state='down'\/>/)
+		assert.equal((await q('machines.list')).find((x) => x.id === id).pending, true)
+		seen.calls.length = 0
+		await call('machines.restart', {id})
+		assert.ok(seen.calls.includes(`virsh shutdown omarchy-${id}`) && seen.calls.includes(`virsh start omarchy-${id}`), 'a full stop and start')
+		await until(async () => !(await q('machines.list')).find((x) => x.id === id).pending)
+		await call('machines.updateHardware', {id, memoryMb: 1024, cpuType: 'host', nic: 'virtio', linkDown: false})
+		await call('machines.forceStop', {id})
+		await call('machines.start', {id})
+		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
+	})
+
+	test('options: notes, protection, guest agent, boot menu', async () => {
+		await call('machines.updateOptions', {id, notes: 'Web <server>', protection: true, agent: true, bootMenu: true, onBoot: true, startupOrder: 2, startupDelay: 10})
+		assert.match(seen.xml, /<description>Web &lt;server&gt;<\/description>/)
+		assert.match(seen.xml, /org\.qemu\.guest_agent\.0/)
+		assert.match(seen.xml, /<bootmenu enable='yes'/)
+		await assert.rejects(call('machines.uninstall', {id}), /protected/)
+		await assert.rejects(call('machines.updateOptions', {id, startupDelay: 9999}), /Start delay/)
+		await call('machines.updateOptions', {id, protection: false, agent: false, bootMenu: false, onBoot: false, notes: ''})
+		assert.ok(!seen.xml.includes('guest_agent'))
+	})
+
+	test('drives: add a SCSI disk, grow it live, CD/DVD media, boot order; removing needs a shut-down machine', async () => {
+		const {diskId} = await call('machines.addDisk', {id, sizeGb: 8, bus: 'scsi', cache: 'writeback'})
+		assert.equal(diskId, 'disk1')
+		assert.match(seen.xml, /<controller type='scsi' model='virtio-scsi'\/>/)
+		assert.match(seen.xml, /cache='writeback' discard='unmap'\/><source file='[^']+disk1\.qcow2'\/><target dev='sdb' bus='scsi'\/>/)
+		await assert.rejects(call('machines.resizeDisk', {id, diskId, sizeGb: 4}), /only grow/)
+		await call('machines.resizeDisk', {id, diskId, sizeGb: 16})
+		assert.ok(seen.calls.includes(`virsh blockresize omarchy-${id} sdb 16G`))
+		await assert.rejects(call('machines.removeDisk', {id, diskId}), /Shut down/)
+		await assert.rejects(call('machines.addCdrom', {id}), /Shut down/)
+		await call('machines.forceStop', {id})
+		const {diskId: cd} = await call('machines.addCdrom', {id})
+		const arch = (await q('machines.localIsos')).find((i) => /archlinux/.test(i.id))
+		await call('machines.setMedia', {id, diskId: cd, iso: arch.id})
+		assert.match(seen.xml, new RegExp(`archlinux\\.iso'/><target dev='sdc' bus='sata'/><readonly/>`))
+		await call('machines.setBootOrder', {id, order: [cd, 'disk0', 'net']})
+		assert.match(seen.xml, /archlinux\.iso'\/><target dev='sdc' bus='sata'\/><boot order='1'\/>/)
+		assert.match(seen.xml, /<boot order='3'\/><\/interface>/)
+		await assert.rejects(call('machines.setBootOrder', {id, order: ['nope']}), /boot device/)
+		await call('machines.setMedia', {id, diskId: cd, iso: null})
+		assert.ok(!seen.xml.includes('archlinux.iso'))
+		await call('machines.removeDisk', {id, diskId, deleteFile: true})
+		await assert.rejects(stat(join(data, 'machines/vms', id, 'disk1.qcow2')))
+		await call('machines.removeDisk', {id, diskId: cd})
+		await assert.rejects(call('machines.removeDisk', {id, diskId: 'disk0'}), /only disk/)
+		assert.deepEqual((await q('machines.details', {id})).boot, ['disk0', 'net'])
+		await call('machines.setBootOrder', {id, order: ['disk0']})
+	})
+
+	test('cloud-init: new SSH keys and password (hash only) for the next boot; private keys refused', async () => {
+		await assert.rejects(call('machines.updateCloudInit', {id, sshKeys: ['-----BEGIN OPENSSH PRIVATE KEY-----']}), /private key/)
+		const key = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl chris@laptop'
+		await call('machines.updateCloudInit', {id, username: 'chris', hostname: 'web-1', sshKeys: [key], password: 'new secret pw'})
+		assert.match(seen.userData, /ssh_authorized_keys:\n {6}- 'ssh-ed25519 AAAAC3/)
+		assert.match(seen.userData, /chpasswd:[\s\S]*password: '\$6\$/)
+		assert.match(seen.userData, /hostname: web-1/)
+		assert.ok(!seen.userData.includes('new secret pw'))
+		assert.deepEqual((await q('machines.details', {id})).cloudInit, {username: 'chris', hostname: 'web-1', sshKeys: [key]})
+	})
+
+	test('snapshots: taken, restored and deleted while shut down, with the settings of the moment', async () => {
+		await call('machines.start', {id})
+		await assert.rejects(call('machines.snapshot', {id, name: 'before'}), /Shut down/)
+		await call('machines.forceStop', {id})
+		await assert.rejects(call('machines.snapshot', {id, name: 'bad name!'}), /Name the snapshot/)
+		await call('machines.snapshot', {id, name: 'before', description: 'clean install'})
+		assert.ok(seen.calls.some((c) => /^qemu-img snapshot -c before .+disk\.qcow2$/.test(c)))
+		await call('machines.updateHardware', {id, memoryMb: 2048})
+		await call('machines.revertSnapshot', {id, name: 'before'})
+		assert.ok(seen.calls.some((c) => /^qemu-img snapshot -a before /.test(c)))
+		assert.equal((await q('machines.details', {id})).hardware.memoryMb, 1024)
+		await call('machines.deleteSnapshot', {id, name: 'before'})
+		assert.deepEqual((await q('machines.details', {id})).snapshots, [])
+	})
+
+	test('backups: to Home → Backups → Machines (stopped and live), restored as a new machine; clone', async () => {
+		const {backupId} = await call('machines.backup', {id, notes: 'nightly'})
+		await until(async () => (await q('machines.backups', {id})).some((b) => b.id === backupId))
+		const dir = join(root, 'home/Backups/Machines', backupId)
+		assert.equal(await readFile(join(dir, 'disk0.qcow2')).then((b) => b.length), image.length)
+		const meta = JSON.parse(await readFile(join(dir, 'machine.json'), 'utf8'))
+		assert.equal(meta.machine.name, 'Box')
+		assert.equal(meta.machine.tasks, undefined)
+		assert.ok(!JSON.stringify(meta).includes('hunter2'))
+		const list = await q('machines.backups', {id})
+		assert.equal(list[0].id, backupId)
+		assert.equal(list[0].notes, 'nightly')
+		const {id: restored} = await call('machines.restoreBackup', {backupId})
+
+		const r = await until(async () => (await q('machines.list')).find((x) => x.id === restored && x.state === 'stopped'))
+		assert.equal(r.name, 'Box (2)')
+		assert.equal((await stat(join(data, 'machines/vms', restored, 'disk.qcow2'))).size, image.length)
+		const {id: copy} = await call('machines.clone', {id, name: 'Box clone'})
+		await until(async () => (await q('machines.list')).find((x) => x.id === copy && x.state === 'stopped'))
+		assert.notEqual((await q('machines.details', {id: copy})).hardware.mac, (await q('machines.details', {id})).hardware.mac)
+		// A live backup: QEMU copies the running machine's disks.
+		await call('machines.start', {id})
+		const {backupId: live} = await call('machines.backup', {id})
+		await until(async () => (await q('machines.backups', {id})).some((b) => b.id === live))
+		assert.ok(seen.calls.some((c) => c.startsWith(`virsh backup-begin omarchy-${id} --backupxml`)))
+		assert.equal(await readFile(join(root, 'home/Backups/Machines', live, 'disk0.qcow2'), 'utf8'), 'live-copy')
+		assert.equal((await q('machines.backups', {id})).find((b) => b.id === live).live, true)
+		for (const b of [backupId, live]) await call('machines.deleteBackup', {backupId: b})
+		assert.deepEqual(await q('machines.backups', {id}), [])
+		await call('machines.uninstall', {id: restored})
+		await call('machines.uninstall', {id: copy})
+	})
+
+	test('pause, resume, hibernate; monitor; task history', async () => {
+		await call('machines.pause', {id})
+		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'suspended')
+		await call('machines.resume', {id})
+		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
+		assert.match((await call('machines.monitor', {id, command: 'info status'})).output, /VM status: running \(info status\)/)
+		await call('machines.hibernate', {id})
+		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'hibernated')
+		await call('machines.start', {id})
+		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
+		const tasks = (await q('machines.details', {id})).tasks.map((t) => t.type)
+		for (const t of ['create', 'hardware', 'snapshot', 'backup', 'pause', 'hibernate']) assert.ok(tasks.includes(t), `task ${t} recorded`)
+		assert.ok((await q('machines.tasks')).every((t) => t.machineName))
 	})
 
 	test('stop, start, uninstall', async () => {

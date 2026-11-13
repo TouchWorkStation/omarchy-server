@@ -13,7 +13,8 @@ import {appUrl, useAction, useApps, useBootstrap, useCpu, useMachines, useMemory
 import {Icon, type IconName} from '../icons'
 import {Apps} from '../screens/Apps'
 import {Files} from '../screens/Files'
-import {Machines, osLook} from '../screens/Machines'
+import {osLook} from '../screens/Machines'
+import {MachinesDesktop} from '../machines/Desktop'
 import {More} from '../screens/More'
 import {Settings} from '../screens/Settings'
 import {Store} from '../screens/Store'
@@ -41,7 +42,7 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	apps: {title: 'Apps', icon: 'apps-filled', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', w: 800, h: 680},
 	store: {title: 'App Store', w: 1040, h: 720},
 	terminal: {title: 'Terminal', w: 860, h: 540},
-	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', w: 820, h: 640},
+	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', w: 1180, h: 760},
 	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', w: 820, h: 720},
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', w: 760, h: 720},
 	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', w: 880, h: 720},
@@ -1938,7 +1939,7 @@ const WindowContent = memo(
 				case 'store':
 					return <Store onOpenInstalled={(a) => desk.launch(a)} />
 				case 'machines':
-					return <Machines />
+					return <MachinesDesktop />
 				case 'system':
 					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} />
 				case 'settings':
@@ -1953,7 +1954,7 @@ const WindowContent = memo(
 					return null
 			}
 		})()
-		if (win.kind === 'terminal' || win.kind === 'console') return body
+		if (win.kind === 'terminal' || win.kind === 'console' || win.kind === 'machines') return body
 		return (
 			<div className="win-scroll">
 				<main className="screen win-screen">{body}</main>

@@ -20,7 +20,7 @@ import {dualProtocolServer} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.13'
+export const VERSION = '0.9.0'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -81,6 +81,32 @@ export const ALLOWED = {
 	'machines.create': 'mutation',
 	'machines.uninstall': 'mutation',
 	'machines.updateSettings': 'mutation',
+	'machines.pause': 'mutation',
+	'machines.resume': 'mutation',
+	'machines.hibernate': 'mutation',
+	'machines.node': 'query',
+	'machines.details': 'query',
+	'machines.stats': 'query',
+	'machines.tasks': 'query',
+	'machines.updateHardware': 'mutation',
+	'machines.updateOptions': 'mutation',
+	'machines.setBootOrder': 'mutation',
+	'machines.addDisk': 'mutation',
+	'machines.updateDisk': 'mutation',
+	'machines.resizeDisk': 'mutation',
+	'machines.removeDisk': 'mutation',
+	'machines.addCdrom': 'mutation',
+	'machines.setMedia': 'mutation',
+	'machines.updateCloudInit': 'mutation',
+	'machines.snapshot': 'mutation',
+	'machines.revertSnapshot': 'mutation',
+	'machines.deleteSnapshot': 'mutation',
+	'machines.backups': 'query',
+	'machines.backup': 'mutation',
+	'machines.restoreBackup': 'mutation',
+	'machines.deleteBackup': 'mutation',
+	'machines.clone': 'mutation',
+	'machines.monitor': 'mutation',
 	// Storage (NAS): drives, pools, sleep
 	'storage.status': 'query',
 	'storage.disks': 'query',
@@ -160,7 +186,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
