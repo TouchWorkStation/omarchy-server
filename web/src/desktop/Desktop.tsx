@@ -37,15 +37,17 @@ const MIN_H = 260
 const CELL_W = 104
 const CELL_H = 112
 
-export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; w: number; h: number}> = {
-	files: {title: 'Files', icon: 'folder-filled', bg: 'linear-gradient(150deg,#7cb4ff,#2563eb 70%)', w: 960, h: 660},
-	apps: {title: 'Apps', icon: 'apps-filled', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', w: 800, h: 680},
+// `bg` is the icon in the colourful themes; `tone` is the palette colour it takes in the others
+// (Midnight, Neon, Ember, Daylight and the Omarchy desktop's own theme), see .sys-ico in styles.css.
+export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; tone?: string; w: number; h: number}> = {
+	files: {title: 'Files', icon: 'folder-filled', bg: 'linear-gradient(150deg,#7cb4ff,#2563eb 70%)', tone: 'var(--blue)', w: 960, h: 660},
+	apps: {title: 'Apps', icon: 'apps-filled', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 800, h: 680},
 	store: {title: 'App Store', w: 1040, h: 720},
 	terminal: {title: 'Terminal', w: 860, h: 540},
-	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', w: 1180, h: 760},
-	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', w: 820, h: 720},
-	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', w: 760, h: 720},
-	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', w: 880, h: 720},
+	machines: {title: 'Machines', icon: 'machine-filled', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 1180, h: 760},
+	system: {title: 'System Monitor', icon: 'activity-filled', bg: 'linear-gradient(150deg,#fdba74,#c2410c 70%)', tone: 'var(--peach)', w: 820, h: 720},
+	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
+	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
 }
 const isSys = (k: string): k is SysKind => Object.hasOwn(SYS, k)
 const keyOf = (kind: Kind, p?: Payload) => (kind === 'app' ? `app:${p?.appId}` : kind === 'console' ? `console:${p?.machineId}` : kind)
@@ -71,7 +73,7 @@ export function SysIcon({kind, size = 44}: {kind: string; size?: number}) {
 	if (kind === 'terminal') return <TerminalIcon size={size} />
 	const s = isSys(kind) ? SYS[kind] : undefined
 	return (
-		<span className="app-icon" style={{width: size, height: size, background: s?.bg ?? '#555'}}>
+		<span className="app-icon sys-ico" style={{width: size, height: size, '--grad': s?.bg ?? '#555', '--tone': s?.tone ?? 'var(--fg)'} as CSSProperties}>
 			<Icon name={s?.icon ?? 'window'} size={size * 0.52} stroke={1.8} />
 		</span>
 	)
@@ -80,7 +82,7 @@ function FolderIcon({path, size}: {path: string; size: number}) {
 	const trash = path === '/Trash'
 	const home = path === '/Home'
 	return (
-		<span className="app-icon folder-icon" style={{width: size, height: size, background: trash ? 'linear-gradient(150deg,#a1a1aa,#52525b 70%)' : 'linear-gradient(150deg,#93c5fd,#3b82f6 70%)'}}>
+		<span className="app-icon folder-icon sys-ico" style={{width: size, height: size, '--grad': trash ? 'linear-gradient(150deg,#a1a1aa,#52525b 70%)' : 'linear-gradient(150deg,#93c5fd,#3b82f6 70%)', '--tone': trash ? 'var(--muted)' : 'var(--blue)'} as CSSProperties}>
 			<Icon name={trash ? 'trash' : home ? 'home' : 'folder-filled'} size={size * 0.52} stroke={1.8} />
 		</span>
 	)
@@ -88,7 +90,7 @@ function FolderIcon({path, size}: {path: string; size: number}) {
 export function MachineIcon({m, size}: {m?: Machine; size: number}) {
 	const look = osLook(m?.osId)
 	return (
-		<span className="app-icon" style={{width: size, height: size, background: look.bg}}>
+		<span className="app-icon sys-ico os-ico" style={{width: size, height: size, '--grad': look.bg, '--tone': 'var(--accent)'} as CSSProperties}>
 			<Icon name={look.icon} size={size * 0.52} stroke={1.8} />
 		</span>
 	)

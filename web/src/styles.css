@@ -7093,3 +7093,36 @@ html.page-locked body {
 .pve-tasks-body .mx-tr {
 	padding: 5px 10px;
 }
+
+/* ---- icons that follow the theme --------------------------------------------------------------
+   System icons (dock, desktop, home screen) carry --grad (their colourful look) and --tone (a
+   palette colour). Horizon and Your photo keep the colourful icons; Midnight, Neon, Ember and
+   Daylight tint them from their own palette; Omarchy draws them flat, like Omarchy's own desktop,
+   in the colours of whatever theme the Omarchy desktop is using. */
+.app-icon.sys-ico {
+	background: var(--grad);
+}
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte']) .app-icon.sys-ico {
+	background: linear-gradient(150deg, color-mix(in srgb, var(--tone) 78%, #fff), color-mix(in srgb, var(--tone) 70%, var(--bg-solid)) 75%) !important;
+	color: var(--bg-solid) !important;
+}
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte']) .app-icon.os-ico {
+	background: var(--grad) !important;
+	color: #fff !important;
+}
+[data-theme='omarchy'] .app-icon.sys-ico,
+[data-theme='omarchy'] .app-icon.os-ico {
+	background: var(--glass-2, var(--bg-solid)) !important;
+	color: var(--tone) !important;
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 45%, var(--line)) !important;
+}
+[data-theme='omarchy'] .app-icon.sys-ico::after {
+	display: none;
+}
+/* The tab bar on phones: each tab's icon in its tone (the chosen one in full, the rest softer). */
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='omarchy']) .dock button svg {
+	color: color-mix(in srgb, var(--tone) 70%, var(--muted));
+}
+:is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='omarchy']) .dock button[aria-current='page'] svg {
+	color: var(--tone);
+}

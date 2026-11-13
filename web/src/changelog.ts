@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.1',
+		date: '2026-11-13',
+		title: 'Icons that follow your theme',
+		added: [
+			'The Omarchy theme now takes every colour from the theme your Omarchy desktop is using (backgrounds, text and its full colour palette), so changing the desktop’s theme changes Omarchy Server too.',
+			'Dock, desktop and home screen icons follow the theme: flat, Omarchy-style tiles in the Omarchy theme, tinted from the palette in Midnight, Neon, Ember and Daylight, and the colourful originals in Horizon.',
+			'The tab bar on phones is tinted the same way.',
+		],
+	},
+	{
 		version: '0.9.0',
 		date: '2026-11-13',
 		title: 'Machines, the Proxmox way',

@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from 'react'
+import {useCallback, useEffect, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {getBootstrap, query, type Bootstrap, type User} from './api'
@@ -19,12 +19,13 @@ import {Backdrop, Sheet, SheetHeader, haptic, useLayout, usePrefs, type Prefs} f
 import {WhatsNewOnUpdate} from './WhatsNew'
 
 type Tab = 'home' | 'apps' | 'files' | 'machines' | 'more' | 'settings' | 'store'
-const TABS: {id: Tab; label: string; icon: IconName; active: IconName}[] = [
-	{id: 'home', label: 'Home', icon: 'home', active: 'home-filled'},
-	{id: 'apps', label: 'Apps', icon: 'apps', active: 'apps-filled'},
-	{id: 'files', label: 'Files', icon: 'folder', active: 'folder-filled'},
-	{id: 'machines', label: 'Machines', icon: 'machine', active: 'machine-filled'},
-	{id: 'more', label: 'System', icon: 'activity', active: 'activity-filled'},
+// `tone`: the palette colour each tab's icon takes in the themed looks (the same as on the desktop).
+const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: string}[] = [
+	{id: 'home', label: 'Home', icon: 'home', active: 'home-filled', tone: 'var(--accent)'},
+	{id: 'apps', label: 'Apps', icon: 'apps', active: 'apps-filled', tone: 'var(--mauve)'},
+	{id: 'files', label: 'Files', icon: 'folder', active: 'folder-filled', tone: 'var(--blue)'},
+	{id: 'machines', label: 'Machines', icon: 'machine', active: 'machine-filled', tone: 'var(--teal)'},
+	{id: 'more', label: 'System', icon: 'activity', active: 'activity-filled', tone: 'var(--peach)'},
 ]
 const tabFromHash = (): Tab => {
 	const h = location.hash.replace('#/', '') as Tab
@@ -175,7 +176,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 			<nav className="dock" aria-label="Main">
 				<span className="indicator" style={{transform: `translateX(${Math.max(index, 0) * 100}%)`, opacity: index < 0 ? 0 : 1}} aria-hidden="true" />
 				{TABS.map((t) => (
-					<button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)}>
+					<button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)} style={{'--tone': t.tone} as CSSProperties}>
 						<Icon name={tab === t.id ? t.active : t.icon} size={23} stroke={tab === t.id ? 2 : 1.75} />
 						{t.label}
 						{t.id === 'apps' && updateCount > 0 && <span className="count">{updateCount}</span>}

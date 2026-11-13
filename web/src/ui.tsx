@@ -437,7 +437,7 @@ export function readPrefs(): Prefs {
 }
 
 // ---- the Omarchy desktop's themes ------------------------------------------------------------
-export type OmarchyColors = {background?: string | null; foreground?: string | null; accent?: string | null; dots?: string[]}
+export type OmarchyColors = {background?: string | null; foreground?: string | null; accent?: string | null; dots?: string[]; palette?: Partial<Record<'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'black' | 'brightBlack', string>>}
 export type OmarchyThemes = {theme: string | null; label: string | null; current: string | null; colors: OmarchyColors | null; groups: {theme: string; label: string; items: {id: string; name: string}[]}[]}
 let omarchyColors: OmarchyColors | null = null
 try {
@@ -467,9 +467,44 @@ export function useOmarchyThemes(enabled = true) {
 }
 
 const FALLBACK_BRAND = '24 90% 50%' // Omarchy Server's default wallpaper colour
+// The Omarchy theme takes every colour from the theme the Omarchy desktop uses right now: panels,
+// text and the palette that system icons are tinted with (see .sys-ico in styles.css).
+const OMARCHY_VARS = ['--bg', '--bg-solid', '--fg', '--fg-2', '--muted', '--faint', '--glass', '--glass-2', '--glass-press', '--line', '--line-2', '--sheet', '--dock', '--red', '--green', '--yellow', '--blue', '--mauve', '--teal', '--peach', '--pink']
+function applyOmarchyPalette(root: HTMLElement, on: boolean) {
+	for (const v of OMARCHY_VARS) root.style.removeProperty(v)
+	const c = omarchyColors
+	if (!on || !c?.background || !c.foreground) return
+	const bg = c.background
+	const fg = c.foreground
+	const mix = (a: string, b: string, pctA: number) => `color-mix(in srgb, ${a} ${pctA}%, ${b})`
+	const set = (k: string, v: string | null | undefined) => v && root.style.setProperty(k, v)
+	set('--bg', bg)
+	set('--bg-solid', mix(bg, '#000', 88))
+	set('--fg', fg)
+	set('--fg-2', mix(fg, bg, 88))
+	set('--muted', c.palette?.brightBlack && c.palette.brightBlack !== bg ? mix(c.palette.brightBlack, fg, 55) : mix(fg, bg, 62))
+	set('--faint', mix(fg, 'transparent', 8))
+	set('--glass', mix(bg, 'transparent', 94))
+	set('--glass-2', mix(fg, bg, 8))
+	set('--glass-press', mix(fg, bg, 14))
+	set('--line', mix(fg, bg, 16))
+	set('--line-2', mix(fg, bg, 26))
+	set('--sheet', bg)
+	set('--dock', mix(bg, 'transparent', 96))
+	const p = c.palette ?? {}
+	set('--red', p.red)
+	set('--green', p.green)
+	set('--yellow', p.yellow)
+	set('--blue', p.blue)
+	set('--mauve', p.magenta)
+	set('--pink', p.magenta)
+	set('--teal', p.cyan)
+	set('--peach', p.yellow && p.red ? mix(p.yellow, p.red, 55) : p.yellow)
+}
 export function applyPrefs(p: Prefs, brandHsl?: string | null) {
 	const root = document.documentElement
 	root.dataset.theme = p.theme
+	applyOmarchyPalette(root, p.theme === 'omarchy')
 	const light = p.theme === 'latte'
 	if (p.accent === 'wallpaper' && p.theme === 'omarchy') {
 		// The Omarchy desktop's own theme colours, once known (see useOmarchyThemes).
@@ -627,7 +662,7 @@ export function Backdrop({wallpaper, prefs}: {wallpaper?: Wallpaper | null; pref
 
 export function TerminalIcon({size = 56}: {size?: number}) {
 	return (
-		<span className="app-icon terminal-icon" style={{width: size, height: size}}>
+		<span className="app-icon terminal-icon sys-ico" style={{width: size, height: size, '--tone': 'var(--green)'} as CSSProperties}>
 			<svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
 				<path d="M5 7l5 5-5 5M12 18h7" />
 			</svg>
@@ -637,7 +672,7 @@ export function TerminalIcon({size = 56}: {size?: number}) {
 
 export function StoreIcon({size = 56}: {size?: number}) {
 	return (
-		<span className="app-icon store-icon" style={{width: size, height: size}}>
+		<span className="app-icon store-icon sys-ico" style={{width: size, height: size, '--tone': 'var(--blue)'} as CSSProperties}>
 			<svg width={size * 0.52} height={size * 0.52} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
 				<path d="M6.3 8h11.4a1 1 0 0 1 1 1.1l-.9 9.1A2 2 0 0 1 15.8 20H8.2a2 2 0 0 1-2-1.8l-.9-9.1A1 1 0 0 1 6.3 8z" />
 				<path d="M9 11V7a3 3 0 0 1 6 0v4" />

@@ -34,7 +34,8 @@ test('lists every theme’s backgrounds (current first), its colours, and serves
 	assert.deepEqual(l.groups.map((g) => g.theme), ['tokyo-night', 'catppuccin'], 'current theme first; themes without pictures left out')
 	assert.deepEqual(l.groups[0].items.map((i) => i.name), ['1-scenery', '2-city'])
 	assert.equal(l.current, l.groups[0].items[1].id, 'the desktop’s current background is marked')
-	assert.deepEqual(l.colors, {background: '#1a1b26', foreground: '#a9b1d6', accent: '#7aa2f7', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e']})
+	assert.deepEqual(l.colors, {background: '#1a1b26', foreground: '#a9b1d6', accent: '#7aa2f7', dots: ['#7aa2f7', '#9ece6a', '#e0af68', '#f7768e'], palette: l.colors.palette})
+	assert.deepEqual([l.colors.palette.blue, l.colors.palette.green, l.colors.palette.red], ['#7aa2f7', '#9ece6a', '#f7768e'])
 
 	const one = fakeRes()
 	await t.serve(l.groups[1].items[0].id, one)

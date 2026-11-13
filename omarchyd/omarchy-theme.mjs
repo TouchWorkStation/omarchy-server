@@ -33,6 +33,9 @@ export function parseThemeColors(text) {
 	// Top-level red/green/… (colors.toml), [colors.normal] (alacritty.toml) or color1…4.
 	const tone = (name, n) => pick(name, 'colors.normal') ?? pick(name) ?? pick(`color${n}`)
 	out.dots = [tone('blue', 4), tone('green', 2), tone('yellow', 3), tone('red', 1)].filter(Boolean)
+	// The whole palette, so Omarchy Server's own icons and colours can follow the desktop's theme.
+	const palette = {red: tone('red', 1), green: tone('green', 2), yellow: tone('yellow', 3), blue: tone('blue', 4), magenta: tone('magenta', 5), cyan: tone('cyan', 6), black: tone('black', 0), brightBlack: pick('black', 'colors.bright') ?? pick('color8')}
+	if (Object.values(palette).some(Boolean)) out.palette = Object.fromEntries(Object.entries(palette).filter(([, v]) => v))
 	return out
 }
 
