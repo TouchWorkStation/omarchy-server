@@ -64,45 +64,51 @@ if ! { npm ci --no-audit --no-fund --loglevel=error && npm run build; } >"$LOG" 
 	die "The build failed. Full log: $LOG"
 fi
 
-# 2a. ZFS (only with --zfs). It comes from the unofficial ArchZFS repository and is built for your
-#     kernel with DKMS. Every kernel update rebuilds it; on a brand-new kernel that build can fail
-#     until OpenZFS supports it, so pools may be unavailable until the next ZFS release.
+# 2a. ZFS (only with --zfs). Built from the AUR (zfs-utils + zfs-dkms, the current OpenZFS release)
+#     for your exact kernel with DKMS. Every kernel update rebuilds it; on a kernel newer than
+#     OpenZFS supports, that build fails and pools stay offline until OpenZFS catches up.
 if [ "$ZFS" = 1 ]; then
-	say "Adding ZFS from the ArchZFS repository (sudo needed)"
-	KEY=DDF7DB817396A49B2A2723F7403BD972F75D9D76
-	if ! sudo pacman-key --list-keys "$KEY" >/dev/null 2>&1; then
-		if ! sudo pacman-key -r "$KEY" >/dev/null 2>&1; then
-			tmp=$(mktemp)
-			curl -fsSL https://archzfs.com/archzfs.gpg -o "$tmp" || die "Couldn't download the ArchZFS signing key"
-			sudo pacman-key -a "$tmp" >/dev/null
-			rm -f "$tmp"
-		fi
-		# Only trust the key if it's exactly the published one.
-		sudo pacman-key --list-keys "$KEY" >/dev/null 2>&1 || die "The ArchZFS signing key didn't match $KEY; not adding the repository"
-		sudo pacman-key --lsign-key "$KEY" >/dev/null
+	command -v yay >/dev/null 2>&1 || die "ZFS is built from the AUR and needs yay (Omarchy includes it). Install yay, then run this again with --zfs."
+
+	# Undo an earlier attempt that used the stale archzfs.com repository (it serves an old ZFS).
+	if grep -q '^\[archzfs\]' /etc/pacman.conf; then
+		say "Removing the outdated archzfs.com repository from pacman.conf"
+		sudo sed -i '/^\[archzfs\]$/,/^Server = .*archzfs.*$/d' /etc/pacman.conf
 	fi
-	if ! grep -q '^\[archzfs\]' /etc/pacman.conf; then
-		printf '\n[archzfs]\nServer = https://archzfs.com/$repo/$arch\n' | sudo tee -a /etc/pacman.conf >/dev/null
-	fi
-	# Refresh package lists (now including archzfs) the way this system expects. Omarchy refuses a
-	# direct `pacman -Syu` and wants `omarchy update`, which also takes a snapshot first.
+
+	# Bring the system up to date the way it expects: Omarchy refuses a direct `pacman -Syu`.
 	if command -v omarchy >/dev/null 2>&1; then
 		say "Updating the system with 'omarchy update' first (Omarchy's own way)"
 		omarchy update || die "'omarchy update' didn't finish. Run it yourself, then run this installer again with --zfs."
 	else
 		sudo pacman -Syu --noconfirm || die "Updating the system failed (see above)"
 	fi
-	# The update may have installed a newer kernel: build ZFS for the one that's installed.
-	kernel=$(pacman -Qqo "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null || echo linux)
-	sudo pacman -S --needed --noconfirm "${kernel}-headers" zfs-dkms zfs-utils || die "Installing ZFS failed (see above)"
-	if ! sudo modprobe zfs 2>/dev/null; then
-		if [ ! -d "/usr/lib/modules/$(uname -r)" ]; then
-			say "Your kernel was updated while installing ZFS. Restart, then run this installer again with --zfs."
-		else
-			die "ZFS installed, but its kernel module didn't load. This usually means your kernel is newer than ZFS supports yet. Run 'sudo dkms status' for details."
+
+	# Headers must be the same version as the kernel, or DKMS builds for a kernel you don't have.
+	kernel=$(pacman -Qqo "/usr/lib/modules/$(uname -r)/vmlinuz" 2>/dev/null || true)
+	[ -n "$kernel" ] || die "Your kernel was updated. Restart the computer, then run this installer again with --zfs."
+	kver=$(pacman -Q "$kernel" | awk '{print $2}')
+	sudo pacman -S --needed --noconfirm "${kernel}-headers" || die "Couldn't install ${kernel}-headers"
+	hver=$(pacman -Q "${kernel}-headers" | awk '{print $2}')
+	if [ "$kver" != "$hver" ]; then
+		repo_kver=$(pacman -Si "$kernel" 2>/dev/null | awk -F': ' '/^Version/{print $2; exit}')
+		if [ "$repo_kver" = "$hver" ]; then
+			say "Your kernel ($kver) is older than its headers ($hver): installing kernel $hver to match"
+			sudo pacman -S --noconfirm "$kernel" || die "Couldn't update $kernel"
+			say "Kernel updated. Restart the computer, then run this installer again with --zfs."
+			exit 0
 		fi
+		die "Kernel $kernel is $kver but its headers are $hver, and no matching pair is available yet. Try again after the next 'omarchy update'."
+	fi
+
+	say "Building ZFS from the AUR (zfs-utils, zfs-dkms). This takes several minutes."
+	yay -S --needed --noconfirm --answerclean None --answerdiff None --pgpfetch zfs-utils zfs-dkms || die "Building ZFS failed (see above)"
+	if ! sudo modprobe zfs 2>/dev/null; then
+		dkms status zfs 2>/dev/null || true
+		die "ZFS was built, but its module didn't load for kernel $(uname -r). Your kernel may be newer than OpenZFS supports yet; the lines above show what DKMS built."
 	fi
 	sudo systemctl enable zfs-import-cache.service zfs-mount.service zfs-import.target zfs.target >/dev/null 2>&1 || true
+	say "ZFS $(zfs version 2>/dev/null | head -1) is ready"
 fi
 
 # 2b. Apps run in rootless Podman as you: give your user its container ID range and a socket.

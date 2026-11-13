@@ -105,8 +105,9 @@ from Files over SMB.
 curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs
 ```
 
-This adds the unofficial [ArchZFS](https://github.com/archzfs/archzfs) repository (its signing key is
-checked against the published fingerprint) and builds ZFS for your kernel with DKMS. Then Storage
+This builds the current OpenZFS release from the AUR (`zfs-utils`, `zfs-dkms`, with yay) for your
+exact kernel, after updating the system with `omarchy update` and making sure the kernel headers
+match the kernel. Then Storage
 offers ZFS pools (Combined, Mirrored, RAID-Z1, RAID-Z2, created on blank drives only) and imports
 existing ZFS pools unchanged: a pool from another computer asks before importing, and a pool whose
 datasets would mount over a system folder is refused. **Kernel updates rebuild ZFS**, and on a
