@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.8',
+		date: '2026-11-13',
+		title: 'Only the TouchWorkStation store',
+		added: ['The TouchWorkStation store now has 150 apps, each packaged from its project’s own official image, with descriptions written for it.'],
+		fixed: [
+			'The Umbrel store is removed from your server. Apps you already installed from it keep running; to move one to the TouchWorkStation version, uninstall it and install it again from the store.',
+		],
+	},
+	{
 		version: '0.8.7',
 		date: '2026-11-13',
 		title: 'The TouchWorkStation app catalog',

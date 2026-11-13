@@ -38,7 +38,7 @@ const SESSION_DAYS = 30
 // TouchWorkStation's own catalog: plain Docker Compose files from each project's official image, with
 // original descriptions. Other stores (including Umbrel-format ones) can still be added by hand.
 export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-store'}]
-const GALLERIES = {'https://github.com/getumbrel/umbrel-apps': 'https://getumbrel.github.io/umbrel-apps-gallery'}
+const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
 const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID'])
@@ -213,6 +213,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (!state.defaultsAdded) {
 			for (const d of defaultStores) if (!state.stores.some((x) => x.url.toLowerCase() === d.url.toLowerCase())) state.stores.push({url: d.url, ...(d.name ? {name: d.name} : {}), syncedAt: 0})
 			state.defaultsAdded = true
+			await save()
+		}
+		// Omarchy Server uses only the TouchWorkStation store: remove the Umbrel store servers were given
+		// before (once). Apps already installed from it keep running; they just get no updates from it.
+		if (!state.umbrelStoreRemoved) {
+			const old = state.stores.filter((x) => /github\.com\/getumbrel\/umbrel-apps(\.git)?$/i.test(x.url))
+			for (const x of old) await rm(storeDir(x.url), {recursive: true, force: true}).catch(() => {})
+			state.stores = state.stores.filter((x) => !old.includes(x))
+			for (const d of defaultStores) if (!state.stores.some((x) => x.url.toLowerCase() === d.url.toLowerCase())) state.stores.unshift({url: d.url, syncedAt: 0})
+			state.umbrelStoreRemoved = true
 			await save()
 		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
