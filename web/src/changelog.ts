@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.11',
+		date: '2026-11-13',
+		title: 'Updates that fit in less memory',
+		fixed: [
+			'Updating no longer reinstalls every package each time, only when they change, so it needs far less memory and finishes sooner.',
+			'On a computer with little free memory, the installer borrows temporary swap for the build and removes it afterwards.',
+		],
+	},
+	{
 		version: '0.8.10',
 		date: '2026-11-13',
 		title: 'About 580 apps',

@@ -59,10 +59,43 @@ fi
 say "Building (a minute or two the first time)"
 cd "$APP"
 LOG="$BASE/install.log"
-if ! { npm ci --no-audit --no-fund --loglevel=error && npm run build; } >"$LOG" 2>&1; then
+# Small machines (and ones running many apps) can run out of memory installing packages. With
+# under 1.5 GB free, borrow 2 GB of disk as temporary swap for the build; it's removed afterwards.
+BUILD_SWAP=""
+remove_build_swap() {
+	if [ -n "$BUILD_SWAP" ]; then
+		sudo swapoff "$BUILD_SWAP" 2>/dev/null || true
+		sudo rm -f "$BUILD_SWAP" || true
+		BUILD_SWAP=""
+	fi
+}
+trap remove_build_swap EXIT
+avail_mb=$(awk '/MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)
+if [ "${avail_mb:-0}" -lt 1536 ]; then
+	say "Only ${avail_mb} MB of memory free: adding temporary swap for the build (sudo needed)"
+	swap=/var/tmp/omarchy-server-build.swap
+	sudo rm -f "$swap"
+	if [ "$(stat -f -c %T /var/tmp)" = btrfs ]; then
+		made=$(sudo btrfs filesystem mkswapfile --size 2g "$swap" >/dev/null 2>&1 && echo yes || echo no)
+	else
+		made=$(sudo fallocate -l 2G "$swap" && sudo chmod 600 "$swap" && sudo mkswap "$swap" >/dev/null 2>&1 && echo yes || echo no)
+	fi
+	if [ "$made" = yes ] && sudo swapon "$swap"; then
+		BUILD_SWAP="$swap"
+	else
+		sudo rm -f "$swap" || true
+		say "Couldn't add swap; trying the build anyway"
+	fi
+fi
+# Packages are reinstalled only when they changed (most updates change none).
+if ! { node scripts/deps.mjs && NODE_OPTIONS=--max-old-space-size=1024 npm run build; } >"$LOG" 2>&1; then
 	tail -n 30 "$LOG" >&2
+	if grep -q "ran out of memory\|Killed\|heap out of memory" "$LOG"; then
+		die "The build ran out of memory. Stop a few apps (or give this computer more memory), then run the installer again. Full log: $LOG"
+	fi
 	die "The build failed. Full log: $LOG"
 fi
+remove_build_swap
 
 # 2a. ZFS (only with --zfs). Built from the AUR (zfs-utils + zfs-dkms, the current OpenZFS release)
 #     for your exact kernel with DKMS. Every kernel update rebuilds it; on a kernel newer than

@@ -70,7 +70,7 @@ test('update: download, build, restart from a separate unit; after the restart i
 	await until(() => calls.some((c) => c.startsWith('systemd-run')))
 	assert.deepEqual(
 		calls.filter((c) => !c.startsWith('pacman')).map((c) => c.split(' ').slice(0, 4).join(' ')),
-		['git -C /app rev-parse', 'git -C /app rev-parse', 'git -C /app fetch', 'git -C /app reset', 'npm ci --no-audit --no-fund', 'npm run build', 'systemd-run --user --collect --on-active=2s'],
+		['git -C /app rev-parse', 'git -C /app rev-parse', 'git -C /app fetch', 'git -C /app reset', `${process.execPath} scripts/deps.mjs`, 'npm run build', 'systemd-run --user --collect --on-active=2s'],
 	)
 	assert.match(calls.at(-1), /systemctl --user restart omarchyd\.service omarchy-server-web\.service$/)
 	assert.equal((await u.procedures['system.updateStatus'].run()).progress, 95)
