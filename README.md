@@ -86,12 +86,12 @@ when `/dev/kvm` is available (otherwise machines still run, slowly).
 
 ## Apps
 
-A new server starts with two stores, downloaded from GitHub by your server (nothing from them is
-copied into Omarchy Server): the TouchWorkStation store and a large public store of about 400 apps
-(shown as "Popular apps"). Add or remove stores under App Store → Stores.
-Apps that rely on things Omarchy Server doesn't provide yet (apps that depend on other apps, fixed
-internal network addresses, or settings it doesn't supply) are listed with the reason and can't be
-installed. An app's own `exports.sh` (extra settings such as ports or derived passwords) runs in a
+A new server starts with the [TouchWorkStation store](https://github.com/TouchWorkStation/app-store):
+each app is a plain Docker Compose file built from the project's own official image and docs, with an
+original description, and an `omarchy-app.yml` that names its web service and port. Your Videos, Music,
+Pictures, Documents and Downloads folders are available to apps as `${VIDEOS_DIR}` and so on.
+Other stores, including Umbrel-format ones, can be added under App Store → Stores; an installed app
+always stays with the store it came from. Apps that need other apps are installed together with them. An app's own `exports.sh` (extra settings such as ports or derived passwords) runs in a
 bubblewrap sandbox with no network, a read-only system and only its own app folder. Store apps
 mostly run as user 1000, so each app's folder is handed to that user inside
 its container, and it gets access to Downloads through an ACL.

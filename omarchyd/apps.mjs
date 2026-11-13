@@ -35,18 +35,20 @@ const SESSION_DAYS = 30
 // Some stores keep icons and screenshots in a separate gallery site, by app id.
 // Stores every new Omarchy Server starts with (you can remove them under App Store → Stores). They're
 // downloaded from GitHub by your server; nothing from them is copied into Omarchy Server itself.
-export const DEFAULT_STORES = [
-	{url: 'https://github.com/TouchWorkStation/app-store'},
-	{url: 'https://github.com/getumbrel/umbrel-apps', name: 'Popular apps'},
-]
+// TouchWorkStation's own catalog: plain Docker Compose files from each project's official image, with
+// original descriptions. Other stores (including Umbrel-format ones) can still be added by hand.
+export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-store'}]
 const GALLERIES = {'https://github.com/getumbrel/umbrel-apps': 'https://getumbrel.github.io/umbrel-apps-gallery'}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
 export const SHARED_NETWORK = 'omarchy_main_network'
+// Your folders an app may be given (read-write; an access entry lets the app's user in).
+const USER_DIRS = {DOWNLOADS_DIR: 'Downloads', VIDEOS_DIR: 'Videos', MUSIC_DIR: 'Music', PICTURES_DIR: 'Pictures', DOCUMENTS_DIR: 'Documents'}
+const serverIp = () => Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal && !/^(10\.88|10\.89|172\.1[6-9]|172\.2\d|172\.3[01])\./.test(i.address))?.address ?? '127.0.0.1'
 const SHARED_SUBNET = '10.21.0.0/16'
 const SHARED_GATEWAY = '10.21.0.1'
 // A shared Tor proxy for apps that route through Tor (started the first time one is installed),
@@ -58,6 +60,17 @@ const TOR_PASSWORD = 'moneyprintergobrrr' // the control password these store ap
 const APP_UID = 1000
 
 // Variables a compose file uses with no default, that we don't provide.
+// Compose-style ${NAME}, $NAME, ${NAME:-default}, ${NAME-default} and ${NAME:?message}.
+export function expandVars(text, env) {
+	return String(text).replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?)([-?+])([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g, (_, name, colon, op, arg, bare) => {
+		const v = env[name ?? bare]
+		const empty = v === undefined || (colon && v === '')
+		if (op === '-') return empty ? arg : v
+		if (op === '+') return empty ? '' : arg
+		return v ?? ''
+	})
+}
+
 export function missingVars(text, alsoProvided = []) {
 	const out = new Set()
 	for (const m of String(text).replace(/\$\$/g, '').matchAll(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g)) {
@@ -114,7 +127,7 @@ function orderNeeds(id, byId, seen = new Set(), out = []) {
 	return out
 }
 const varName = (v) => /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(String(v ?? '').trim())?.[1] ?? null
-export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}} = {}) {
+export function prepareCompose(appId, text, allocatePort, {shared = false, vars = {}, web = null} = {}) {
 	const doc = YAML.parse(text) ?? {}
 	const services = doc.services ?? {}
 	const proxy = services.app_proxy?.environment ?? {}
@@ -149,6 +162,20 @@ export function prepareCompose(appId, text, allocatePort, {shared = false, vars 
 			if (!key) throw new Error(`Can’t tell which service is the web interface (${host || 'none named'})`)
 			internalPort = allocatePort()
 			services[key].ports = [...(services[key].ports ?? []), `127.0.0.1:${internalPort}:${appPort}`]
+		}
+	}
+	// TouchWorkStation listings are plain Docker Compose files: the listing names its web service and
+	// port (web: {service, port}). Any host port the file publishes for it (so it also runs on its own
+	// with `docker compose up`) gives way to Omarchy Server's private one behind the sign-in.
+	if (!internalPort && web && services[web.service] && Number.isInteger(web.port)) {
+		const svc = services[web.service]
+		if (svc.network_mode === 'host') {
+			internalPort = null // holds its own port, like Home Assistant
+		} else {
+			const containerPort = (p) => Number(String(typeof p === 'object' ? p.target : p).split('/')[0].split(':').pop())
+			svc.ports = (svc.ports ?? []).filter((p) => containerPort(p) !== web.port)
+			internalPort = allocatePort()
+			svc.ports.push(`127.0.0.1:${internalPort}:${web.port}`)
 		}
 	}
 	doc.services = services
@@ -341,6 +368,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	// Open whichever gateway the app needs (after install, update and at start-up).
 	async function openGateways(app) {
+		// Extra ports the listing says must be reachable (sync, torrents, SSH…).
+		for (const p of app.openPorts ?? []) await firewall?.open(p)
 		if (!app.port) return
 		if (app.internalPort) {
 			delete app.viewPort
@@ -444,6 +473,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				defaultUsername: a.defaultUsername || undefined,
 				defaultPassword: a.defaultPassword || undefined,
 				deterministicPassword: a.deterministicPassword === true,
+				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1024 && n <= 65535).slice(0, 16)} : {}),
+				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port)}} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
 				folder: join(dir, entry.name),
@@ -485,10 +516,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		registryCache = {at: Date.now(), list}
 		return list
 	}
+	// An app's listing. An installed app stays with the store it came from (two stores can list the
+	// same id with different folders and settings, and an update must never switch between them).
 	const findInRegistry = async (id) => {
-		for (const s of await registry()) {
-			const a = s.apps.find((x) => x.id === id)
-			if (a) return a
+		const stores = await registry()
+		const withStore = (a, st) => (a ? {...a, store: st.url} : null)
+		const installed = state.apps.find((x) => x.id === id)
+		if (installed?.store) {
+			const st = stores.find((x) => x.url.toLowerCase() === installed.store.toLowerCase())
+			return withStore(st?.apps.find((x) => x.id === id), st ?? {}) ?? null
+		}
+		if (installed) {
+			// Installed before stores were recorded: those came from Umbrel-format listings, so prefer one.
+			for (const st of stores) {
+				const a = st.apps.find((x) => x.id === id && !x.web)
+				if (a) return withStore(a, st)
+			}
+		}
+		for (const st of stores) {
+			const a = st.apps.find((x) => x.id === id)
+			if (a) return withStore(a, st)
 		}
 		return null
 	}
@@ -531,6 +578,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			// Community-store compose files reach shared folders through this root; it maps
 			// <root>/data/storage/downloads to your Downloads folder.
 			UMBREL_ROOT: join(base, 'shared-root'),
+			// TouchWorkStation listings: your own folders and this server's address, by name.
+			...Object.fromEntries(Object.entries(USER_DIRS).map(([k, d]) => [k, join(home, d)])),
+			SERVER_IP: serverIp(),
+			PUID: String(APP_UID),
+			PGID: String(APP_UID),
 		}
 	}
 	async function sharedRoot() {
@@ -551,11 +603,20 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const shared = join(base, 'shared-root')
 		const doc = YAML.parse(text) ?? {}
 		app.dataDirs = []
+		app.userDirs = []
 		for (const s of Object.values(doc.services ?? {})) {
 			for (const v of s?.volumes ?? []) {
-				const src = typeof v === 'string' ? v.split(':')[0] : v?.source
-				if (!src || !/^[$/.]/.test(src)) continue
-				const path = resolve(appDir(app.id), src.replace(/\$\{?(\w+)\}?/g, (_, k) => env[k] ?? ''))
+				// Expand first: a source like ${APP_DATA_DIR:-.}/data has a colon of its own.
+				const src = typeof v === 'string' ? expandVars(v, env).split(':')[0] : v?.source && expandVars(v.source, env)
+				if (!src || !/^[/.]/.test(src)) continue
+				const path = resolve(appDir(app.id), src)
+				// One of your folders (Videos, Music…): make sure it exists and let the app's user in.
+				const mine = Object.values(USER_DIRS).map((d) => join(home, d)).find((d) => path === d || path.startsWith(`${d}/`))
+				if (mine) {
+					if (!(await exists(path))) await mkdir(path, {recursive: true})
+					app.userDirs = [...new Set([...(app.userDirs ?? []), mine])]
+					continue
+				}
 				// Only inside the app's own folder, or the shared folders (e.g. a Downloads subfolder).
 				if (!path.startsWith(appDir(app.id)) && !path.startsWith(shared)) continue
 				if (!(await exists(path))) await mkdir(path, {recursive: true})
@@ -573,8 +634,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (dirs.length) await run('podman', ['unshare', 'chown', '-R', `${APP_UID}:${APP_UID}`, ...dirs], {env: engineEnv})
 		const sub = await subordinateId()
 		if (sub !== null) {
-			const downloads = join(home, 'Downloads')
-			for (const flags of [['-R', '-m'], ['-R', '-d', '-m']]) await run('setfacl', [...flags, `u:${sub + APP_UID - 1}:rwX`, downloads]).catch(() => {})
+			for (const dir of new Set([join(home, 'Downloads'), ...(app.userDirs ?? [])]))
+				for (const flags of [['-R', '-m'], ['-R', '-d', '-m']]) await run('setfacl', [...flags, `u:${sub + APP_UID - 1}:rwX`, dir]).catch(() => {})
 		}
 	}
 	async function subordinateId() {
@@ -718,7 +779,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			let p = 20_000 + (parseInt(createHash('sha256').update(app.id).digest('hex').slice(0, 4), 16) % 9000)
 			while (used.has(p)) p++
 			return p
-		}, {shared: !!src.shared, vars: composeEnv(app)})
+		}, {shared: !!src.shared, vars: composeEnv(app), web: src.web ?? null})
 		app.shared = !!src.shared
 		if (app.shared) await ensureSharedNetwork()
 		if (/\$\{?TOR_PROXY_IP\b/.test(text)) await ensureTor()
@@ -772,7 +833,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing'}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing'}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}
@@ -863,6 +924,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			closeGateway(app.id)
 			if (app.port) await firewall?.close(app.port)
 			if (app.viewPort) await firewall?.close(app.viewPort)
+			for (const p of app.openPorts ?? []) await firewall?.close(p)
 			if (await exists(join(appDir(app.id), 'compose.omarchy.yml'))) await compose(app, 'down', '--volumes', '--remove-orphans').catch(() => {})
 			await removeAppDir(app.id)
 			state.apps = state.apps.filter((a) => a.id !== app.id)

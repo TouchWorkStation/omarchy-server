@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.7',
+		date: '2026-11-13',
+		title: 'The TouchWorkStation app catalog',
+		added: [
+			'44 apps in the TouchWorkStation store, each packaged from the project’s own official Docker image with a description written for it: Jellyfin, Plex, Immich, Nextcloud, Home Assistant, Paperless-ngx, Open WebUI, the Sonarr/Radarr family, Gitea and more.',
+			'Apps can use your Videos, Music, Pictures, Documents and Downloads folders, and open the extra ports they need (sync, torrents, SSH).',
+			'New servers start with the TouchWorkStation store only. Other stores can still be added under App Store → Stores, and an installed app always stays with the store it came from.',
+		],
+		fixed: ['Folder paths written as ${NAME:-default} in a compose file are now understood.'],
+	},
+	{
 		version: '0.8.6',
 		date: '2026-11-13',
 		title: 'Every Settings button works',

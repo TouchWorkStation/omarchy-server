@@ -2,7 +2,7 @@
 // simulated docker-compose, and the sign-in gateway in front of the app (HTTP and WebSocket).
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises'
+import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -337,6 +337,31 @@ describe('omarchyd apps', () => {
 			await call('apps.uninstall', {appId: 'varport'}).catch(() => {})
 			await call('appStore.removeRepository', {url: `file://${store}`})
 		}
+	})
+
+	test('TouchWorkStation listings: plain Docker Compose with a named web service, your folders, extra ports', async () => {
+		const store = join(root, 'tws-apps')
+		await mkdir(join(store, 'tube'), {recursive: true})
+		await writeFile(join(store, 'tube', 'omarchy-app.yml'), `manifestVersion: 1\nid: tube\nname: Tube\nport: ${appPort + 11}\nweb:\n  service: tube\n  port: 8096\nopenPorts: [6881]\n`)
+		await writeFile(join(store, 'tube', 'docker-compose.yml'), 'services:\n  tube:\n    image: x\n    volumes:\n      - ${APP_DATA_DIR:-.}/data/config:/config\n      - ${VIDEOS_DIR:-./videos}:/media\n    ports:\n      - "8096:8096"\n      - "6881:6881"\n')
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const listing = (await q('appStore.registry')).find((r) => r.url.endsWith('tws-apps')).apps[0]
+		assert.equal(listing.unsupported, undefined)
+		assert.deepEqual(listing.web, {service: 'tube', port: 8096})
+		await call('apps.install', {appId: 'tube'})
+		await until(async () => (await q('apps.list')).find((a) => a.id === 'tube' && a.state === 'running'))
+		const out = YAML.parse(await readFile(join(data, 'apps', 'installed', 'tube', 'compose.omarchy.yml'), 'utf8'))
+		const ports = out.services.tube.ports
+		assert.ok(!ports.includes('8096:8096'), 'its own published web port gives way to the private one')
+		assert.ok(ports.includes('6881:6881'))
+		assert.match(ports.at(-1), /^127\.0\.0\.1:\d+:8096$/)
+		assert.ok(await stat(join(root, 'home', 'Videos')).then((x) => x.isDirectory()), 'your Videos folder is there for it')
+		assert.ok(await stat(join(data, 'apps', 'installed', 'tube', 'data', 'config')).then((x) => x.isDirectory()), '${APP_DATA_DIR:-.} paths are understood')
+		await call('apps.uninstall', {appId: 'tube'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 
 	test('logs, stop, uninstall', async () => {
