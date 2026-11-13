@@ -19,7 +19,7 @@ import WebSocket, {WebSocketServer} from 'ws'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.8.2'
+export const VERSION = '0.8.3'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -27,6 +27,7 @@ const REFRESH_MARGIN_MS = 2 * 60 * 1000
 // Every omarchyd procedure the UI may reach, with its tRPC kind. Anything else
 // (factory reset, password changes, repositories, network config…) is refused.
 export const ALLOWED = {
+	'system.desktopShare': 'mutation',
 	'apps.probe': 'query',
 	'omarchy.themes': 'query',
 	'omarchy.setTheme': 'mutation',
@@ -156,7 +157,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -1247,6 +1248,9 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	api.get('/console/check', async (req, res) => {
 		try {
 			await consoleTicket(req.sid, req.query.target === 'terminal' ? 'terminal' : 'machines') // single-use, 30s; discarded
+			// The server's own desktop: make sure its screen sharing is running (starts it if not),
+			// or say plainly why it can't be.
+			if (req.query.machineId === 'desktop') await authedCall(req, 'system.desktopShare', 'mutation')
 			res.json({ok: true})
 		} catch (error) {
 			sendError(res, error)

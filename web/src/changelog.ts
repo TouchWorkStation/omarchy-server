@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.3',
+		date: '2026-11-12',
+		title: 'Apps open straight away',
+		added: [
+			'Open goes straight to the app’s page in its window. No more checks first.',
+			'The Omarchy Server icon now sits in Omarchy’s own top bar (current Omarchy has no Waybar). It’s added once by itself; omarchy-server widget off removes it.',
+			'The bell lights up when an update is waiting. Omarchy Server checks GitHub on its own every few hours; tap the note to update.',
+		],
+		fixed: [
+			'Apps loaded but stayed hidden behind the spinner. That was a bug in the loading cover, and it’s fixed.',
+			'The Omarchy desktop in Machines starts its screen sharing when it isn’t running, or says exactly why it can’t.',
+		],
+	},
+	{
 		version: '0.8.2',
 		date: '2026-11-12',
 		title: 'Omarchy themes',

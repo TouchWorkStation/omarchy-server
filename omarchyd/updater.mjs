@@ -53,7 +53,7 @@ export function releaseNotes(changelogSource, since) {
 	return out.join('\n\n')
 }
 
-export function createUpdater({appDir, dataDir, currentVersion, run = execP, fetchImpl = fetch, raw = REPO_RAW, branch = 'main', helperPath = HELPER, restartDelay = '2s'}) {
+export function createUpdater({autoCheck = true, appDir, dataDir, currentVersion, run = execP, fetchImpl = fetch, raw = REPO_RAW, branch = 'main', helperPath = HELPER, restartDelay = '2s'}) {
 	const statusFile = join(dataDir, 'update.json')
 	let status = {running: false, progress: 0, description: '', error: false}
 	let cache = null
@@ -165,8 +165,23 @@ export function createUpdater({appDir, dataDir, currentVersion, run = execP, fet
 		return true
 	}
 
+	// Check GitHub in the background (a minute after start, then every 6 hours), so the bell can
+	// say an update is waiting without anyone opening Settings.
+	let known = null // the newest version seen by a check, when it's newer than this one
+	const background = async () => {
+		try {
+			const v = await check({force: true})
+			known = v.available ? v.version : null
+		} catch {}
+	}
+	const timers = autoCheck ? [setTimeout(background, 60_000), setInterval(background, 6 * 60 * 60_000)] : []
+	for (const t of timers) t.unref?.()
+
 	return {
 		ready,
+		// The version waiting to be installed, if a check found one.
+		updateWaiting: () => (cache?.value?.available ? cache.value.version : known),
+		stop: () => timers.forEach((t) => (clearTimeout(t), clearInterval(t))),
 		procedures: {
 			'system.checkUpdate': {kind: 'query', run: () => check()},
 			'system.update': {kind: 'mutation', run: update},

@@ -6185,3 +6185,19 @@ html.page-locked body {
 .omt-pick:disabled {
 	opacity: 1;
 }
+
+/* The bell lights up while something is waiting (e.g. an update). */
+.round-btn.bell.lit {
+	color: var(--accent-text);
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent), 0 0 18px -2px var(--accent);
+	animation: bell-glow 2.4s ease-in-out infinite;
+}
+@keyframes bell-glow {
+	50% {
+		box-shadow: 0 0 0 1px var(--accent), 0 0 6px -2px var(--accent);
+	}
+}
+.top-clock .note-dot {
+	box-shadow: 0 0 8px var(--accent);
+}

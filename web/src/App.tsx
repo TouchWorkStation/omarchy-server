@@ -148,7 +148,7 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 						<Icon name="settings" size={20} />
 					</button>
 					<button
-						className="round-btn"
+						className={`round-btn bell${notes.length ? ' lit' : ''}`}
 						aria-label={notes.length ? `${notes.length} notifications` : 'Notifications'}
 						onClick={() => {
 							haptic(6)
@@ -188,7 +188,18 @@ function Shell({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; prefs: Pr
 			<AppSheet app={app} update={update} onClose={() => setAppId(null)} onOpenApp={(a) => setViewing(a.id)} onTerminal={openTerminal} />
 			{viewed && <AppViewer app={viewed} onClose={() => setViewing(null)} />}
 			{terminal && <TerminalScreen app={terminal.app} onClose={() => setTerminal(null)} />}
-			<NotificationsSheet open={bellOpen} notes={notes} onClose={() => setBellOpen(false)} />
+			<NotificationsSheet
+				open={bellOpen}
+				notes={notes}
+				onClose={() => setBellOpen(false)}
+				onOpen={(n) => {
+					setBellOpen(false)
+					if (n === 'update-available') {
+						sessionStorage.removeItem('omarchy-server:settings-page')
+						go('settings')
+					}
+				}}
+			/>
 		</>
 	)
 }
@@ -199,7 +210,7 @@ const NOTIFICATION_TEXT: Record<string, string> = {
 }
 const noteText = (n: string) => NOTIFICATION_TEXT[n] ?? n.replace(/[-_]/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
 
-function NotificationsSheet({open, notes, onClose}: {open: boolean; notes: string[]; onClose: () => void}) {
+function NotificationsSheet({open, notes, onClose, onOpen}: {open: boolean; notes: string[]; onClose: () => void; onOpen?: (n: string) => void}) {
 	const action = useAction()
 	return (
 		<Sheet open={open} onClose={onClose} label="Notifications">
@@ -218,9 +229,10 @@ function NotificationsSheet({open, notes, onClose}: {open: boolean; notes: strin
 							<span className="row-ico" style={{'--c': 'var(--yellow)', color: '#1a1300'} as React.CSSProperties}>
 								<Icon name="bell" size={18} />
 							</span>
-							<span className="main">
+							<button className="main" style={{background: 'none', border: 0, color: 'inherit', textAlign: 'left', font: 'inherit', padding: 0, cursor: 'pointer'}} onClick={() => onOpen?.(n)}>
 								<b style={{fontWeight: 550, whiteSpace: 'normal'}}>{noteText(n)}</b>
-							</span>
+								{n === 'update-available' && <span>Tap to see what’s new and update</span>}
+							</button>
 							<button className="icon-btn" style={{alignSelf: 'center'}} aria-label="Dismiss" onClick={() => action.mutate({path: 'notifications.clear', input: n})}>
 								<Icon name="close" size={16} stroke={2.2} />
 							</button>

@@ -38,15 +38,18 @@ test('check: up to date, then an update with notes and a note to run the install
 		if (cmd === 'pacman' && args[1] === 'newthing') throw new Error('not found')
 		return ''
 	}
-	const same = createUpdater({appDir: dir, dataDir: dir, currentVersion: '9.9.9', run, fetchImpl: remote('9.9.9'), helperPath})
+	const same = createUpdater({autoCheck: false, appDir: dir, dataDir: dir, currentVersion: '9.9.9', run, fetchImpl: remote('9.9.9'), helperPath})
 	assert.equal((await same.procedures['system.checkUpdate'].run()).available, false)
-	const old = createUpdater({appDir: dir, dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath})
+	assert.equal(same.updateWaiting(), null, 'nothing for the bell')
+	const old = createUpdater({autoCheck: false, appDir: dir, dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath})
 	const c = await old.procedures['system.checkUpdate'].run()
 	assert.equal(c.available, true)
 	assert.equal(c.name, 'Omarchy Server 0.6.1')
 	assert.match(c.releaseNotes, /run the installer.*the storage helper changed; it needs new packages \(newthing\)/)
 	assert.match(c.releaseNotes, /0\.6\.1 · Fixes/)
-	const offline = createUpdater({appDir: dir, dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: async () => new Response('', {status: 503}), helperPath})
+	assert.equal(old.updateWaiting(), '0.6.1', 'the bell lights up for it')
+	for (const u of [same, old]) u.stop()
+	const offline = createUpdater({autoCheck: false, appDir: dir, dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: async () => new Response('', {status: 503}), helperPath})
 	await assert.rejects(offline.procedures['system.checkUpdate'].run(), /Couldn’t check for updates/)
 })
 
@@ -62,7 +65,7 @@ const until = async (fn) => {
 test('update: download, build, restart from a separate unit; after the restart it reports done', async () => {
 	const calls = []
 	const run = async (cmd, args) => (calls.push([cmd, ...args].join(' ')), cmd === 'git' && args[2] === 'rev-parse' ? 'abc123\n' : '')
-	const u = createUpdater({appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
 	await u.procedures['system.update'].run()
 	await until(() => calls.some((c) => c.startsWith('systemd-run')))
 	assert.deepEqual(
@@ -72,7 +75,7 @@ test('update: download, build, restart from a separate unit; after the restart i
 	assert.match(calls.at(-1), /systemctl --user restart omarchyd\.service omarchy-server-web\.service$/)
 	assert.equal((await u.procedures['system.updateStatus'].run()).progress, 95)
 	// The restarted omarchyd is the new version.
-	const after = createUpdater({appDir: '/app', dataDir: dir, currentVersion: '0.6.1', run, fetchImpl: remote('0.6.1')})
+	const after = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.6.1', run, fetchImpl: remote('0.6.1')})
 	assert.deepEqual(await after.procedures['system.updateStatus'].run(), {running: false, progress: 100, description: 'Updated to 0.6.1', error: false})
 })
 
@@ -84,7 +87,7 @@ test('update: a failed build puts the previous version back', async () => {
 		if (cmd === 'npm' && args[1] === 'build' && !calls.some((c) => c.includes('reset --hard old111'))) throw new Error('vite: syntax error')
 		return ''
 	}
-	const u = createUpdater({appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
+	const u = createUpdater({autoCheck: false, appDir: '/app', dataDir: dir, currentVersion: '0.5.0', run, fetchImpl: remote('0.6.1'), helperPath: '/nonexistent'})
 	await u.procedures['system.update'].run()
 	const st = await until(async () => {
 		const s = await u.procedures['system.updateStatus'].run()

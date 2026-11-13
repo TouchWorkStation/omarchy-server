@@ -166,7 +166,7 @@ Icon=view-refresh
 Terminal=false
 Categories=System;
 EOF
-if [ ! -e "$BASE/.widget-offered" ] && [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/waybar/config.jsonc" ]; then
+if [ ! -e "$BASE/.widget-offered" ]; then
 	"$HOME/.local/bin/omarchy-server" widget on || true
 	touch "$BASE/.widget-offered"
 fi

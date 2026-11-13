@@ -1,6 +1,6 @@
 // omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
-import {readFile, realpath} from 'node:fs/promises'
+import {readFile, readdir, realpath, writeFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
 import {fileURLToPath} from 'node:url'
@@ -20,7 +20,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.8.2'
+export const OMARCHYD_VERSION = '0.8.3'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
 	const accounts = await openAccounts(dataDir)
@@ -99,7 +99,24 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		'system.device': {kind: 'query', run: async () => ({device: await system.deviceName(), os: release.pretty})},
 
 		// ---- not built yet: answer empty so the web app shows empty states, not errors ----------
-		'notifications.get': {kind: 'query', run: () => []},
+		// The bell: an update waiting (until it's installed or you dismiss that version).
+		'system.desktopShare': {kind: 'mutation', run: () => desktopShare()},
+		'notifications.get': {
+			kind: 'query',
+			run: async () => {
+				const v = updater.updateWaiting()
+				const dismissed = await readFile(join(dataDir, 'dismissed-update'), 'utf8').catch(() => '')
+				return v && dismissed.trim() !== v ? ['update-available'] : []
+			},
+		},
+		'notifications.clear': {
+			kind: 'mutation',
+			run: async (input) => {
+				const v = updater.updateWaiting()
+				if (input === 'update-available' && v) await writeFile(join(dataDir, 'dismissed-update'), v, {mode: 0o600})
+				return true
+			},
+		},
 		'wifi.connected': {kind: 'query', run: () => ({status: 'disconnected'})},
 		'wifi.networks': {kind: 'query', run: () => []},
 
@@ -112,6 +129,48 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	}
 
 	const omarchyTheme = createOmarchyTheme({home})
+
+	// The Omarchy desktop's screen, shared by wayvnc on 127.0.0.1 only. Start it when it isn't
+	// running (the session may have started before it was installed), or explain why it can't run.
+	const reachable = (port, ms = 800) =>
+		new Promise((resolve) => {
+			const c = net.connect({host: '127.0.0.1', port})
+			const done = (ok) => (c.destroy(), resolve(ok))
+			c.setTimeout(ms, () => done(false))
+			c.once('connect', () => done(true))
+			c.once('error', () => done(false))
+		})
+	const sh = async (cmd, args, timeout = 10_000) => {
+		const {execFile} = await import('node:child_process')
+		return new Promise((resolve) => execFile(cmd, args, {timeout}, (err, out, errOut) => resolve({ok: !err, out: String(out ?? ''), err: String(errOut ?? err?.message ?? '')})))
+	}
+	const waitFor = async (port, seconds) => {
+		for (let i = 0; i < seconds * 4; i++) {
+			if (await reachable(port, 400)) return true
+			await new Promise((r) => setTimeout(r, 250))
+		}
+		return false
+	}
+	async function desktopShare() {
+		if (machineOptions.run) return true // the dev/test stand-in has no desktop
+		if (await reachable(desktopVncPort)) return true
+		if (!(await readFile('/usr/bin/wayvnc').then(() => true, () => false)))
+			throw new RpcError('PRECONDITION_FAILED', 'Screen sharing (wayvnc) isn’t installed. Run the Omarchy Server installer again to add it.')
+		await sh('systemctl', ['--user', 'reset-failed', 'omarchy-server-desktop.service'])
+		await sh('systemctl', ['--user', 'start', 'omarchy-server-desktop.service'])
+		if (await waitFor(desktopVncPort, 5)) return true
+		// The service may lack the desktop's Wayland details (a session started without passing
+		// them to systemd): run wayvnc once with them, found from the running Hyprland.
+		const runtime = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`
+		const socket = (await readdir(runtime).catch(() => [])).find((f) => /^wayland-\d+$/.test(f))
+		const hypr = (await readdir(join(runtime, 'hypr')).catch(() => []))[0]
+		if (!socket) throw new RpcError('PRECONDITION_FAILED', 'No one is signed in to the Omarchy desktop on the server, so there’s no screen to show. Sign in on the server itself, then try again.')
+		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '127.0.0.1', String(desktopVncPort)])
+		if (await waitFor(desktopVncPort, 5)) return true
+		const log = await sh('journalctl', ['--user', '-u', 'omarchy-server-desktop.service', '-u', 'omarchy-server-desktop-now.service', '-n', '3', '--no-pager', '-o', 'cat'])
+		const last = log.out.trim().split('\n').filter(Boolean).pop()
+		throw new RpcError('BAD_GATEWAY', `The desktop’s screen sharing (wayvnc) didn’t start${last ? `: ${last}` : ''}. Check it with: omarchy-server logs`)
+	}
 	// The web app's wallpaper is the current Omarchy theme background.
 	async function wallpaper(res) {
 		const real = await omarchyTheme.currentBackground()
@@ -210,5 +269,16 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		server.once('error', reject)
 		server.listen(port, host, resolve)
 	})
-	return {url: `http://${host}:${server.address().port}`, accounts, close: () => (apps.close(), new Promise((r) => server.close(r)))}
+	// Once: put the Omarchy Server icon in the Omarchy top bar (servers installed before the
+	// icon supported Omarchy's own bar never got it). `omarchy-server widget off` removes it for good.
+	const widgetMark = join(dataDir, '.top-bar-widget-added')
+	const widgetBin = join(home, '.local', 'bin', 'omarchy-server')
+	setTimeout(async () => {
+		if (!appOptions.run && !(await readFile(widgetMark).then(() => true, () => false)) && (await readFile(widgetBin).then(() => true, () => false))) {
+			const {execFile} = await import('node:child_process')
+			execFile(widgetBin, ['widget', 'on'], {timeout: 30_000}, (err) => !err && writeFile(widgetMark, new Date().toISOString()).catch(() => {}))
+		}
+	}, 20_000).unref?.()
+
+	return {url: `http://${host}:${server.address().port}`, accounts, close: () => (apps.close(), updater.stop(), new Promise((r) => server.close(r)))}
 }

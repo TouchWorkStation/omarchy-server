@@ -40,11 +40,43 @@ case "${1:-status}" in
 		if running; then
 			printf '{"text":"󰒋","class":"running","tooltip":"Omarchy Server is running\\nhttp://%s:%s\\n\\nClick: open · Right-click: restart"}\n' "$(ip_addr)" "$PORT"
 		else
-			printf '{"text":"<span color=\\"#e06c75\\">󰒋</span>","class":"stopped","tooltip":"Omarchy Server is stopped\\n\\nRight-click: start it"}\n'
+			printf '{"text":"󰒋 off","class":"stopped","tooltip":"Omarchy Server is stopped\\n\\nRight-click: start it"}\n'
 		fi
 		;;
 	widget)
-		[ -f "$WAYBAR" ] || { echo "No Waybar config at $WAYBAR"; exit 1; }
+		# Current Omarchy draws its own top bar (omarchy-shell, configured in ~/.config/omarchy/shell.json);
+		# older Omarchy used Waybar. The icon goes into whichever this desktop has.
+		SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
+		OM_PATH="${OMARCHY_PATH:-}"; [ -z "$OM_PATH" ] && for d in /usr/share/omarchy "$HOME/.local/share/omarchy"; do [ -d "$d" ] && { OM_PATH=$d; break; }; done
+		if [ -f "$SHELL_JSON" ] || [ -f "$OM_PATH/config/omarchy/shell.json" ]; then
+			node - "${2:-on}" "$SHELL_JSON" "$OM_PATH/config/omarchy/shell.json" "$HOME/.local/bin/omarchy-server" <<'EOF' || { echo "Couldn't update the top bar; your bar settings are unchanged."; exit 1; }
+const fs = require('node:fs')
+const [mode, file, defaults, bin] = process.argv.slice(2)
+const read = (f) => JSON.parse(fs.readFileSync(f, 'utf8'))
+const cfg = fs.existsSync(file) ? read(file) : read(defaults) // once customised, shell.json is the whole config
+cfg.bar ??= {}
+cfg.bar.layout ??= {}
+const sections = Object.values(cfg.bar.layout).filter(Array.isArray)
+const has = sections.some((s) => s.some((e) => e?.id === 'omarchy-server'))
+if (mode === 'on') {
+  if (has) { console.log('The widget is already on.'); process.exit(0) }
+  cfg.bar.layout.right ??= []
+  cfg.bar.layout.right.unshift({id: 'omarchy-server', type: 'command', exec: `${bin} waybar`, interval: 10, tooltip: 'Omarchy Server', onClick: `${bin} open`})
+} else if (mode === 'off') {
+  if (!has) { console.log('The widget is not on.'); process.exit(0) }
+  for (const k of Object.keys(cfg.bar.layout)) if (Array.isArray(cfg.bar.layout[k])) cfg.bar.layout[k] = cfg.bar.layout[k].filter((e) => e?.id !== 'omarchy-server')
+} else { console.log('Use: omarchy-server widget on|off'); process.exit(2) }
+if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.omarchy-server.bak`)
+fs.mkdirSync(require('node:path').dirname(file), {recursive: true})
+const tmp = `${file}.tmp-${process.pid}`
+fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n')
+fs.renameSync(tmp, file)
+console.log(mode === 'on' ? 'Added the Omarchy Server icon to the top bar. Remove it with: omarchy-server widget off' : 'Removed the Omarchy Server icon.')
+EOF
+			command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell reloadConfig >/dev/null 2>&1
+			exit 0
+		fi
+		[ -f "$WAYBAR" ] || { echo "No Omarchy top bar settings found (shell.json or Waybar)."; exit 1; }
 		case "${2:-on}" in
 			on)
 				grep -q "$MARK" "$WAYBAR" && { echo "The widget is already on."; exit 0; }

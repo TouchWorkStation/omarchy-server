@@ -1713,19 +1713,23 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 		const t = window.setTimeout(() => setHandover('failed'), 12000)
 		return () => window.clearTimeout(t)
 	}, [access, handover])
-	// How this app opens: through Touch's relay (in a window, signed in by Touch) or directly.
-	const frame = useAppFrame(app ? [app.id] : [])
+	// On your own network (plain http) the window simply loads the app's address: the app's
+	// gateway signs this browser in by itself (a quick hand-over through Omarchy Server) and lets
+	// the app be shown here. The checks below are only for remote HTTPS access.
+	const direct = location.protocol === 'http:' && !!app && !!url && !app.requiresHttps
+	// How this app opens: through the relay (in a window, signed in by Omarchy Server) or directly.
+	const frame = useAppFrame(app && !direct ? [app.id] : [])
 	const relayed = !!app && !!frame.data?.relay[app.id]
 	const touchSignsIn = relayed && !!frame.data?.sso
 	const appId = app?.id
 	useEffect(() => {
-		if (!appId || frame.isLoading || touchSignsIn) return
+		if (!appId || direct || frame.isLoading || touchSignsIn) return
 		let alive = true
 		checkAccess(appId).then((s) => alive && setAccess(s))
 		return () => {
 			alive = false
 		}
-	}, [appId, frame.isLoading, touchSignsIn])
+	}, [appId, direct, frame.isLoading, touchSignsIn])
 	// While the sign-in tab is open: check again every couple of seconds and on returning here.
 	useEffect(() => {
 		if (!waiting || !appId) return
@@ -1770,6 +1774,23 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 				</button>
 			</div>
 		)
+	if (direct) {
+		const src = app.viewPort && app.port ? url.replace(`:${app.port}`, `:${app.viewPort}`) : url
+		return (
+			<>
+				{!loaded && <SlowLoad key={`slow-${reloadKey}`} app={app} url={url} onRetry={() => (setLoaded(false), setReloadKey((n) => n + 1))} />}
+				<iframe
+					key={`frame-${reloadKey}`}
+					className="app-frame"
+					src={src}
+					title={name}
+					onLoad={() => setLoaded(true)}
+					allow="clipboard-read; clipboard-write; fullscreen; camera; microphone; display-capture"
+					allowFullScreen
+				/>
+			</>
+		)
+	}
 	if (frame.isLoading || (!touchSignsIn && access === 'checking'))
 		return (
 			<div className="frame-loading">
@@ -1878,9 +1899,9 @@ export function AppFrame({app, url, onClose}: {app?: UserApp; url: string | null
 	const src = app.viewPort && app.port ? url.replace(`:${app.port}`, `:${app.viewPort}`) : url
 	return (
 		<>
-			{!loaded && <SlowLoad key={reloadKey} app={app} url={url} onRetry={() => (setLoaded(false), setReloadKey((n) => n + 1))} />}
+			{!loaded && <SlowLoad key={`slow-${reloadKey}`} app={app} url={url} onRetry={() => (setLoaded(false), setReloadKey((n) => n + 1))} />}
 			<iframe
-				key={reloadKey}
+				key={`frame-${reloadKey}`}
 				className="app-frame"
 				src={src}
 				title={name}

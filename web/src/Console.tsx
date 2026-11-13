@@ -129,7 +129,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			if (disposed || !canvasHost.current) return
 			setState((s) => (s === 'lost' ? s : 'connecting'))
 			// Ask first so a refusal comes back with a readable reason (sockets only give a code).
-			const check = await fetch('/api/console/check', {credentials: 'same-origin'}).catch(() => null)
+			const check = await fetch(`/api/console/check?machineId=${encodeURIComponent(machine.id)}`, {credentials: 'same-origin'}).catch(() => null)
 			if (disposed) return
 			if (!check?.ok) {
 				const body = await check?.json().catch(() => null)
