@@ -41,7 +41,7 @@ export const DEFAULT_STORES = [{url: 'https://github.com/TouchWorkStation/app-st
 const GALLERIES = {}
 // Variables omarchyd provides to every app (anything else a compose file needs without a default
 // means the app relies on something Omarchy Server doesn't offer yet).
-const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET'])
+const PROVIDED = new Set(['APP_DATA_DIR', 'APP_DATA_ROOT', 'APP_ID', 'APP_DOMAIN', 'APP_VERSION', 'APP_PROXY_PORT', 'APP_HIDDEN_SERVICE', 'GATEWAY_IP', 'DEVICE_HOSTNAME', 'DEVICE_DOMAIN_NAME', 'APP_PASSWORD', 'APP_SEED', 'APP_SEED_32', 'UMBREL_ROOT', 'DOCKER_HOST', 'TZ', 'NETWORK_IP', 'TOR_PROXY_IP', 'TOR_PROXY_PORT', 'TOR_DATA_DIR', 'TOR_PASSWORD', 'SERVER_IP', 'DOWNLOADS_DIR', 'VIDEOS_DIR', 'MUSIC_DIR', 'PICTURES_DIR', 'DOCUMENTS_DIR', 'PUID', 'PGID', 'DOCKER_SOCKET'])
 // Apps that talk to each other (an app and the apps it needs, or apps with fixed internal
 // addresses) share one container network, laid out the way their store expects (10.21.0.0/16).
 // Apps that don't stay on a private network of their own.
@@ -529,7 +529,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				defaultPassword: a.defaultPassword || undefined,
 				deterministicPassword: a.deterministicPassword === true,
 				permissions: appPermissions(compose).map((p) => p.id),
-				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1024 && n <= 65535).slice(0, 16)} : {}),
+				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port)}} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
@@ -631,6 +631,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			DEVICE_DOMAIN_NAME: `${host}.local`,
 			APP_PASSWORD: appPassword(app.id),
 			APP_SEED: deriveEntropy(`app-${app.id}-seed`),
+			// For apps that need a key of exactly 32 characters (Laravel's APP_KEY, for one).
+			APP_SEED_32: deriveEntropy(`app-${app.id}-seed`).slice(0, 32),
 			// Community-store compose files reach shared folders through this root; it maps
 			// <root>/data/storage/downloads to your Downloads folder.
 			UMBREL_ROOT: join(base, 'shared-root'),

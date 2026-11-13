@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.8.10',
+		date: '2026-11-13',
+		title: 'About 580 apps',
+		added: [
+			'The TouchWorkStation store now lists about 580 apps, built from the public self-hosting catalogs and the projects’ own compose files.',
+			'Apps that need a 32-character key (BookStack, Firefly III, Invoice Ninja and others) get one generated for your server.',
+		],
+		fixed: ['Apps that use ports below 1024, such as Pi-hole on port 53, now have those ports opened in the firewall.'],
+	},
+	{
 		version: '0.8.9',
 		date: '2026-11-13',
 		title: 'Apps that need extra access',
