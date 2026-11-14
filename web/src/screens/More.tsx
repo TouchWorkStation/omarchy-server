@@ -430,27 +430,53 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 function UnusedSpace({disk}: {disk: DiskUsage}) {
 	const d = disk.drive!
 	const toast = useToast()
-	const cmds: string[] = []
-	if (d.steps.includes('partition') && d.partitionNumber) cmds.push(`sudo growpart ${d.name} ${d.partitionNumber}`)
-	if (d.steps.includes('encryption') && d.encrypted) cmds.push(`sudo cryptsetup resize ${d.encrypted}`)
-	if (d.steps.includes('filesystem'))
-		cmds.push(d.filesystem === 'btrfs' ? 'sudo btrfs filesystem resize max /' : d.filesystem === 'xfs' ? 'sudo xfs_growfs /' : d.filesystem === 'ext4' && (d.encrypted || d.partition) ? `sudo resize2fs ${d.encrypted ? `/dev/mapper/${d.encrypted}` : d.partition}` : 'Grow the filesystem to fill its partition')
-	const text = cmds.join('\n')
+	const qc = useQueryClient()
+	const [asking, setAsking] = useState(false)
+	const [password, setPassword] = useState('')
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState('')
+	const owner = useUser().data?.role !== 'member'
+	const notLast = d.steps.includes('partition-not-last')
+	const grow = async () => {
+		setBusy(true)
+		setError('')
+		try {
+			await mutate('storage.growSystem', password ? {password} : {})
+			setAsking(false)
+			setPassword('')
+			toast(`Done: the system now uses all ${bytes(d.size, 0)}`)
+			qc.invalidateQueries({queryKey: ['system.diskUsage']})
+		} catch (e) {
+			const msg = (e as Error).message
+			if (/NEEDS_PASSWORD/.test(msg)) setAsking(true)
+			else setError(msg)
+		} finally {
+			setBusy(false)
+		}
+	}
 	return (
 		<div className="unused-space">
 			<b>{bytes(d.notInUse, 0)} of your {bytes(d.size, 0)} drive isn’t in use yet</b>
 			<span>
-				{d.steps.includes('partition-not-last')
+				{notLast
 					? 'The drive got bigger, but the system’s partition isn’t the last one on it, so it can’t simply be grown. Use a partition tool (like GParted) from a live USB.'
-					: 'The drive got bigger, but the system still uses its old size. Run these in a terminal once (growpart is in the cloud-guest-utils package; an encrypted drive asks for its password):'}
+					: 'The drive got bigger, but the system still has its old size. Omarchy Server can grow the partition' + (d.encrypted ? ', its encryption' : '') + ' and the filesystem into the new space while it runs. Only ever grows; nothing is erased.'}
 			</span>
-			{!d.steps.includes('partition-not-last') && cmds.length > 0 && (
-				<button
-					className="unused-cmds"
-					onClick={() => navigator.clipboard?.writeText(text).then(() => toast('Copied'), () => toast('Select the text to copy it', true))}
-					title="Copy"
-				>
-					<code>{text}</code>
+			{asking && (
+				<input
+					type="password"
+					className="unused-pw"
+					autoFocus
+					placeholder="Disk password (the one you type at startup)"
+					value={password}
+					onChange={(e) => setPassword(e.target.value)}
+					onKeyDown={(e) => e.key === 'Enter' && password && !busy && grow()}
+				/>
+			)}
+			{error && <span className="unused-err">{error}</span>}
+			{!notLast && owner && (
+				<button className="btn primary small" disabled={busy || (asking && !password)} onClick={grow}>
+					{busy ? 'Growing…' : asking ? 'Unlock and grow' : 'Use the extra space'}
 				</button>
 			)}
 		</div>

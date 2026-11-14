@@ -7301,3 +7301,17 @@ html.page-locked body {
 .pool-sub {
 	margin-top: 5px;
 }
+.unused-space .btn {
+	justify-self: start;
+}
+.unused-pw {
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid var(--line);
+	background: rgba(0, 0, 0, 0.3);
+	color: var(--fg);
+	font: inherit;
+}
+.unused-err {
+	color: var(--red) !important;
+}

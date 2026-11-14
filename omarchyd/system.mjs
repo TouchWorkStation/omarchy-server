@@ -68,6 +68,7 @@ async function measure(home, dataDir) {
 // The drive the home folder lives on, and how much of it no partition uses yet (after a disk was
 // made bigger, the partition and filesystem have to be grown before the space can be used).
 let driveCache = {at: 0, value: null}
+export const forgetDrive = () => (driveCache = {at: 0, value: null})
 const MB = 1024 * 1024
 async function driveOf(path, fsSize) {
 	if (Date.now() - driveCache.at < 60_000) return driveCache.value

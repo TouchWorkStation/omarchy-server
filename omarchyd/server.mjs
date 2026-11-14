@@ -21,7 +21,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.10'
+export const OMARCHYD_VERSION = '0.9.11'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const accounts = await openAccounts(dataDir)
@@ -202,6 +202,25 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 						if (i >= 5 || !/DESKTOP_SIGNED_OUT/.test(e.message) || !recentSignIn()) throw e
 						await new Promise((r) => setTimeout(r, 2000))
 					}
+				}
+			},
+		},
+		// The system drive got bigger: grow the partition, encryption and filesystem into the space
+		// (helper verb grow-system). The disk password, if any, only passes through to cryptsetup.
+		'storage.growSystem': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'change the system drive')
+				const pw = typeof input?.password === 'string' ? input.password : ''
+				if (pw.length > 512 || /[\r\n]/.test(pw)) throw new RpcError('BAD_REQUEST', 'Bad password')
+				try {
+					return JSON.parse(await storage.helper('grow-system', [], pw ? `${pw}\n` : ''))
+				} catch (e) {
+					if (/Unknown action/.test(e.message)) throw new RpcError('PRECONDITION_FAILED', 'Run the Omarchy Server installer again once to add this (its storage helper changed).')
+					// "NEEDS_PASSWORD: …" tells the web app to ask for the disk password.
+					throw new RpcError('PRECONDITION_FAILED', e.message)
+				} finally {
+					system.forgetDrive()
 				}
 			},
 		},

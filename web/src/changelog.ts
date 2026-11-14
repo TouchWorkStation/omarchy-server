@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.11',
+		date: '2026-11-14',
+		title: 'Use a bigger drive in one tap',
+		added: [
+			'Made the system drive bigger? System → Storage → “Use the extra space” grows the partition, its encryption (asks for the disk password) and the filesystem while the server runs. It only ever grows, only the last partition, and nothing is erased. Run the installer again once to add it.',
+		],
+		fixed: ['The suggested growpart command needed a package Omarchy doesn’t include; Omarchy Server now does the growing itself with tools every system has.'],
+	},
+	{
 		version: '0.9.10',
 		date: '2026-11-13',
 		title: 'Ready to share',

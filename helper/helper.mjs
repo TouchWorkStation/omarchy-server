@@ -27,6 +27,8 @@
 //   firewall-open PORT | firewall-close PORT   an app’s port (TCP and UDP); not 22, 2021 or 5900
 //   low-ports N                       let your containers use ports from N up (only ever lowered)
 //   harden-pools                      add nosuid,nodev to pools set up by earlier versions
+//   grow-system                       after the system drive was made bigger: grow its last partition,
+//                                     encryption (disk password on stdin) and filesystem into the space
 //
 // Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
 // Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
@@ -337,6 +339,60 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			return JSON.stringify({fstab: changed, zfs: zfsChanged})
 		},
 
+		// The drive the system (the owner's home) is on got bigger: grow into the space. Only ever grows,
+		// only the last partition, and only partition → (LUKS) → Btrfs/ext4/XFS; anything else (LVM,
+		// RAID, a partition in the middle) is refused with what to do instead. The disk password, when
+		// the drive is encrypted, comes on stdin and goes to cryptsetup the same way; it's never stored.
+		'grow-system': async (_args, stdin) => {
+			const passphrase = String(stdin ?? '').replace(/\n$/, '')
+			const [source, fstype, target] = (await run('findmnt', ['-n', '-o', 'SOURCE,FSTYPE,TARGET', '-T', user.home])).trim().split(/\s+/)
+			const dev = (source ?? '').replace(/\[.*\]$/, '')
+			if (!dev.startsWith('/dev/')) fail('The system drive couldn’t be found')
+			const chain = JSON.parse(await run('lsblk', ['-J', '-b', '-s', '-o', 'NAME,PATH,SIZE,TYPE', dev])).blockdevices?.[0]
+			const layers = []
+			for (let n = chain; n; n = n.children?.[0]) layers.push(n)
+			if (layers.some((n) => n.type === 'lvm' || /^raid/.test(n.type))) fail('The system is on LVM or RAID. Grow it with lvextend / mdadm instead.')
+			const part = layers.find((n) => n.type === 'part')
+			const crypt = layers.find((n) => n.type === 'crypt')
+			const disk = layers.find((n) => n.type === 'disk')
+			if (!part || !disk) fail('The system isn’t on a partition of a drive, so there’s nothing to grow')
+			if (layers.indexOf(part) !== layers.length - 2) fail('This layout isn’t supported for growing')
+			const tree = JSON.parse(await run('lsblk', ['-J', '-b', '-o', 'NAME,PATH,SIZE,TYPE,START', disk.path])).blockdevices?.[0]
+			const parts = (tree?.children ?? []).filter((c) => c.type === 'part')
+			const last = parts.reduce((a, c) => (Number(c.start ?? 0) > Number(a?.start ?? -1) ? c : a), null)
+			if (last?.path !== part.path) fail(`${part.path} isn’t the last partition on ${disk.path}, so it can’t grow into the new space. Use a partition tool (GParted) from a live USB.`)
+			const number = Number(/(\d+)$/.exec(part.name)?.[1])
+			if (!Number.isInteger(number)) fail('The partition number couldn’t be read')
+			const free = Number(disk.size) - parts.reduce((t, c) => t + Number(c.size || 0), 0)
+			const done = []
+			// 1. The partition: move a GPT's backup header to the new end, then extend the last
+			//    partition to the end of the drive and tell the kernel (works while it's mounted).
+			if (free > 16 * 1024 * 1024) {
+				const table = (await run('sfdisk', ['--dump', disk.path])).match(/^label:\s*(\w+)/m)?.[1]
+				if (table === 'gpt') await run('sfdisk', ['--relocate', 'gpt-bak-std', disk.path])
+				await run('sfdisk', ['--no-reread', '--force', '-N', String(number), disk.path], {input: ', +\n'})
+				await run('partx', ['-u', '-n', String(number), disk.path])
+				done.push('partition')
+			}
+			// 2. The encryption layer, if any.
+			if (crypt) {
+				try {
+					await run('cryptsetup', ['resize', crypt.name, ...(passphrase ? ['--key-file', '-'] : [])], passphrase ? {input: passphrase} : {})
+				} catch (e) {
+					if (/passphrase|key|No key available/i.test(e.message)) fail(passphrase ? 'That disk password didn’t unlock the drive' : 'NEEDS_PASSWORD: The drive is encrypted. Enter its disk password (the one you type when the computer starts).')
+					throw e
+				}
+				done.push('encryption')
+			}
+			// 3. The filesystem.
+			if (fstype === 'btrfs') await run('btrfs', ['filesystem', 'resize', 'max', target])
+			else if (fstype === 'ext4' || fstype === 'ext3') await run('resize2fs', [dev])
+			else if (fstype === 'xfs') await run('xfs_growfs', [target])
+			else fail(`Growing a ${fstype} filesystem isn’t supported`)
+			done.push('filesystem')
+			return JSON.stringify({grown: done, disk: disk.path, partition: part.path})
+		},
+
 		'pool-scrub': async ([name]) => {
 			await run('btrfs', ['scrub', 'start', await poolMount(name)])
 			return 'ok'
@@ -553,7 +609,7 @@ async function main() {
 		const passwd = (await readFile('/etc/passwd', 'utf8')).split('\n').map((l) => l.split(':')).find((f) => f[0] === name && Number(f[2]) === uid)
 		if (!passwd) fail('Unknown user')
 		let stdin = ''
-		if (verb === 'shares-apply' || verb === 'smb-password') for await (const c of process.stdin) stdin += c
+		if (verb === 'shares-apply' || verb === 'smb-password' || verb === 'grow-system') for await (const c of process.stdin) stdin += c
 		const helper = createHelper({user: {name, uid, gid, home: passwd[5]}})
 		process.stdout.write(`${await helper.handle(verb, args, stdin)}\n`)
 	} catch (error) {

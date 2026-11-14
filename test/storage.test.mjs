@@ -305,6 +305,48 @@ errors: No known data errors
 		assert.match(fs.files.get('/etc/fstab'), /none bind,nosuid,nodev,nofail/)
 	})
 
+	test('grow the system drive: last partition, then encryption (with the disk password), then the filesystem', async () => {
+		const G = 1024 ** 3
+		const layout = (lastPart = 'vda2', crypt = true) => ({
+			findmnt: () => `${crypt ? '/dev/mapper/root[/@home]' : '/dev/vda2[/@home]'} btrfs /home\n`,
+			lsblk: (a) =>
+				a.includes('-s')
+					? JSON.stringify({blockdevices: [crypt ? {name: 'root', path: '/dev/mapper/root', size: 98 * G, type: 'crypt', children: [{name: 'vda2', path: '/dev/vda2', size: 99 * G, type: 'part', children: [{name: 'vda', path: '/dev/vda', size: 200 * G, type: 'disk'}]}]} : {name: 'vda2', path: '/dev/vda2', size: 99 * G, type: 'part', children: [{name: 'vda', path: '/dev/vda', size: 200 * G, type: 'disk'}]}]})
+					: JSON.stringify({blockdevices: [{name: 'vda', path: '/dev/vda', size: 200 * G, type: 'disk', children: [{name: 'vda1', path: '/dev/vda1', size: G, type: 'part', start: 2048}, {name: 'vda2', path: '/dev/vda2', size: 99 * G, type: 'part', start: lastPart === 'vda2' ? 2099200 : 1000}]}]}),
+			sfdisk: (a) => (a[0] === '--dump' ? 'label: gpt\n' : ''),
+		})
+		let log = []
+		let cryptOk = (input) => input === 'disk pass'
+		const extra = {...layout(), cryptsetup: () => ''}
+		const runWith = (ext) => async (cmd, args, opts) => {
+			log.push([cmd, ...args, ...(opts?.input !== undefined ? [`<stdin:${opts.input}>`] : [])])
+			if (cmd === 'cryptsetup' && !cryptOk(opts?.input)) throw new Error('cryptsetup: No key available with this passphrase.')
+			return ext[cmd] ? ext[cmd](args) : ''
+		}
+		let h = createHelper({user, fs: fakeFs(), run: runWith(extra)})
+		await assert.rejects(h.handle('grow-system', [], ''), /NEEDS_PASSWORD/)
+		log = []
+		const r = JSON.parse(await h.handle('grow-system', [], 'disk pass\n'))
+		assert.deepEqual(r.grown, ['partition', 'encryption', 'filesystem'])
+		const cmds = log.map((l) => l.join(' '))
+		assert.ok(cmds.includes('sfdisk --relocate gpt-bak-std /dev/vda'), 'GPT backup header moved to the new end')
+		assert.ok(cmds.includes('sfdisk --no-reread --force -N 2 /dev/vda <stdin:, +\n>'), 'only partition 2, to the end')
+		assert.ok(cmds.includes('partx -u -n 2 /dev/vda'))
+		assert.ok(cmds.includes('cryptsetup resize root --key-file - <stdin:disk pass>'))
+		assert.ok(cmds.includes('btrfs filesystem resize max /home'))
+		assert.ok(cmds.indexOf('partx -u -n 2 /dev/vda') < cmds.indexOf('btrfs filesystem resize max /home'), 'in order')
+		// Not the last partition: refused, nothing touched.
+		log = []
+		h = createHelper({user, fs: fakeFs(), run: runWith({...layout('vda1'), cryptsetup: () => ''})})
+		await assert.rejects(h.handle('grow-system', [], 'disk pass'), /isn’t the last partition/)
+		assert.ok(!log.some((l) => l[0] === 'sfdisk' && l[1] !== '--dump'))
+		// Unencrypted: no password needed.
+		log = []
+		h = createHelper({user, fs: fakeFs(), run: runWith(layout('vda2', false))})
+		assert.deepEqual(JSON.parse(await h.handle('grow-system', [], '')).grown, ['partition', 'filesystem'])
+		assert.ok(!log.some((l) => l[0] === 'cryptsetup'))
+	})
+
 	test('low ports: only ever lowers the limit, and remembers it', async () => {
 		const log = []
 		let now = 1024
