@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 import {useQuery, useQueryClient} from '@tanstack/react-query'
 
-import {logout, mutate, query, type UsageItem, type Wallpaper} from '../api'
+import {diskPct, logout, mutate, query, type DiskUsage, type UsageItem, type Wallpaper} from '../api'
 import {useApps, useBootstrap, useCpu, useDisk, useMemory, useTemp, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
@@ -147,11 +147,11 @@ function Live() {
 						<Icon name="thermo" size={16} /> Temperature
 					</div>
 					<div className="v">
-						{temp.data ? Math.round(temp.data.temperature) : '–'}
-						<small>°C</small>
+						{temp.data?.temperature != null ? Math.round(temp.data.temperature) : '–'}
+						{temp.data?.temperature != null && <small>°C</small>}
 					</div>
-					<div className="sub" style={{paddingBottom: 4, textTransform: 'capitalize'}}>
-						{temp.data?.warning ?? ' '}
+					<div className="sub" style={{paddingBottom: 4, textTransform: temp.data?.temperature != null ? 'capitalize' : undefined}}>
+						{temp.data?.temperature != null ? temp.data.warning : temp.data?.reason === 'virtual' ? 'Not available in a virtual machine' : temp.data ? 'No sensor found' : ' '}
 					</div>
 				</section>
 				<section className="glass stat">
@@ -167,7 +167,7 @@ function Live() {
 			<section className="glass card" style={{marginTop: 12}} aria-label="Storage">
 				<div className="card-head">
 					<strong>Storage</strong>
-					<span>{disk.data ? `${bytes(disk.data.available, 0)} free of ${bytes(disk.data.size, 0)}` : ''}</span>
+					<span>{disk.data ? `${bytes(disk.data.available, 0)} free of ${bytes(disk.data.size, 0)} · ${Math.round(diskPct(disk.data))}% used` : ''}</span>
 				</div>
 				<div className="stacked" aria-hidden="true">
 					{parts.map((p) => (
@@ -183,7 +183,10 @@ function Live() {
 						</div>
 					))}
 				</div>
+				{disk.data?.measuring && <p className="muted" style={{fontSize: 12.5, margin: '8px 0 0'}}>Measuring apps, machines and files…</p>}
+				{disk.data?.drive && disk.data.drive.notInUse > 0 && <UnusedSpace disk={disk.data} />}
 			</section>
+			<PoolsCard />
 		</>
 	)
 }
@@ -419,5 +422,76 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 			</section>
 			<p className="footer-note">Omarchy Server {boot.touch.version}</p>
 		</div>
+	)
+}
+
+// After a drive (or virtual disk) is made bigger, the partition, encryption and filesystem on it
+// still have their old size until they're grown. Shows how much is waiting and how to grow it.
+function UnusedSpace({disk}: {disk: DiskUsage}) {
+	const d = disk.drive!
+	const toast = useToast()
+	const cmds: string[] = []
+	if (d.steps.includes('partition') && d.partitionNumber) cmds.push(`sudo growpart ${d.name} ${d.partitionNumber}`)
+	if (d.steps.includes('encryption') && d.encrypted) cmds.push(`sudo cryptsetup resize ${d.encrypted}`)
+	if (d.steps.includes('filesystem'))
+		cmds.push(d.filesystem === 'btrfs' ? 'sudo btrfs filesystem resize max /' : d.filesystem === 'xfs' ? 'sudo xfs_growfs /' : d.filesystem === 'ext4' && (d.encrypted || d.partition) ? `sudo resize2fs ${d.encrypted ? `/dev/mapper/${d.encrypted}` : d.partition}` : 'Grow the filesystem to fill its partition')
+	const text = cmds.join('\n')
+	return (
+		<div className="unused-space">
+			<b>{bytes(d.notInUse, 0)} of your {bytes(d.size, 0)} drive isn’t in use yet</b>
+			<span>
+				{d.steps.includes('partition-not-last')
+					? 'The drive got bigger, but the system’s partition isn’t the last one on it, so it can’t simply be grown. Use a partition tool (like GParted) from a live USB.'
+					: 'The drive got bigger, but the system still uses its old size. Run these in a terminal once (growpart is in the cloud-guest-utils package; an encrypted drive asks for its password):'}
+			</span>
+			{!d.steps.includes('partition-not-last') && cmds.length > 0 && (
+				<button
+					className="unused-cmds"
+					onClick={() => navigator.clipboard?.writeText(text).then(() => toast('Copied'), () => toast('Select the text to copy it', true))}
+					title="Copy"
+				>
+					<code>{text}</code>
+				</button>
+			)}
+		</div>
+	)
+}
+
+type PoolInfo = {kind: 'btrfs' | 'zfs'; name: string; mounted: boolean; devices: string[]; size: number | null; free: number | null; profile: string | null; errors: number; health?: string}
+// Storage pools (your extra drives), each with its own space: the card above is the system drive.
+function PoolsCard() {
+	const pools = useQuery({queryKey: ['storage.pools'], queryFn: () => query<PoolInfo[]>('storage.pools'), refetchInterval: 30_000, retry: false})
+	if (!pools.data?.length) return null
+	return (
+		<section className="glass card" style={{marginTop: 12}} aria-label="Storage pools">
+			<div className="card-head">
+				<strong>Storage pools</strong>
+				<span>{pools.data.length} pool{pools.data.length > 1 ? 's' : ''}</span>
+			</div>
+			{pools.data.map((p) => {
+				const used = p.size != null && p.free != null ? p.size - p.free : null
+				const pct = used != null && p.size ? (100 * used) / p.size : 0
+				const trouble = !p.mounted || p.errors > 0 || (p.health && p.health !== 'ONLINE')
+				return (
+					<div key={p.name} className="pool-row">
+						<div className="pool-head">
+							<span className="name">{p.name}</span>
+							<span className="val">
+								{!p.mounted ? 'Not connected' : p.size != null ? `${bytes(p.free ?? 0, 0)} free of ${bytes(p.size, 0)}` : '–'}
+							</span>
+						</div>
+						<div className="stacked" aria-hidden="true">
+							<i style={{width: `${pct}%`, background: trouble ? 'var(--red)' : 'var(--teal)'}} />
+						</div>
+						<div className="pool-sub">
+							{p.devices.length} drive{p.devices.length === 1 ? '' : 's'}
+							{p.profile ? ` · ${p.profile}` : ''}
+							{p.errors > 0 ? ` · ${p.errors} error${p.errors > 1 ? 's' : ''}` : ''}
+							{p.health && p.health !== 'ONLINE' ? ` · ${p.health.toLowerCase()}` : ''}
+						</div>
+					</div>
+				)
+			})}
+		</section>
 	)
 }

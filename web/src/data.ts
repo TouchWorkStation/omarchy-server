@@ -7,6 +7,7 @@ import {
 	type Bootstrap,
 	type CpuUsage,
 	type DiskUsage,
+	type Temperature,
 	type InstallReview,
 	type Machine,
 	type MemoryUsage,
@@ -38,7 +39,7 @@ export const useCpu = () => useQuery({...live('system.cpuUsage'), queryFn: () =>
 export const useMemory = () => useQuery({...live('system.memoryUsage'), queryFn: () => query<MemoryUsage>('system.memoryUsage')})
 export const useDisk = () => useQuery({...live('system.diskUsage', 30_000), queryFn: () => query<DiskUsage>('system.diskUsage')})
 export const useTemp = () =>
-	useQuery({...live('system.cpuTemperature', 10_000), queryFn: () => query<{temperature: number; warning: string}>('system.cpuTemperature')})
+	useQuery({...live('system.cpuTemperature', 10_000), queryFn: () => query<Temperature>('system.cpuTemperature')})
 export const useUptime = () => useQuery({...live('system.uptime', 60_000), queryFn: () => query<number>('system.uptime')})
 export const useNotifications = () =>
 	useQuery({queryKey: ['notifications.get'], queryFn: () => query<string[]>('notifications.get'), refetchInterval: 30_000})

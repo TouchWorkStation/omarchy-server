@@ -1183,8 +1183,47 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 	}
 
+	// What each app's containers use right now (podman stats takes a moment, so it runs in the
+	// background and the last reading is returned).
+	let appUsage = {at: 0, list: [], running: null}
+	const parseSize = (t) => {
+		const m = /([\d.]+)\s*([kKMGT]?i?B)/.exec(String(t ?? ''))
+		if (!m) return 0
+		const unit = m[2].toUpperCase().replace('I', '')
+		const base = /I/i.test(m[2].slice(1, 2)) ? 1024 : 1000
+		return Number(m[1]) * base ** ({B: 0, KB: 1, MB: 2, GB: 3, TB: 4}[unit] ?? 0)
+	}
+	async function measureApps() {
+		const ps = JSON.parse((await run('podman', ['ps', '--format', 'json'], {env: engineEnv, timeout: 15_000}).catch(() => '[]')) || '[]')
+		const appOf = new Map()
+		for (const c of ps) {
+			const proj = c.Labels?.['com.docker.compose.project'] ?? ''
+			const id = proj.startsWith('omarchy-') ? proj.slice(8) : null
+			if (id && state.apps.some((a) => a.id === id)) appOf.set(c.Id, id)
+		}
+		if (!appOf.size) return (appUsage = {at: Date.now(), list: [], running: null})
+		const stats = JSON.parse((await run('podman', ['stats', '--no-stream', '--format', 'json'], {env: engineEnv, timeout: 30_000}).catch(() => '[]')) || '[]')
+		const by = new Map()
+		for (const s of stats) {
+			const full = [...appOf.keys()].find((k) => k.startsWith(s.id ?? s.ID ?? '')) ?? null
+			const id = full && appOf.get(full)
+			if (!id) continue
+			const cur = by.get(id) ?? {cpuShare: 0, memBytes: 0}
+			// podman reports CPU per core (100% = one core busy).
+			cur.cpuShare += (parseFloat(s.cpu_percent ?? s.CPUPerc ?? '0') || 0) / 100
+			cur.memBytes += parseSize(String(s.mem_usage ?? s.MemUsage ?? '').split('/')[0])
+			by.set(id, cur)
+		}
+		appUsage = {at: Date.now(), list: [...by].map(([id, u]) => ({id, ...u})), running: null}
+	}
+	function usage() {
+		if (!appUsage.running && Date.now() - appUsage.at > 5000) appUsage.running = measureApps().catch(() => (appUsage.running = null))
+		return appUsage.list
+	}
+
 	return {
 		ready,
+		usage,
 		shellFor,
 		checkSession,
 		issueSession,

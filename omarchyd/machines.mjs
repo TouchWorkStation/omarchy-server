@@ -1440,8 +1440,21 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 
+	// What each running machine uses right now (for the system usage breakdown): the latest sample.
+	function usage() {
+		startSampler()
+		const out = []
+		for (const m of machines) {
+			const last = (series.get(m.id) ?? []).at(-1)
+			if (!last || Date.now() - last.t > 30_000) continue
+			out.push({id: `machine:${m.id}`, name: m.name, cpuShare: (last.cpu / 100) * (m.sockets ?? 1) * m.cores, memBytes: last.memMb * 1024 * 1024})
+		}
+		return out
+	}
+
 	return {
 		ready,
+		usage,
 		uninstallAll,
 		vncSocket,
 		procedures: {

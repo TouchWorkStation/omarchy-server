@@ -7256,3 +7256,48 @@ html.page-locked body {
 	font-size: 13.5px;
 	line-height: 1.45;
 }
+
+/* System drive space waiting to be used, and pool rows (Settings → System usage). */
+.unused-space {
+	margin-top: 12px;
+	padding: 11px 12px;
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--yellow) 14%, transparent);
+	display: grid;
+	gap: 6px;
+	font-size: 13px;
+}
+.unused-space span {
+	color: var(--fg-2);
+}
+.unused-cmds {
+	text-align: left;
+	border: 0;
+	border-radius: 8px;
+	padding: 8px 10px;
+	background: rgba(0, 0, 0, 0.35);
+	color: var(--fg);
+	cursor: copy;
+}
+.unused-cmds code {
+	white-space: pre-wrap;
+	font-size: 12px;
+}
+.pool-row + .pool-row {
+	margin-top: 12px;
+}
+.pool-head {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	font-size: 14px;
+	margin-bottom: 6px;
+}
+.pool-head .val,
+.pool-sub {
+	color: var(--muted);
+	font-size: 12.5px;
+}
+.pool-sub {
+	margin-top: 5px;
+}

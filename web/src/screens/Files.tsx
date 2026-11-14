@@ -17,6 +17,7 @@ import {
   type FileEntry,
   type Listing,
   type SmbShare,
+  diskPct,
 } from "../api";
 import { useBootstrap, useDisk, useUser } from "../data";
 import { Icon, type IconName } from "../icons";
@@ -615,7 +616,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
       }
     }
   };
-  const used = disk.data ? disk.data.totalUsed / disk.data.size : 0;
+  const used = disk.data ? diskPct(disk.data) / 100 : 0;
 
   const Header = (
     <div className="files-head">

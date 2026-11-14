@@ -1,6 +1,6 @@
 import {useMemo} from 'react'
 
-import type {UserApp} from '../api'
+import {diskPct, type UserApp} from '../api'
 import {useApps, useCpu, useDisk, useMemory, useRecent, useTemp, useUpdates, useUptime, useUser} from '../data'
 import {Icon} from '../icons'
 import {AppIcon, Ring, StoreIcon, TerminalIcon, appStatus, bytes, duration, greeting, haptic, isAppBusy, levelColor, pct, today} from '../ui'
@@ -27,7 +27,7 @@ export function Gauges({onClick}: {onClick?: () => void}) {
 		{
 			k: 'Storage',
 			icon: 'disk' as const,
-			p: disk.data ? pct(disk.data.totalUsed, disk.data.size) : 0,
+			p: disk.data ? diskPct(disk.data) : 0,
 			sub: disk.data ? `${bytes(disk.data.available, 0)} free` : '–',
 			ready: !!disk.data,
 		},
@@ -92,7 +92,7 @@ export function Home({onOpenApp, go, onTerminal}: {onOpenApp: (app: UserApp) => 
 			<div>
 				<Gauges onClick={() => go('more')} />
 				<div className="facts">
-					{temp.data && (
+					{temp.data?.temperature != null && (
 						<span className="fact">
 							<Icon name="thermo" size={15} />
 							{Math.round(temp.data.temperature)}°C

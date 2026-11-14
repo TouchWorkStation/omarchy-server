@@ -110,7 +110,14 @@ export type DiskUsage = {
 	files?: number
 	apps: UsageItem[]
 	machines: UsageItem[]
+	/** True until the first measurement of apps, machines and files is done. */
+	measuring?: boolean
+	/** The drive the system is on. notInUse: space the drive has that the filesystem doesn't use yet. */
+	drive?: {name: string; size: number; notInUse: number; steps: ('partition' | 'partition-not-last' | 'encryption' | 'filesystem')[]; partition: string | null; partitionNumber: number | null; encrypted: string | null; filesystem: string | null} | null
 }
+export type Temperature = {temperature: number | null; warning: string; reason?: 'virtual' | 'no-sensor'}
+/** Share of the space you can use that's in use (like df: space kept back for the system isn't counted). */
+export const diskPct = (d: DiskUsage) => (d.totalUsed + d.available > 0 ? (100 * d.totalUsed) / (d.totalUsed + d.available) : 0)
 
 export type RegistryApp = {
 	id: string

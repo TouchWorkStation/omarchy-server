@@ -21,7 +21,7 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.8'
+export const OMARCHYD_VERSION = '0.9.9'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const accounts = await openAccounts(dataDir)
@@ -41,6 +41,26 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	const tickets = new Map()
 	const release = await system.osRelease()
 	const settings = {hostname: os.hostname()}
+
+	// Apps and machines in the usage breakdown; "System" is everything else.
+	async function withUsage(totalP, kind) {
+		const total = await totalP
+		let apps = []
+		let vms = []
+		try {
+			apps = apps_usage()
+			vms = machines.usage?.() ?? []
+		} catch {
+			/* breakdown unavailable: totals still right */
+		}
+		const threads = os.cpus().length || 1
+		const value = (u) => (kind === 'cpu' ? Math.round(Math.min(100, (100 * u.cpuShare) / threads) * 10) / 10 : Math.round(u.memBytes))
+		const appItems = apps.map((u) => ({id: u.id, used: value(u)})).filter((u) => u.used > 0)
+		const vmItems = vms.map((u) => ({id: u.id, name: u.name, used: value(u)})).filter((u) => u.used > 0)
+		const counted = [...appItems, ...vmItems].reduce((t, u) => t + u.used, 0)
+		return {...total, apps: appItems, machines: vmItems, system: Math.max(0, total.totalUsed - counted)}
+	}
+	const apps_usage = () => apps.usage?.() ?? []
 
 	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
 		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
@@ -108,9 +128,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 
 		// ---- system ---------------------------------------------------------------------------
 		'system.uptime': {kind: 'query', run: () => Math.round(os.uptime())},
-		'system.cpuUsage': {kind: 'query', run: () => system.cpuUsage()},
-		'system.memoryUsage': {kind: 'query', run: () => system.memoryUsage()},
-		'system.diskUsage': {kind: 'query', run: () => system.diskUsage(home)},
+		'system.cpuUsage': {kind: 'query', run: () => withUsage(system.cpuUsage(), 'cpu')},
+		'system.memoryUsage': {kind: 'query', run: () => withUsage(system.memoryUsage(), 'memory')},
+		'system.diskUsage': {kind: 'query', run: () => system.diskUsage(home, {dataDir})},
 		'system.cpuTemperature': {kind: 'query', run: () => system.cpuTemperature()},
 		'system.getHostname': {kind: 'query', run: () => settings.hostname},
 		'system.getIpAddresses': {kind: 'query', run: () => system.ipAddresses()},

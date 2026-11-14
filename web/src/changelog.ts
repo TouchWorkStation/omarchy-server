@@ -4,6 +4,20 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.9',
+		date: '2026-11-13',
+		title: 'Accurate system stats',
+		added: [
+			'Made a drive or virtual disk bigger? System usage now shows how much of it isn’t in use yet, and the exact commands to grow the partition, encryption and filesystem into it.',
+			'Storage pools appear in System usage with their own space, drives, layout and any errors.',
+			'“What’s using it” now shows real CPU and memory for each app and machine, and storage is split into apps, machines, your files and the system (measured in the background).',
+		],
+		fixed: [
+			'Temperature showed 0 °C when there’s no sensor. It now says “Not available in a virtual machine” (virtual machines have no sensors) or “No sensor found”, and more kinds of CPU sensors are read on real hardware.',
+			'Storage percentages now match what df reports (space kept back for the system isn’t counted as free).',
+		],
+	},
+	{
 		version: '0.9.8',
 		date: '2026-11-13',
 		title: 'Your desktop follows you',
