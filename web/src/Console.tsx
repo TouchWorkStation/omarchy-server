@@ -120,6 +120,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 	const [superHeld, setSuperHeld] = useState(false) // the toolbar's Super button: held down until pressed again
 	const superDown = useRef(false) // what the machine currently thinks
 	const lastSuperTap = useRef(0)
+	const remoteClip = useRef('') // what the machine's clipboard holds, as far as we know
 	const [attempt, setAttempt] = useState(0)
 	const [mode, setModeState] = useState<Mode>(readMode)
 	const [zoomLabel, setZoomLabel] = useState(100)
@@ -178,6 +179,14 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 				;(r as any).showDotCursor = true
 				applyScale(r, readScale())
 			}
+			// The machine copied something: put it on this computer's clipboard too (browsers allow
+			// that on https:// while this page has focus).
+			r.addEventListener('clipboard', (e: Event) => {
+				const text = (e as CustomEvent<{text: string}>).detail?.text
+				if (!text) return
+				remoteClip.current = text
+				if (window.isSecureContext && document.hasFocus()) navigator.clipboard?.writeText(text).catch(() => {})
+			})
 			r.addEventListener('connect', () => {
 				setState('connected')
 				haptic(8)
@@ -309,6 +318,78 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			setSuperHeld(false)
 		}
 	}, [state])
+	// Paste into the machine. Its apps paste from the machine's own clipboard, so this computer's
+	// clipboard is handed over first:
+	//  - Ctrl+V / Ctrl+Shift+V / ⌘V: the key waits until the browser gives us the clipboard (its
+	//    paste event), then goes to the machine (⌘V arrives as Ctrl+V). Works on http:// too.
+	//  - On https://, it's also handed over before a right-click (so the app's own Paste menu works)
+	//    and whenever this window comes back to the front.
+	const pushClipboard = (text: string) => {
+		const r = rfbRef.current
+		const clean = text.replace(/\r\n?/g, '\n')
+		if (!r || !clean || clean === remoteClip.current) return
+		remoteClip.current = clean
+		r.clipboardPasteFrom(clean)
+	}
+	const syncClipboard = () => {
+		if (!window.isSecureContext || !navigator.clipboard?.readText || !document.hasFocus()) return
+		navigator.clipboard.readText().then(pushClipboard, () => {})
+	}
+	useEffect(() => {
+		const root = rootRef.current
+		if (!root || !deskUi) return
+		let pending: {meta: boolean; timer: number} | null = null
+		const sendV = (meta: boolean) => {
+			const r = rfbRef.current
+			if (!r) return
+			if (meta) {
+				sendSuper(false)
+				r.sendKey(KEY.Ctrl, 'ControlLeft', true)
+			}
+			r.sendKey(0x76, 'KeyV', true)
+			r.sendKey(0x76, 'KeyV', false)
+			if (meta) r.sendKey(KEY.Ctrl, 'ControlLeft', false)
+		}
+		const finish = (text?: string) => {
+			if (!pending) return
+			const {meta, timer} = pending
+			window.clearTimeout(timer)
+			pending = null
+			if (text) pushClipboard(text)
+			// A moment for the machine to take the new clipboard before the keystroke.
+			window.setTimeout(() => sendV(meta), text ? 60 : 0)
+		}
+		const onKey = (e: KeyboardEvent) => {
+			if (e.code !== 'KeyV' || !(e.ctrlKey || e.metaKey) || e.altKey || !canvasHost.current?.contains(e.target as Node)) return
+			// noVNC mustn't send the V yet; the browser's default action stays, so it fires "paste".
+			e.stopImmediatePropagation()
+			if (e.type !== 'keydown' || e.repeat) return
+			pending = {meta: e.metaKey && !e.ctrlKey, timer: window.setTimeout(() => finish(), 400)}
+		}
+		const onPaste = (e: ClipboardEvent) => {
+			if (!pending) return
+			e.preventDefault()
+			finish(e.clipboardData?.getData('text/plain') ?? '')
+		}
+		const onPointer = (e: PointerEvent) => {
+			if (e.button === 2 && canvasHost.current?.contains(e.target as Node)) syncClipboard()
+		}
+		root.addEventListener('keydown', onKey, true)
+		root.addEventListener('keyup', onKey, true)
+		root.addEventListener('pointerdown', onPointer, true)
+		root.addEventListener('pointerenter', syncClipboard)
+		document.addEventListener('paste', onPaste, true)
+		window.addEventListener('focus', syncClipboard)
+		return () => {
+			root.removeEventListener('keydown', onKey, true)
+			root.removeEventListener('keyup', onKey, true)
+			root.removeEventListener('pointerdown', onPointer, true)
+			root.removeEventListener('pointerenter', syncClipboard)
+			document.removeEventListener('paste', onPaste, true)
+			window.removeEventListener('focus', syncClipboard)
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [deskUi])
 	// Full screen: the console alone, edge to edge. Where the browser allows it (Chrome on
 	// HTTPS), system keys like Esc, Alt+Tab and the Windows/Super key go to the machine too.
 	useEffect(() => {

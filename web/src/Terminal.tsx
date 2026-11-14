@@ -123,6 +123,43 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 		termRef.current = term
 		term.open(el)
 
+		// Right-click, as in most terminals: with text selected it copies it; otherwise it pastes.
+		// Reading the clipboard needs https://; on http:// the browser's own menu opens instead,
+		// and its Paste works (the terminal puts its input under the pointer for that).
+		const copyText = (text: string) => {
+			if (window.isSecureContext && navigator.clipboard?.writeText) return navigator.clipboard.writeText(text)
+			const t = document.createElement('textarea')
+			t.value = text
+			t.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+			document.body.appendChild(t)
+			t.select()
+			document.execCommand('copy')
+			t.remove()
+			return Promise.resolve()
+		}
+		const onContextMenu = (e: MouseEvent) => {
+			// A long-press on a phone keeps its own behaviour.
+			if ((e as PointerEvent).pointerType === 'touch' || !matchMedia('(any-pointer: fine)').matches) return
+			const selected = term.getSelection()
+			if (selected) {
+				e.preventDefault()
+				copyText(selected).then(() => toast('Copied'), () => toast('Couldn’t copy', true))
+				term.clearSelection()
+				term.focus()
+				return
+			}
+			if (!window.isSecureContext || !navigator.clipboard?.readText) return
+			e.preventDefault()
+			navigator.clipboard.readText().then(
+				(text) => {
+					if (text) term.paste(text)
+					term.focus()
+				},
+				() => toast('Allow clipboard access for this site to paste with a right-click', true),
+			)
+		}
+		el.addEventListener('contextmenu', onContextMenu)
+
 		// Measure a cell, then size the shell to fill the screen.
 		const measure = () => {
 			const dims = (term as any)._core?._renderService?.dimensions?.css?.cell
@@ -247,6 +284,7 @@ export function TerminalScreen({app, onClose, embedded}: {app?: {id: string; nam
 			ta?.removeEventListener('focus', onFocus)
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
+			el.removeEventListener('contextmenu', onContextMenu)
 			term.dispose()
 		}
 	}, [app, attempt])

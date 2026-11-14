@@ -11,5 +11,6 @@ declare module '@novnc/novnc/lib/rfb.js' {
 		blur(): void
 		sendKey(keysym: number, code: string | null, down?: boolean): void
 		sendCtrlAltDel(): void
+		clipboardPasteFrom(text: string): void
 	}
 }

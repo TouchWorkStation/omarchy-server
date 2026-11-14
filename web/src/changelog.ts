@@ -4,6 +4,16 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.7',
+		date: '2026-11-13',
+		title: 'Right-click and paste',
+		added: [
+			'Terminal: right-click pastes, and with text selected it copies it, like most terminals. (On http:// the browser’s own menu opens instead, with Paste in it.)',
+			'Omarchy desktop: Ctrl+V, Ctrl+Shift+V and ⌘V paste what you copied on this computer into the desktop’s apps, on http:// and https://.',
+			'On the secure (https://) address, your clipboard is also handed to the desktop before you right-click, so an app’s own Paste menu pastes it, and anything copied on the desktop lands on this computer’s clipboard.',
+		],
+	},
+	{
 		version: '0.9.6',
 		date: '2026-11-13',
 		title: 'Dock your way',
