@@ -7,7 +7,7 @@ import {Icon} from '../icons'
 import {Switch} from '../screens/Settings'
 import {OmarchyBackgrounds} from '../OmarchyBackgrounds'
 import {Segmented, customBackgroundUrl, haptic, preparePhoto, useToast, wallpaperUrl, type Prefs} from '../ui'
-import {PRESETS, STYLES, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockPos, type DockSize} from './config'
+import {PRESETS, STYLES, SYSTEM_DOCK, WALLPAPERS, useDeskConfig, wallpaperSrc, type DeskAccent, type DeskConfig, type DockHover, type DockPos, DOCK_ICON_MAX, DOCK_ICON_MIN} from './config'
 import {useDesktop, useItems, type ItemInfo} from './Desktop'
 
 type Tab = 'themes' | 'background' | 'dock' | 'desktop'
@@ -233,25 +233,59 @@ function DockSettings({cfg, setCfg}: P) {
 								{id: 'left', label: 'Left'},
 								{id: 'bottom', label: 'Bottom'},
 								{id: 'right', label: 'Right'},
+								{id: 'top', label: 'Top'},
 							]}
 							onChange={(v) => set({position: v})}
 						/>
 					</div>
-					<div className="row static">
+					<div className="row static pz-slider">
 						<span className="main">
 							<b>Icon size</b>
+							<span>{d.iconSize} px</span>
 						</span>
-						<Segmented<DockSize>
-							label="Icon size"
-							value={d.size}
-							options={[
-								{id: 'small', label: 'Small'},
-								{id: 'medium', label: 'Medium'},
-								{id: 'large', label: 'Large'},
-							]}
-							onChange={(v) => set({size: v})}
+						<input
+							type="range"
+							min={DOCK_ICON_MIN}
+							max={DOCK_ICON_MAX}
+							step={2}
+							value={d.iconSize}
+							aria-label="Icon size"
+							onChange={(e) => set({iconSize: Number(e.target.value)})}
 						/>
 					</div>
+				</div>
+			</Section>
+			<Section title="Animations" note="Turned down automatically when your computer asks for reduced motion.">
+				<div className="glass group pz-rows">
+					<div className="row static">
+						<span className="main">
+							<b>When the pointer is over an icon</b>
+						</span>
+						<Segmented<DockHover>
+							label="Hover effect"
+							value={d.hover}
+							options={[
+								{id: 'none', label: 'Nothing'},
+								{id: 'lift', label: 'Lift'},
+								{id: 'magnify', label: 'Magnify'},
+							]}
+							onChange={(v) => set({hover: v})}
+						/>
+					</div>
+					{d.hover === 'magnify' && (
+						<div className="row static pz-slider">
+							<span className="main">
+								<b>Magnification</b>
+								<span>{Math.round(d.magnify * 100)}%</span>
+							</span>
+							<input type="range" min={1.2} max={2.2} step={0.1} value={d.magnify} aria-label="Magnification" onChange={(e) => set({magnify: Number(e.target.value)})} />
+						</div>
+					)}
+					<ToggleRow label="Bounce when opening" note="An app that isn’t open yet bounces in the dock while it opens" on={d.bounce} onChange={(v) => set({bounce: v})} />
+				</div>
+			</Section>
+			<Section title="Behaviour">
+				<div className="glass group pz-rows">
 					<ToggleRow label="Floating" note="A rounded dock with space around it, instead of a full-height panel" on={d.floating} onChange={(v) => set({floating: v})} />
 					<ToggleRow label="Auto-hide" note="Slides away; move the pointer to the screen edge to bring it back" on={d.autohide} onChange={(v) => set({autohide: v})} />
 					<ToggleRow label="Show open apps" note="Apps and machines that are open but not pinned appear after a divider" on={d.showRunning} onChange={(v) => set({showRunning: v})} />

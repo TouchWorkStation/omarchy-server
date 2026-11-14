@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.6',
+		date: '2026-11-13',
+		title: 'Dock your way',
+		added: [
+			'Desktop & Dock → Dock: put the dock on the left, bottom, right or top, and set the icon size anywhere from 28 to 80 px with a slider.',
+			'Dock animations: icons lift or magnify (macOS-style, with adjustable magnification) under the pointer, and apps bounce while they open. Each can be turned off, and they turn down by themselves when your computer asks for reduced motion.',
+		],
+		fixed: [
+			'Full screen now says why the Windows / Super key isn’t reaching the desktop: browsers only hand it over on the secure (https://) address, in Chrome, Edge or Brave. On a Linux computer, Right Alt now works as Super by default.',
+		],
+	},
+	{
 		version: '0.9.5',
 		date: '2026-11-13',
 		title: 'The Super key reaches your desktop',

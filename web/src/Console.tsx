@@ -42,10 +42,13 @@ const SUPER_LABEL: Record<SuperKey, string> = {meta: 'Windows / ⌘ key', altrig
 function readSuperKey(): SuperKey {
 	try {
 		const v = localStorage.getItem('omarchy-server:console-super')
-		return v === 'altright' || v === 'ctrlright' ? v : 'meta'
+		if (v === 'altright' || v === 'ctrlright' || v === 'meta') return v
 	} catch {
-		return 'meta'
+		/* not saved */
 	}
+	// A Linux desktop (Omarchy, GNOME…) keeps Super for itself, so Right Alt stands in there unless
+	// you choose otherwise. The Super key itself still works whenever the browser receives it.
+	return typeof navigator !== 'undefined' && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) ? 'altright' : 'meta'
 }
 const F = (n: number) => 0xffbd + n // F1 = 0xffbe
 const KEY = {Escape: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53, Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb, Shift: 0xffe1}
@@ -317,8 +320,18 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			if (fs) {
 				setBarShown(true)
 				window.setTimeout(() => setBarShown(false), 2200)
+				// Keyboard Lock (Chrome, Edge, Brave; only on https://) is what lets the Windows/Super
+				// key, Alt+Tab and Esc reach the machine instead of this computer.
 				const locked = kb?.lock ? kb.lock().then(() => true, () => false) : Promise.resolve(false)
-				locked.then((ok) => toast(ok ? 'Full screen · hold Esc to exit' : 'Full screen · press Esc to exit'))
+				locked.then((ok) => {
+					if (ok) return toast('Full screen · system keys go to the machine · hold Esc to exit')
+					const alt = superKey === 'meta' ? 'choose Right Alt as Super in Keys' : `use ${SUPER_LABEL[superKey]} as Super`
+					toast(
+						window.isSecureContext
+							? `Full screen · this browser keeps the Windows key here: ${alt}, or use the Super button · Esc exits`
+							: `Full screen · on http:// your computer keeps the Windows key: ${alt}, use the Super button, or open https://${location.host} · Esc exits`,
+					)
+				})
 				rfbRef.current?.focus()
 			} else {
 				kb?.unlock?.()
@@ -328,7 +341,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		document.addEventListener('fullscreenchange', on)
 		return () => document.removeEventListener('fullscreenchange', on)
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [deskUi])
+	}, [deskUi, superKey])
 	const toggleFullscreen = () => {
 		if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
 		else rootRef.current?.requestFullscreen({navigationUI: 'hide'}).catch(() => toast('Full screen isn’t available here', true))

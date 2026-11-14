@@ -31,8 +31,11 @@ export const STYLES: {id: DeskStyle; name: string; note: string}[] = [
 	{id: 'daylight', name: 'Daylight', note: 'Light top bar, dock and menus'},
 ]
 export type DeskAccent = 'app' | 'wallpaper' | 'blue' | 'mauve' | 'teal' | 'peach' | 'green' | 'pink'
-export type DockPos = 'left' | 'bottom' | 'right'
-export type DockSize = 'small' | 'medium' | 'large'
+export type DockPos = 'left' | 'bottom' | 'right' | 'top'
+export type DockHover = 'none' | 'lift' | 'magnify'
+export const DOCK_ICON_MIN = 28
+export const DOCK_ICON_MAX = 80
+const LEGACY_SIZE: Record<string, number> = {small: 38, medium: 46, large: 56}
 export type DeskIcon = {key: string; col: number; row: number}
 
 export type DeskConfig = {
@@ -41,7 +44,7 @@ export type DeskConfig = {
 	wallpaper: WallpaperId
 	style: DeskStyle
 	accent: DeskAccent
-	dock: {position: DockPos; size: DockSize; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]}
+	dock: {position: DockPos; iconSize: number; hover: DockHover; magnify: number; bounce: boolean; floating: boolean; autohide: boolean; showRunning: boolean; items: string[]}
 	icons: DeskIcon[]
 	showIcons: boolean
 	// 'auto': a window when the app allows being shown inside one, otherwise a browser tab
@@ -72,7 +75,7 @@ export const DEFAULT_CONFIG: DeskConfig = {
 	wallpaper: 'omarchy',
 	style: 'glass',
 	accent: 'wallpaper',
-	dock: {position: 'left', size: 'medium', floating: false, autohide: false, showRunning: true, items: [...SYSTEM_DOCK]},
+	dock: {position: 'left', iconSize: 46, hover: 'lift', magnify: 1.6, bounce: true, floating: false, autohide: false, showRunning: true, items: [...SYSTEM_DOCK]},
 	icons: [
 		{key: 'folder:/Home', col: 0, row: 0},
 		{key: 'folder:/Trash', col: 0, row: 1},
@@ -84,7 +87,7 @@ export const DEFAULT_CONFIG: DeskConfig = {
 function clean(raw: unknown): DeskConfig {
 	const c = (raw && typeof raw === 'object' ? raw : {}) as Partial<DeskConfig>
 	const d = DEFAULT_CONFIG
-	const dock = {...d.dock, ...(c.dock ?? {})}
+	const dock = {...d.dock, ...(c.dock ?? {})} as DeskConfig['dock'] & {size?: string}
 	const okWall = (w: unknown): w is WallpaperId => w === 'server' || w === 'photo' || w === 'omarchy' || WALLPAPERS.some((x) => x.id === w)
 	// Pins from the first desktop release move into the dock.
 	let legacyPins: string[] = []
@@ -101,8 +104,12 @@ function clean(raw: unknown): DeskConfig {
 		style: STYLES.some((s) => s.id === c.style) ? (c.style as DeskStyle) : d.style,
 		accent: (['app', 'wallpaper', 'blue', 'mauve', 'teal', 'peach', 'green', 'pink'] as const).includes(c.accent as DeskAccent) ? (c.accent as DeskAccent) : d.accent,
 		dock: {
-			position: (['left', 'bottom', 'right'] as const).includes(dock.position) ? dock.position : 'left',
-			size: (['small', 'medium', 'large'] as const).includes(dock.size) ? dock.size : 'medium',
+			position: (['left', 'bottom', 'right', 'top'] as const).includes(dock.position) ? dock.position : 'left',
+			// Earlier versions had three sizes; they carry over.
+			iconSize: Math.round(Math.min(DOCK_ICON_MAX, Math.max(DOCK_ICON_MIN, Number.isFinite(c.dock?.iconSize) ? Number(c.dock!.iconSize) : (LEGACY_SIZE[dock.size ?? ''] ?? 46)))),
+			hover: (['none', 'lift', 'magnify'] as const).includes(dock.hover) ? dock.hover : 'lift',
+			magnify: Math.min(2.2, Math.max(1.2, Number.isFinite(dock.magnify) ? Number(dock.magnify) : 1.6)),
+			bounce: dock.bounce !== false,
 			floating: !!dock.floating,
 			autohide: !!dock.autohide,
 			showRunning: dock.showRunning !== false,

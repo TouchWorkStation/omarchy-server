@@ -4154,11 +4154,16 @@ html.desk-mode body {
 .dock-bottom .ov-backdrop {
 	bottom: var(--dock-thick);
 }
+.dock-top .ov-layer,
+.dock-top .ov-backdrop {
+	top: calc(var(--top-h) + var(--dock-thick));
+}
 .dock-autohide .ov-layer,
 .dock-autohide .ov-backdrop {
 	left: 0;
 	right: 0;
 	bottom: 0;
+	top: var(--top-h);
 }
 .ov-tip {
 	margin: 0 0 18px;
@@ -4202,15 +4207,22 @@ html.desk-mode body {
 	right: 0;
 	border-left: 1px solid var(--dock-border);
 }
-.dock-bottom .desk-dock {
+.dock-bottom .desk-dock,
+.dock-top .desk-dock {
 	left: 0;
 	right: 0;
-	bottom: 0;
 	height: var(--dock-thick);
 	flex-direction: row;
 	padding: 0 14px 0 10px;
-	border-top: 1px solid var(--dock-border);
 	justify-content: center;
+}
+.dock-bottom .desk-dock {
+	bottom: 0;
+	border-top: 1px solid var(--dock-border);
+}
+.dock-top .desk-dock {
+	top: var(--top-h);
+	border-bottom: 1px solid var(--dock-border);
 }
 /* Floating: a rounded dock centred along its edge, with space around it. */
 .dock-floating .desk-dock {
@@ -4233,14 +4245,20 @@ html.desk-mode body {
 .dock-floating.dock-right .desk-dock {
 	right: 8px;
 }
-.dock-floating.dock-bottom .desk-dock {
+.dock-floating.dock-bottom .desk-dock,
+.dock-floating.dock-top .desk-dock {
 	left: 50%;
 	right: auto;
-	bottom: 8px;
 	transform: translateX(-50%);
 	height: calc(var(--dock-thick) - 14px);
 	max-width: calc(100vw - 20px);
 	padding: 0 10px;
+}
+.dock-floating.dock-bottom .desk-dock {
+	bottom: 8px;
+}
+.dock-floating.dock-top .desk-dock {
+	top: calc(var(--top-h) + 6px);
 }
 /* Auto-hide */
 .dock-left .desk-dock.hidden {
@@ -4260,6 +4278,12 @@ html.desk-mode body {
 }
 .dock-floating.dock-bottom .desk-dock.hidden {
 	transform: translate(-50%, calc(100% + 12px));
+}
+.dock-top .desk-dock.hidden {
+	transform: translateY(calc(-100% - var(--top-h) - 12px));
+}
+.dock-floating.dock-top .desk-dock.hidden {
+	transform: translate(-50%, calc(-100% - var(--top-h) - 12px));
 }
 .dock-hotzone {
 	position: fixed;
@@ -4283,6 +4307,12 @@ html.desk-mode body {
 	bottom: 0;
 	height: 4px;
 }
+.hz-top {
+	left: 0;
+	right: 0;
+	top: var(--top-h);
+	height: 4px;
+}
 .dock-apps {
 	display: flex;
 	align-items: center;
@@ -4297,7 +4327,8 @@ html.desk-mode body {
 	overflow-y: auto;
 	overflow-x: hidden;
 }
-.dock-bottom .dock-apps {
+.dock-bottom .dock-apps,
+.dock-top .dock-apps {
 	flex-direction: row;
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -4325,7 +4356,8 @@ html.desk-mode body {
 	height: 1px;
 	margin: 4px 0;
 }
-.dock-bottom .dock-sep {
+.dock-bottom .dock-sep,
+.dock-top .dock-sep {
 	height: calc(var(--dock-icon) * 0.7);
 	width: 1px;
 	margin: 0 4px;
@@ -4382,11 +4414,17 @@ html.desk-mode body {
 	transform: translateY(-50%);
 	flex-direction: column;
 }
-.dock-bottom .dock-item .dots {
-	bottom: 1px;
+.dock-bottom .dock-item .dots,
+.dock-top .dock-item .dots {
 	left: 50%;
 	transform: translateX(-50%);
 	flex-direction: row;
+}
+.dock-bottom .dock-item .dots {
+	bottom: 1px;
+}
+.dock-top .dock-item .dots {
+	top: 1px;
 }
 .dock-item .dots i {
 	width: 4px;
@@ -4403,7 +4441,8 @@ html.desk-mode body {
 .dock-right .dock-item.focused .dots i {
 	height: 8px;
 }
-.dock-bottom .dock-item.focused .dots i {
+.dock-bottom .dock-item.focused .dots i,
+.dock-top .dock-item.focused .dots i {
 	width: 8px;
 }
 .show-apps {
@@ -4440,6 +4479,71 @@ html.desk-mode body {
 }
 .tip-top {
 	transform: translate(-50%, -100%);
+}
+.tip-bottom {
+	transform: translateX(-50%);
+}
+/* ---- dock animations ---- */
+/* Icons grow away from the screen edge. */
+.dock-left { --dock-origin: left center; }
+.dock-right { --dock-origin: right center; }
+.dock-bottom { --dock-origin: center bottom; }
+.dock-top { --dock-origin: center top; }
+.desk-dock .dock-art,
+.desk-dock .show-apps {
+	transform-origin: var(--dock-origin);
+}
+.dock-hover-lift .dock-item:hover .dock-art,
+.dock-hover-lift .dock-item:hover .show-apps {
+	transform: scale(1.14);
+	transition: transform 0.18s var(--ease);
+}
+.dock-hover-lift .dock-art,
+.dock-hover-lift .show-apps {
+	transition: transform 0.18s var(--ease);
+}
+/* Magnify is driven from the pointer position (see Desktop.tsx); icons may grow past the dock. */
+.desk-dock.magnify,
+.desk-dock.magnify .dock-apps {
+	overflow: visible;
+}
+.desk-dock.magnify .dock-art,
+.desk-dock.magnify .show-apps {
+	transition: transform 0.09s linear;
+}
+.desk-dock.magnify .dock-item {
+	transition:
+		background 0.15s,
+		margin 0.09s linear;
+}
+.desk-dock.magnify .dock-item:hover {
+	background: transparent;
+}
+.dock-item.bouncing .dock-art {
+	animation: dock-bounce 1.2s var(--ease);
+}
+@keyframes dock-bounce {
+	0%, 100% { translate: 0 0; }
+	18% { translate: var(--bounce-a); }
+	36% { translate: 0 0; }
+	54% { translate: var(--bounce-b); }
+	72% { translate: 0 0; }
+}
+.dock-left .dock-item { --bounce-a: calc(var(--dock-icon) * 0.35) 0; --bounce-b: calc(var(--dock-icon) * 0.15) 0; }
+.dock-right .dock-item { --bounce-a: calc(var(--dock-icon) * -0.35) 0; --bounce-b: calc(var(--dock-icon) * -0.15) 0; }
+.dock-bottom .dock-item { --bounce-a: 0 calc(var(--dock-icon) * -0.35); --bounce-b: 0 calc(var(--dock-icon) * -0.15); }
+.dock-top .dock-item { --bounce-a: 0 calc(var(--dock-icon) * 0.35); --bounce-b: 0 calc(var(--dock-icon) * 0.15); }
+@media (prefers-reduced-motion: reduce) {
+	.dock-item.bouncing .dock-art {
+		animation: none;
+	}
+	.dock-hover-lift .dock-item:hover .dock-art {
+		transform: none;
+	}
+}
+.pz-slider input[type='range'] {
+	width: min(220px, 45%);
+	accent-color: var(--accent);
 }
 @keyframes tip-in {
 	from {

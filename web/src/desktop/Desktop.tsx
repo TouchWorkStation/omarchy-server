@@ -65,8 +65,8 @@ const snapRect = (snap: Exclude<Snap, null>): Rect => {
 }
 const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : {x: win.x, y: win.y, w: win.w, h: win.h})
 
-const DOCK_ICON = {small: 38, medium: 46, large: 56} as const
-const dockThickness = (cfg: DeskConfig) => DOCK_ICON[cfg.dock.size] + 26 + (cfg.dock.floating ? 14 : 0)
+const dockThickness = (cfg: DeskConfig) => cfg.dock.iconSize + 26 + (cfg.dock.floating ? 14 : 0)
+const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
 export function SysIcon({kind, size = 44}: {kind: string; size?: number}) {
 	if (kind === 'store') return <StoreIcon size={size} />
@@ -252,7 +252,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	// Reserve space for the dock (unless it hides itself).
 	const thick = dockThickness(cfg)
 	const reserve = cfg.dock.autohide ? 0 : thick
-	AREA = {t: TOP, l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
+	AREA = {t: TOP + (cfg.dock.position === 'top' ? reserve : 0), l: cfg.dock.position === 'left' ? reserve : 0, r: cfg.dock.position === 'right' ? reserve : 0, b: cfg.dock.position === 'bottom' ? reserve : 0}
 
 	useEffect(() => save(STORE_KEY, wins.filter((w) => w.kind !== 'terminal' && w.kind !== 'console')), [wins])
 	useEffect(() => {
@@ -509,7 +509,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 			: cfg.wallpaper === 'photo'
 				? (customBackgroundUrl(prefs.backgroundVersion) ?? wallpaperUrl(user.data?.wallpaper))
 				: null
-	const deskStyle: Record<string, string> = {'--dock-thick': `${thick}px`, '--dock-icon': `${DOCK_ICON[cfg.dock.size]}px`}
+	const deskStyle: Record<string, string> = {'--dock-thick': `${thick}px`, '--dock-icon': `${cfg.dock.iconSize}px`}
 	const omarchyAccent = cfg.wallpaper === 'omarchy' ? omarchy.data?.colors?.accent : null
 	if (cfg.accent === 'wallpaper' && omarchyAccent) {
 		Object.assign(deskStyle, {'--accent': omarchyAccent, '--accent-text': omarchyAccent, '--on-accent': omarchy.data?.colors?.background ?? '#111'})
@@ -551,7 +551,7 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut}: {boot: Bootstrap; 
 	return (
 		<DesktopContext.Provider value={api}>
 			<div
-				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}`}
+				className={`desk style-${cfg.style} dock-${cfg.dock.position}${cfg.dock.floating ? ' dock-floating' : ''}${cfg.dock.autohide ? ' dock-autohide' : ''} dock-hover-${cfg.dock.hover}${dragging ? ' dragging' : ''}${overview ? ` overview-on ov-${overview}` : ''}`}
 				style={deskStyle as CSSProperties}
 			>
 				{wallUrl && <Wall url={wallUrl} />}
@@ -717,14 +717,15 @@ function ContextMenu({menu, onClose}: {menu: Menu; onClose: () => void}) {
 }
 
 // ---- tooltips (rendered at the top level so nothing can clip them) -------------------------------------
+type TipSide = 'right' | 'left' | 'top' | 'bottom'
 function useTooltip() {
-	const [tip, setTip] = useState<{label: string; x: number; y: number; side: 'right' | 'left' | 'top'} | null>(null)
+	const [tip, setTip] = useState<{label: string; x: number; y: number; side: TipSide} | null>(null)
 	const t = useRef<number>()
 	const showing = useRef(false)
-	const show = (label: string, el: HTMLElement, side: 'right' | 'left' | 'top') => {
+	const show = (label: string, el: HTMLElement, side: TipSide) => {
 		window.clearTimeout(t.current)
 		const r = el.getBoundingClientRect()
-		const pos = side === 'right' ? {x: r.right + 10, y: r.top + r.height / 2} : side === 'left' ? {x: r.left - 10, y: r.top + r.height / 2} : {x: r.left + r.width / 2, y: r.top - 8}
+		const pos = side === 'right' ? {x: r.right + 10, y: r.top + r.height / 2} : side === 'left' ? {x: r.left - 10, y: r.top + r.height / 2} : side === 'bottom' ? {x: r.left + r.width / 2, y: r.bottom + 8} : {x: r.left + r.width / 2, y: r.top - 8}
 		// The first tooltip waits a moment; moving along the dock then switches instantly.
 		t.current = window.setTimeout(
 			() => {
@@ -767,14 +768,51 @@ function Dock(p: {
 	onDockMenu: (x: number, y: number) => void
 }) {
 	const pos = p.cfg.dock.position
-	const vertical = pos !== 'bottom'
-	const side = pos === 'left' ? 'right' : pos === 'right' ? 'left' : 'top'
+	const vertical = pos === 'left' || pos === 'right'
+	const side: TipSide = pos === 'left' ? 'right' : pos === 'right' ? 'left' : pos === 'top' ? 'bottom' : 'top'
 	const tip = useTooltip()
 	const ref = useRef<HTMLElement>(null)
 	const [drag, setDrag] = useState<{key: string; x: number; y: number; order: string[]; outside: boolean} | null>(null)
 	const [hover, setHover] = useState(false)
 	const suppressClick = useRef(false)
-	const size = DOCK_ICON[p.cfg.dock.size]
+	const size = p.cfg.dock.iconSize
+	// Bounce: an app that wasn't open bounces while it opens.
+	const [bouncing, setBouncing] = useState<string | null>(null)
+	const open = (k: string) => {
+		if (p.cfg.dock.bounce && !p.counts(k) && !reducedMotion()) {
+			setBouncing(k)
+			window.setTimeout(() => setBouncing((b) => (b === k ? null : b)), 1300)
+		}
+		p.onClick(k)
+	}
+	// Magnify: icons near the pointer grow (and push their neighbours apart), like macOS.
+	const magnifyOn = p.cfg.dock.hover === 'magnify' && !reducedMotion()
+	const frame = useRef(0)
+	const magnifyAt = (x: number | null, y: number | null) => {
+		cancelAnimationFrame(frame.current)
+		frame.current = requestAnimationFrame(() => {
+			const max = p.cfg.dock.magnify
+			const range = (size + 12) * 2.6
+			for (const el of ref.current?.querySelectorAll<HTMLElement>('.dock-item') ?? []) {
+				const art = el.querySelector<HTMLElement>('.dock-art, .show-apps')
+				if (!art) continue
+				let scale = 1
+				if (x !== null && y !== null) {
+					const r = el.getBoundingClientRect()
+					const d = vertical ? Math.abs(y - (r.top + r.height / 2)) : Math.abs(x - (r.left + r.width / 2))
+					const t = Math.max(0, 1 - d / range)
+					scale = 1 + (max - 1) * (t * t * (3 - 2 * t))
+				}
+				art.style.transform = scale === 1 ? '' : `scale(${scale.toFixed(3)})`
+				const grow = ((scale - 1) * size) / 2
+				el.style.margin = grow ? (vertical ? `${grow.toFixed(1)}px 0` : `0 ${grow.toFixed(1)}px`) : ''
+			}
+		})
+	}
+	useEffect(() => {
+		if (!magnifyOn) magnifyAt(null, null)
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [magnifyOn, size, pos])
 
 	const isOutside = (x: number, y: number) => {
 		const r = ref.current!.getBoundingClientRect()
@@ -832,10 +870,14 @@ function Dock(p: {
 			{p.cfg.dock.autohide && <div className={`dock-hotzone hz-${pos}`} onPointerEnter={() => setHover(true)} />}
 			<nav
 				ref={ref}
-				className={`desk-dock${hidden ? ' hidden' : ''}`}
+				className={`desk-dock${hidden ? ' hidden' : ''}${magnifyOn ? ' magnify' : ''}`}
 				aria-label="Dock"
 				onPointerEnter={() => setHover(true)}
-				onPointerLeave={() => setHover(false)}
+				onPointerMove={(e) => magnifyOn && !drag && e.pointerType === 'mouse' && magnifyAt(e.clientX, e.clientY)}
+				onPointerLeave={() => {
+					setHover(false)
+					if (magnifyOn) magnifyAt(null, null)
+				}}
 				onContextMenu={(e) => {
 					if ((e.target as HTMLElement).closest('.dock-item')) return
 					e.preventDefault()
@@ -853,10 +895,10 @@ function Dock(p: {
 								{!pinned && prevPinned && <span className="dock-sep" />}
 								<button
 									data-key={k}
-									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}`}
+									className={`dock-item${p.focusedKey === k ? ' focused' : ''}${count ? ' running' : ''}${drag?.key === k ? ' dragging' : ''}${bouncing === k ? ' bouncing' : ''}`}
 									aria-label={it.label}
 									onPointerDown={startDrag(k)}
-									onClick={() => !suppressClick.current && p.onClick(k)}
+									onClick={() => !suppressClick.current && open(k)}
 									onMouseEnter={(e) => tip.show(it.label + (it.status === 'stopped' ? ' · stopped' : ''), e.currentTarget, side)}
 									onMouseLeave={tip.hide}
 									onContextMenu={(e) => {
