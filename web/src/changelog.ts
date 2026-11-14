@@ -4,6 +4,12 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.10',
+		date: '2026-11-13',
+		title: 'Ready to share',
+		fixed: ['Settings no longer links to an installer ISO. Omarchy Server installs with one command on an Omarchy machine.'],
+	},
+	{
 		version: '0.9.9',
 		date: '2026-11-13',
 		title: 'Accurate system stats',

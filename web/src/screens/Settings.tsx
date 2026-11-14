@@ -444,7 +444,6 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 			{owner && <SecurityGroup />}
 
 			<Group title="More">
-				<Row icon="download" color="var(--blue)" label="Installer ISO" value="Set up another server" href="https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso" />
 				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}
 				{owner && <Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />}
 				{owner && <Row icon="power" color="var(--red)" label="Shut down server" onClick={() => power('shutdown')} />}

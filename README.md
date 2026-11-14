@@ -1,159 +1,172 @@
 # Omarchy Server
 
-Your Omarchy machine as a home server you open in a browser: a touch-first web app on every device
-(apps, files, NAS, virtual machines, settings), with your real Omarchy desktop one click away.
+Turn an [Omarchy](https://omarchy.org) machine into a home server you run from any browser. Install
+apps from a catalog of about 580, keep your files and drives in one place, run virtual machines, and
+reach your real Omarchy desktop — from a phone, a tablet or another computer.
 
-> Early work in progress: web app, files and virtual machines work; apps and NAS are next.
+![The desktop layout in a browser, with the app launcher open](docs/screenshots/desktop-overview.png)
 
-## How it fits together
+<p align="center">
+  <img src="docs/screenshots/phone-home.png" width="24%" alt="Home on a phone">
+  <img src="docs/screenshots/phone-store.png" width="24%" alt="App Store on a phone">
+  <img src="docs/screenshots/phone-system.png" width="24%" alt="System on a phone">
+  <img src="docs/screenshots/phone-machines.png" width="24%" alt="Machines on a phone">
+</p>
 
-| Part | What it is |
-| --- | --- |
-| **Web app** (`web/`, `server/`) | The Omarchy Server interface and its server: sign-in, sessions, file streaming, app windows. Faces the network. |
-| **omarchyd** (`omarchyd/`) | The backend. Runs as your own user (never root), listens on `127.0.0.1` only, and answers the web app with real data: accounts, system stats from `/proc`, and your real home folder. |
+## Install
 
-Files in the web app are your actual home folder, so the browser and the Omarchy desktop see the same
-files. Trash is the freedesktop trash that Omarchy's file manager uses. Hidden files stay hidden, and
-nothing outside your home folder can be reached, including through symlinks. The web app's wallpaper
-is your current Omarchy background.
-
-## Install on a new computer (ISO)
-
-**[Download the Omarchy Server installer ISO](https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso)**
-(checksum: `omarchy-server.iso.sha256` on the same release). Write it to a USB stick (balenaEtcher,
-Impression, or `dd`), boot from it, and follow the screen:
-
-1. Arch Linux is installed with Arch's own guided installer, pre-filled for Omarchy Server. You pick
-   the drive (it's erased), your user and timezone.
-2. On first start you're logged in once on the console: Omarchy Server installs and you create your
-   account there.
-3. Omarchy itself installs, and the computer restarts into it.
-
-The ISO is Arch's official one plus one setup command (`iso/`), built by GitHub Actions on every
-release. It needs an internet connection while installing.
-
-## Install (on the Omarchy machine)
-
-Run this as your normal user, not with sudo:
+On the Omarchy machine, as your normal user (not with sudo):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash
 ```
 
-It installs Node.js if needed (the only step that asks for sudo, plus one to keep the server running
-while you're logged out), builds the app in `~/.local/share/omarchy-server`, asks you to create your
-account **in the terminal** (your password never crosses the network), and starts two systemd user
-services:
+The installer:
 
-| Service | Listens on | Does |
-| --- | --- | --- |
-| `omarchyd` | `127.0.0.1:2021` only, plus each app's port | The backend: accounts, stats, files, machines, apps, storage. App ports admit only signed-in browsers |
-| `omarchy-server-web` | port `7780` | The web app you open in a browser |
+- installs what's missing (Node.js, Podman, libvirt, wayvnc and friends);
+- builds Omarchy Server in `~/.local/share/omarchy-server`;
+- asks you to create your account **in the terminal**, so your password never crosses the network;
+- starts two systemd user services that keep running while you're logged out.
 
-Then open `http://<machine-ip>:7780` and sign in. Run the same command again to update; your account,
-sessions and files are kept.
+Then open `http://<server-ip>:7780` (or `https://`, see [Security](#security)) and sign in.
 
-Logs: `journalctl --user -u omarchyd -u omarchy-server-web -f`
+Run the same command again to update, or use Settings → Software update. Your account, apps, machines
+and files are kept. Logs: `journalctl --user -u omarchyd -u omarchy-server-web -f`
 
-## Machines
+Want ZFS pools too? Add `--zfs` (see [Storage](#storage-and-nas)).
 
-Tap an operating system and it installs itself:
+## What you get
 
-| Kind | How it installs |
-| --- | --- |
-| Ubuntu, Debian, Fedora, Arch, Alpine (Server) | Cloud image + cloud-init: your account, ready in a minute or two |
-| Ubuntu, Debian, Fedora (Desktop) | Same image; the first start installs the desktop, then restarts into it |
-| Omarchy | Official ISO + a `cidata` drive with its unattended-install files (your account, hashed password) |
-| Windows 10/11 (your ISO) | Put Microsoft's ISO in Files; an answer file installs it with your local account (Pro, unactivated) |
-| Any other ISO in Files | Boots its installer; finish it in the console |
+### A web app for every screen
 
-Virtual machines run under libvirt's **per-user session** (`qemu:///session`), so QEMU runs as you,
-not root, and you don't need the `libvirt` group. Each machine:
+- **Phone and tablet layout:** touch first. Home shows CPU, memory and storage at a glance, plus your
+  apps. Tabs for Apps, Files, Machines and System.
+- **Desktop layout** on a computer: a top bar, a dock, windows you can drag, snap and resize, desktop
+  icons, an app launcher and Activities overview. Switch layouts any time.
+- **Your look, everywhere:** themes, accent colours, wallpapers or your own photo, and Omarchy's own
+  themes and backgrounds (the icons follow them). The desktop's wallpaper, dock and icons are saved to
+  your account, so every browser you sign in on shows the same desktop.
+- **The dock your way:** left, bottom, right or top; any icon size; lift or magnify under the pointer;
+  bounce when an app opens; floating or auto-hide.
 
-- starts from a cloud image listed in the [machine catalog](https://github.com/TouchWorkStation/app-store/blob/main/machines/catalog.json)
-  (a copy ships with omarchyd as a fallback). Images come from their publishers (Ubuntu, Debian,
-  Arch) and must match the publisher's own checksum file, or they're thrown away;
-- gets its account from cloud-init on first boot. Only a SHA-512 crypt hash of the password is
-  written to disk;
-- shares the server's network through passt. To reach a service inside it, add a port forward
-  (server ports 40000-49999). The installer lets that range through ufw; nothing listens there
-  until you add a forward;
-- shows its screen over VNC on a unix socket in its own folder (never a TCP port), bridged to the
-  browser only with a single-use, 30-second ticket.
+### Apps
 
-Files live in `~/.local/share/omarchy-server/omarchyd/machines`. Needs an x86-64 server; KVM is used
-when `/dev/kvm` is available (otherwise machines still run, slowly).
+- **App Store:** about 580 self-hosted apps (Jellyfin, Immich, Nextcloud, Home Assistant, Vaultwarden,
+  Paperless-ngx and many more), in categories, with search. Add other stores, including Umbrel-format
+  ones.
+- **One tap to install.** Apps that need other apps get them too. Each app opens in a window, full
+  screen, or its own tab, with its default sign-in shown when it has one.
+- **Safe by default:** apps run in **rootless Podman** as you — no root, no Docker socket on the
+  network. Before installing, you see exactly what an app asks for (system ports, devices, host
+  network, folders outside its own), and it gets only what you allow. Apps never receive your Omarchy
+  Server sign-in.
+- **Behind your sign-in:** every app's port admits only browsers signed in to Omarchy Server.
+- Start, stop, restart, update, logs, and a shell inside any app.
 
-## Apps
+![App Store in the desktop layout](docs/screenshots/desktop-app-store.png)
 
-A new server starts with the [TouchWorkStation store](https://github.com/TouchWorkStation/app-store):
-each app is a plain Docker Compose file built from the project's own official image and docs, with an
-original description, and an `omarchy-app.yml` that names its web service and port. Your Videos, Music,
-Pictures, Documents and Downloads folders are available to apps as `${VIDEOS_DIR}` and so on.
-Other stores, including Umbrel-format ones, can be added under App Store → Stores; an installed app
-always stays with the store it came from. Apps that need other apps are installed together with them. An app's own `exports.sh` (extra settings such as ports or derived passwords) runs in a
-bubblewrap sandbox with no network, a read-only system and only its own app folder. Store apps
-mostly run as user 1000, so each app's folder is handed to that user inside
-its container, and it gets access to Downloads through an ACL.
-Stores use the community-store layout: a store manifest at the root and a folder per app with its
-manifest and compose file. Apps run in **rootless Podman** as you (no root, no docker group, no
-Docker socket on the network). Each app's web port is served by omarchyd's gateway, which only lets
-in browsers signed in to Omarchy Server, and forwards to the app on `127.0.0.1`.
+### Files
 
-## Desktop and terminal
+- Your real home folder, so the browser and the Omarchy desktop see the same files.
+- Browse, upload (files and folders, drag and drop), download, rename, copy, move, search, favorites,
+  recents, and the same Trash as Omarchy's file manager.
+- View photos, videos, music, PDFs, documents, spreadsheets and code in the browser.
+- Photo sync from your phone, and SMB network shares for any folder.
 
-- **Omarchy desktop:** Machines → Omarchy desktop shows this server's own desktop, live. `wayvnc`
-  shares the signed-in Hyprland session on `127.0.0.1:5900` only; the web app reaches it through
-  omarchyd with a single-use ticket, so it's behind your Omarchy Server sign-in. It's available
-  while someone is signed in to Omarchy on the server.
-- **Terminal:** a login shell in a real pty (via util-linux `script`), or a shell inside an app.
-- **On the server:** `omarchy-server` (status, open, restart, logs), "Omarchy Server" in the
-  launcher, and a top-bar icon (`omarchy-server widget off` removes it).
+![Files in the desktop layout](docs/screenshots/desktop-files.png)
 
-## Storage
+### Machines (virtual machines)
 
-Settings → Storage shows every drive with its health, and lets you create **Btrfs pools** (combined,
-mirrored or RAID 10), import existing Btrfs drives, add drives, run error checks and set hard drives
-to sleep. Pools mount at `~/Pools/<name>`, so they're in Files, on the Omarchy desktop and shareable
-from Files over SMB.
+- **One tap:** Ubuntu, Debian, Fedora, Arch and Alpine (server or desktop), Omarchy, Windows 10/11 from
+  your own ISO, or any ISO in Files. Images are checked against their publisher's checksums, and
+  cloud-init sets up your account.
+- **Proxmox-style controls** on the desktop, and every setting on a phone: CPU (sockets, cores, type),
+  memory, disks, network, boot order, firmware, snapshots, backups (live), clone, restore, pause,
+  hibernate, start with the server, task history, live usage graphs and a monitor.
+- The screen in your browser with keyboard, mouse and touch controls, clipboard paste, and
+  port forwarding to services inside a machine.
+- Machines run as you under libvirt's per-user session, not as root.
 
-### ZFS (optional)
+### Your Omarchy desktop, remotely
+
+- The server's own Omarchy desktop, live in the browser, signed in from anywhere when it's at its
+  login screen. It locks again after you finish viewing (you can turn that off).
+- **Super key:** the Windows / ⌘ / Super key goes through, or Right Alt stands in for it on computers
+  that keep Super to themselves. A Super button and shortcuts for the Omarchy launcher, menu and
+  terminal are in the toolbar.
+- Paste from your computer into the desktop's apps (Ctrl+V, or right-click → Paste on https://).
+- Full screen with system keys passed through (Chrome, Edge and Brave over https://).
+
+### Terminal
+
+A real login shell in the browser, or a shell inside any app. Right-click copies a selection or
+pastes. On a phone there's a key row with Esc, Tab, Ctrl, Alt and arrows.
+
+![Terminal in the desktop layout](docs/screenshots/desktop-terminal.png)
+
+### Storage and NAS
+
+- Every drive with its health (SMART), and sleep timers for hard drives.
+- **Btrfs pools** (combined, mirrored or RAID 10) on blank drives, import existing Btrfs drives, add
+  drives, error checks.
+- **ZFS pools** (combined, mirrored, RAID-Z1, RAID-Z2) and imports, after installing with `--zfs`.
+- Pools appear in Files at `~/Pools/<name>`, and can be shared over SMB.
+- Drives that hold anything are never erased: pools are only made on blank drives.
+
+### System
+
+- Live CPU, memory, temperature, uptime and storage, with what each app and machine is using.
+- Storage pools with their space, drives, layout and errors.
+- If a drive got bigger (a resized virtual disk, say), it shows the space that isn't in use yet and
+  the exact commands to grow into it.
+- Device name, Wi-Fi, logs, restart, shut down, factory reset, and a What's New after every update.
+
+![System in the desktop layout](docs/screenshots/desktop-system.png)
+
+## Security
+
+- **Your password stays on the server:** it's created in the terminal, stored as a scrypt hash.
+  Sign-in slows down after repeated failures, and two-factor (TOTP) codes work once each.
+- **Least privilege:** the backend runs as your user and listens on `127.0.0.1` only. Root work
+  (storage, firewall) goes through one small helper with a single sudoers rule, which checks every
+  request itself.
+- **https:// on the same port** with the server's own certificate authority. New servers' authority
+  is limited to home-network names and private addresses, so it can't vouch for real websites.
+  Settings → Security lets you replace an older one, send browsers to https:// always, and choose
+  whether the desktop locks after remote viewing.
+- **Apps are contained:** apps only get the access you approve. Their setup scripts run in a sandbox
+  with no network. Their ports sit behind your sign-in.
+- **No exposed screens:** the desktop and machines' screens are on private sockets, reachable only
+  through a single-use ticket.
+- **Signed-in devices** are listed in Settings, and you can sign any of them out.
+
+## How it fits together
+
+| Part | Runs as | Listens on | Does |
+| --- | --- | --- | --- |
+| `omarchyd` (`omarchyd/`) | you | `127.0.0.1:2021`, plus each app's port | Accounts, stats, files, apps, machines, storage. App ports admit only signed-in browsers |
+| `omarchy-server-web` (`server/`, `web/`) | you | `7780` (http and https) | The web app you open in a browser |
+| `helper/helper.mjs` | root, via one sudoers rule | — | Storage pools, shares, firewall ports, power |
+
+On the server itself: `omarchy-server` (status, open, restart, logs), "Omarchy Server" in the
+launcher, and a top-bar icon (`omarchy-server widget off` removes it).
+
+## Requirements
+
+- An x86-64 computer running [Omarchy](https://omarchy.org) (Arch Linux + Hyprland)
+- An internet connection while installing
+- For machines: KVM (`/dev/kvm`) for full speed; machines still run without it, slowly
+- For storage pools: extra drives (blank ones for new pools)
+
+## Development
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/TouchWorkStation/omarchy-server/main/install.sh | bash -s -- --zfs
+npm install
+npm run build
+npm test
 ```
-
-This builds the current OpenZFS release from the AUR (`zfs-utils`, `zfs-dkms`, with yay) for your
-exact kernel, after updating the system with `omarchy update` and making sure the kernel headers
-match the kernel. Then Storage
-offers ZFS pools (Combined, Mirrored, RAID-Z1, RAID-Z2, created on blank drives only) and imports
-existing ZFS pools unchanged: a pool from another computer asks before importing, and a pool whose
-datasets would mount over a system folder is refused. **Kernel updates rebuild ZFS**, and on a
-brand-new kernel that can fail until OpenZFS supports it, leaving pools unavailable until it does.
-
-Root-only work goes through one small helper (`helper/helper.mjs`), installed root-owned at
-`/usr/local/libexec/omarchy-server/` and allowed by a single sudoers rule. It checks every request
-itself and **never erases a drive that holds anything**: pools are created only on blank drives, and
-the app shows the one command (`sudo wipefs -a /dev/sdX`) to clear a drive yourself.
-
-## Status
-
-- [x] Sign-in (scrypt-hashed passwords, rate-limited), system stats, files: browse, view, upload,
-      download, rename, copy, move, trash, restore, search, recents, favorites
-- [ ] Your real Omarchy desktop in the browser (Hyprland headless + wayvnc + noVNC)
-- [x] Apps and the App Store: stores you add (community-store layout), rootless Podman + Compose,
-      every app behind the Omarchy Server sign-in
-- [x] Virtual machines: one-tap Ubuntu/Debian/Fedora/Arch/Alpine (server and desktop), Omarchy, Windows from
-      your ISO, any ISO; checksum-verified, set up with cloud-init,
-      run as your user (libvirt session, passt networking), screen in the browser, port forwarding
-- [x] NAS: drive health (SMART), drive sleep, Btrfs and ZFS pools (new on blank drives, import,
-      error checks) in Home → Pools, SMB shares from Files
-- [ ] NFS shares
-- [x] One-line installer with systemd user services
-- [x] Installer ISO
-- [ ] An AUR package
 
 ## Credits
 
 Omarchy is by DHH and the Omarchy contributors. This project is independent and not affiliated with
-Omarchy.
+Omarchy. App icons come from [Dashboard Icons](https://github.com/homarr-labs/dashboard-icons).
