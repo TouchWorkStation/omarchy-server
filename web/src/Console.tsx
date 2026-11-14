@@ -33,6 +33,20 @@ const readScale = (): Scale => {
 		return 'fit'
 	}
 }
+// Which key on this computer acts as the machine's Super key. Many computers keep the Windows/⌘/
+// Super key for themselves (an Omarchy or Windows desktop never hands Super+Enter to a browser),
+// so a key the browser does receive can stand in for it.
+type SuperKey = 'meta' | 'altright' | 'ctrlright'
+const SUPER_CODES: Record<SuperKey, string[]> = {meta: ['MetaLeft', 'MetaRight', 'OSLeft', 'OSRight'], altright: ['AltRight'], ctrlright: ['ControlRight']}
+const SUPER_LABEL: Record<SuperKey, string> = {meta: 'Windows / ⌘ key', altright: 'Right Alt', ctrlright: 'Right Ctrl'}
+function readSuperKey(): SuperKey {
+	try {
+		const v = localStorage.getItem('omarchy-server:console-super')
+		return v === 'altright' || v === 'ctrlright' ? v : 'meta'
+	} catch {
+		return 'meta'
+	}
+}
 const F = (n: number) => 0xffbd + n // F1 = 0xffbe
 const KEY = {Escape: 0xff1b, Tab: 0xff09, Enter: 0xff0d, Backspace: 0xff08, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53, Ctrl: 0xffe3, Alt: 0xffe9, Super: 0xffeb, Shift: 0xffe1}
 const BTN = {left: 1, middle: 2, right: 4, wheelUp: 8, wheelDown: 16, wheelLeft: 32, wheelRight: 64}
@@ -98,7 +112,11 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 	const [state, setState] = useState<State>('connecting')
 	const [message, setMessage] = useState('')
 	const [signedOut, setSignedOut] = useState(false)
-	const [mods, setMods] = useState({Ctrl: false, Alt: false, Shift: false})
+	const [mods, setMods] = useState({Ctrl: false, Alt: false, Shift: false, Super: false})
+	const [superKey, setSuperKeyState] = useState<SuperKey>(readSuperKey)
+	const [superHeld, setSuperHeld] = useState(false) // the toolbar's Super button: held down until pressed again
+	const superDown = useRef(false) // what the machine currently thinks
+	const lastSuperTap = useRef(0)
 	const [attempt, setAttempt] = useState(0)
 	const [mode, setModeState] = useState<Mode>(readMode)
 	const [zoomLabel, setZoomLabel] = useState(100)
@@ -233,6 +251,61 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		return () => window.clearInterval(t)
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [deskUi])
+	// The Super key. noVNC never sees the chosen key: it's sent as Super_L here, so it works the
+	// same on every computer (and a stand-in key like Right Alt doesn't also act as Alt).
+	const setSuperKey = (k: SuperKey) => {
+		setSuperKeyState(k)
+		try {
+			localStorage.setItem('omarchy-server:console-super', k)
+		} catch {
+			/* not saved */
+		}
+		toast(k === 'meta' ? 'Super is your Windows / ⌘ key' : `${SUPER_LABEL[k]} now works as Super`)
+	}
+	const sendSuper = (down: boolean) => {
+		if (superDown.current === down) return
+		superDown.current = down
+		rfbRef.current?.sendKey(KEY.Super, 'MetaLeft', down)
+	}
+	useEffect(() => {
+		const root = rootRef.current
+		if (!root) return
+		const codes = new Set([...SUPER_CODES.meta, ...SUPER_CODES[superKey]])
+		const onKey = (e: KeyboardEvent) => {
+			if (!codes.has(e.code) || !canvasHost.current?.contains(e.target as Node)) return
+			e.preventDefault()
+			e.stopImmediatePropagation()
+			if (e.repeat) return
+			sendSuper(e.type === 'keydown' || superHeld)
+		}
+		// Never leave Super stuck down on the machine when this window loses the keyboard.
+		const release = () => {
+			if (!superHeld) sendSuper(false)
+		}
+		root.addEventListener('keydown', onKey, true)
+		root.addEventListener('keyup', onKey, true)
+		window.addEventListener('blur', release)
+		return () => {
+			root.removeEventListener('keydown', onKey, true)
+			root.removeEventListener('keyup', onKey, true)
+			window.removeEventListener('blur', release)
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [superKey, superHeld])
+	const toggleSuperHeld = () => {
+		const next = !superHeld
+		setSuperHeld(next)
+		sendSuper(next)
+		rfbRef.current?.focus()
+		if (next) toast('Super is held down: press keys for Super shortcuts, then click Super again to let go')
+	}
+	// A dropped connection forgets keys held down.
+	useEffect(() => {
+		if (state !== 'connected') {
+			superDown.current = false
+			setSuperHeld(false)
+		}
+	}, [state])
 	// Full screen: the console alone, edge to edge. Where the browser allows it (Chrome on
 	// HTTPS), system keys like Esc, Alt+Tab and the Windows/Super key go to the machine too.
 	useEffect(() => {
@@ -286,6 +359,13 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 			toast('Screenshot saved')
 		}, 'image/png')
 	}
+	const OMARCHY_COMBOS: {label: string; keys: number[]}[] = [
+		{label: 'Super + Space · app launcher', keys: [KEY.Super, 0x20]},
+		{label: 'Super + Alt + Space · Omarchy menu', keys: [KEY.Super, KEY.Alt, 0x20]},
+		{label: 'Super + Enter · terminal', keys: [KEY.Super, KEY.Enter]},
+		{label: 'Super + W · close window', keys: [KEY.Super, 0x77]},
+		{label: 'Super + K · all shortcuts', keys: [KEY.Super, 0x6b]},
+	]
 	const KEY_COMBOS: {label: string; keys: number[] | 'cad'}[] = [
 		{label: 'Ctrl + Alt + Delete', keys: 'cad'},
 		{label: 'Ctrl + Alt + Backspace', keys: [KEY.Ctrl, KEY.Alt, KEY.Backspace]},
@@ -736,18 +816,18 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		rfb.sendKey(keysym, null, true)
 		rfb.sendKey(keysym, null, false)
 		for (const m of held.reverse()) rfb.sendKey(KEY[m], null, false)
-		if (held.length) setMods({Ctrl: false, Alt: false, Shift: false})
+		if (held.length) setMods({Ctrl: false, Alt: false, Shift: false, Super: false})
 	}
 	// Typed characters: modifiers the user toggled apply; otherwise Shift is added where needed.
 	const typeChar = (ch: string) => {
 		const rfb = rfbRef.current
 		if (!rfb) return
-		if (mods.Ctrl || mods.Alt) return tapKey(ch === '\n' ? KEY.Enter : keysymOf(ch.toLowerCase()))
+		if (mods.Ctrl || mods.Alt || mods.Super) return tapKey(ch === '\n' ? KEY.Enter : keysymOf(ch.toLowerCase()))
 		if (mods.Shift) {
 			rfb.sendKey(KEY.Shift, null, true)
 			sendChar(rfb, ch, true)
 			rfb.sendKey(KEY.Shift, null, false)
-			return setMods({Ctrl: false, Alt: false, Shift: false})
+			return setMods({Ctrl: false, Alt: false, Shift: false, Super: false})
 		}
 		sendChar(rfb, ch)
 	}
@@ -793,7 +873,7 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 		{label: 'ctrl', mod: 'Ctrl'},
 		{label: 'alt', mod: 'Alt'},
 		{label: 'shift', mod: 'Shift'},
-		{label: 'super', sym: KEY.Super},
+		{label: 'super', mod: 'Super'},
 		{label: '←', sym: KEY.Left},
 		{label: '↑', sym: KEY.Up},
 		{label: '↓', sym: KEY.Down},
@@ -849,6 +929,20 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 							<>
 								<button className="ct-scrim" aria-label="Close" onClick={() => setKeysOpen(false)} />
 								<div className="ct-menu" role="menu">
+									{machine.id === 'desktop' &&
+										OMARCHY_COMBOS.map((k) => (
+											<button
+												key={k.label}
+												role="menuitem"
+												onClick={() => {
+													setKeysOpen(false)
+													combo(k.keys)
+												}}
+											>
+												{k.label}
+											</button>
+										))}
+									{machine.id === 'desktop' && <hr />}
 									{KEY_COMBOS.map((k) => (
 										<button
 											key={k.label}
@@ -863,10 +957,26 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 											{k.label}
 										</button>
 									))}
+									<hr />
+									<span className="ct-menu-label">Super key on this computer</span>
+									{(Object.keys(SUPER_LABEL) as SuperKey[]).map((k) => (
+										<button key={k} role="menuitemradio" aria-checked={superKey === k} className={superKey === k ? 'on' : ''} onClick={() => (setKeysOpen(false), setSuperKey(k))}>
+											{k === 'meta' ? SUPER_LABEL.meta : `${SUPER_LABEL[k]} works as Super`}
+										</button>
+									))}
 								</div>
 							</>
 						)}
 					</div>
+					<button
+						className={`ct-btn${superHeld ? ' on' : ''}`}
+						disabled={!live}
+						aria-pressed={superHeld}
+						onClick={toggleSuperHeld}
+						title={`Hold Super down on the machine until you click again (for when this computer keeps its Super key to itself). Or use ${superKey === 'meta' ? 'Right Alt as Super: Keys menu' : SUPER_LABEL[superKey]}.`}
+					>
+						Super
+					</button>
 					<button className="ct-btn" disabled={!live} onClick={() => setTyping('')} title="Type text into the machine (for when copy and paste between your computer and the machine isn’t available)">
 						<Icon name="file-text" size={16} />
 						Type text
@@ -1045,6 +1155,17 @@ export function Console({machine, onClose, embedded}: {machine: Machine; onClose
 							onPointerDown={(e) => e.preventDefault()}
 							onClick={() => {
 								haptic(5)
+								if (k.mod === 'Super') {
+									// Tap: Super with the next key (Super + Enter…). Quick double tap: Super on its own.
+									const now = Date.now()
+									if (now - lastSuperTap.current < 400) {
+										lastSuperTap.current = 0
+										setMods((m) => ({...m, Super: false}))
+										combo([KEY.Super])
+										return
+									}
+									lastSuperTap.current = now
+								}
 								if (k.mod) setMods((m) => ({...m, [k.mod!]: !m[k.mod!]}))
 								else tapKey(k.sym!)
 							}}

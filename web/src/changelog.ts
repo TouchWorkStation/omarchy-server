@@ -4,6 +4,18 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.5',
+		date: '2026-11-13',
+		title: 'The Super key reaches your desktop',
+		added: [
+			'Your Windows / ⌘ / Super key now always reaches the Omarchy desktop and your machines as Super, from any browser that receives it.',
+			'Computers that keep Super for themselves (an Omarchy or Windows desktop): in the console’s Keys menu, choose Right Alt or Right Ctrl to work as Super instead. Your choice is remembered on that browser.',
+			'A Super button in the console toolbar holds Super down until you click it again, so Super + Enter, Super + Space and the rest work from any keyboard.',
+			'Keys menu shortcuts for the Omarchy desktop: app launcher, Omarchy menu, terminal, close window and all shortcuts.',
+			'On a phone or tablet, the super key works like ctrl and alt: tap it, then the next key. Double tap it for Super on its own.',
+		],
+	},
+	{
 		version: '0.9.4',
 		date: '2026-11-13',
 		title: 'More security, nothing taken away',
