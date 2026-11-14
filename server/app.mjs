@@ -20,7 +20,7 @@ import {dualProtocolServer} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.2'
+export const VERSION = '0.9.3'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -604,7 +604,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// sessions (not native ones). Hold a second, browser-style session server-side
 		// for that single purpose. Failing to get one only disables the console.
 		if (session.mode === 'native') {
-			session.console = await openConsoleSession(backend, credentials, userAgent).catch(() => null)
+			session.console = await openConsoleSession(backend, credentials, userAgent, session.accessToken).catch(() => null)
 		}
 		attempts.delete(ip)
 		const sid = newSessionId()
@@ -716,8 +716,11 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	})
 
 	// ---- VM console ------------------------------------------------------------
-	async function openConsoleSession(backend, credentials, userAgent) {
-		const {data: token, cookies} = await backend.mutation('user.login', credentials, {userAgent, withCookies: true})
+	async function openConsoleSession(backend, credentials, userAgent, accessToken) {
+		// From the sign-in that just happened (a 2FA code works only once); older servers sign in again.
+		const {data: token, cookies} = await (accessToken
+			? backend.mutation('user.browserSession', undefined, {userAgent, withCookies: true, token: accessToken}).catch(() => backend.mutation('user.login', credentials, {userAgent, withCookies: true}))
+			: backend.mutation('user.login', credentials, {userAgent, withCookies: true}))
 		const cookie = cookies.filter((c) => /BROWSER_SESSION/.test(c)).join('; ')
 		if (typeof token !== 'string' || !cookie) return null
 		// The same login also returns Omarchy Server's app-gateway session (OMARCHY_APP_SESSION). Touch

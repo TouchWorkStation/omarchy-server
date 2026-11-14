@@ -59,3 +59,23 @@ test('the Omarchy desktop opens through the screen viewer with a ticket, never w
 	assert.equal(first, 'RFB 003.008\n')
 	ws.close()
 })
+
+test('the desktop is shared on a private socket when there is one (not on a port other programs can reach)', async () => {
+	const sock = join(root, 'run', 'desktop-vnc.sock')
+	const {mkdir} = await import('node:fs/promises')
+	await mkdir(join(root, 'run'), {mode: 0o700})
+	const unix = net.createServer((s) => s.end('RFB 003.008 via socket\n'))
+	await new Promise((r) => unix.listen(sock, r))
+	const d2 = await startOmarchyd({port: 0, dataDir: join(root, 'data'), home: root, desktopVncPort: vnc.address().port, desktopVncSocket: sock})
+	try {
+		const login = await (await fetch(`${d2.url}/trpc/user.loginNative`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({userId: 'owner', password: 'correct horse', client: {id: 't2'}})})).json()
+		const t = (await (await fetch(`${d2.url}/trpc/user.createWebSocketTicket`, {method: 'POST', headers: {authorization: `Bearer ${login.result.data.accessToken}`, 'content-type': 'application/json'}, body: JSON.stringify({target: 'machines'})})).json()).result.data
+		const ws = new WebSocket(`${d2.url.replace('http', 'ws')}/machines/console?machineId=desktop&ticket=${t}`, ['binary'])
+		const first = await new Promise((r, j) => (ws.once('message', (m) => r(m.toString())), ws.once('error', j)))
+		assert.equal(first, 'RFB 003.008 via socket\n')
+		ws.close()
+	} finally {
+		unix.close()
+		await d2.close()
+	}
+})

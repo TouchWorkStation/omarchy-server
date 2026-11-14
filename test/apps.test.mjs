@@ -150,6 +150,8 @@ describe('omarchyd apps', () => {
 		upstream = http.createServer((req, res) => {
 			res.setHeader('x-frame-options', 'DENY')
 			res.setHeader('content-security-policy', "default-src 'self'; frame-ancestors 'none'")
+			// An app trying to plant Omarchy Server's own cookies, next to one of its own.
+			if (req.url === '/plant') res.setHeader('set-cookie', ['omarchy_server_sid=evil; Path=/', 'OMARCHY_APP_SESSION=evil; Path=/', 'appsid=fine; Path=/'])
 			res.end(JSON.stringify({path: req.url, cookie: req.headers.cookie ?? ''}))
 		})
 		wss = new WebSocketServer({server: upstream})
@@ -216,6 +218,19 @@ describe('omarchyd apps', () => {
 		ws.send('hi')
 		assert.equal(await new Promise((r) => ws.once('message', (m) => r(m.toString()))), 'echo:hi')
 		ws.close()
+	})
+
+	test('gateway: Omarchy Server’s own cookies never reach an app, and an app can’t set them', async () => {
+		const {ticket} = await call('apps.accessTicket', {appId: 'demo-app'})
+		const enter = await fetch(`http://127.0.0.1:${appPort}/__omarchy/enter?t=${ticket}`, {redirect: 'manual'})
+		const session = enter.headers.get('set-cookie').split(';')[0]
+		// Browsers send every cookie for this address to every port: the web app's session, omarchyd's
+		// browser session and the app session all arrive with requests for the app.
+		const cookie = `${session}; omarchy_server_sid=web-session-secret; OMARCHY_BROWSER_SESSION=browser-secret; appsid=mine`
+		const seen = JSON.parse(await (await fetch(`http://127.0.0.1:${appPort}/x`, {headers: {cookie}})).text())
+		assert.equal(seen.cookie, 'appsid=mine')
+		const planted = await fetch(`http://127.0.0.1:${appPort}/plant`, {headers: {cookie}})
+		assert.deepEqual(planted.headers.getSetCookie(), ['appsid=fine; Path=/'])
 	})
 
 	test('browser sign-in also hands out an app session', async () => {
@@ -342,7 +357,8 @@ describe('omarchyd apps', () => {
 			res.end(JSON.stringify({forwarded: Object.keys(req.headers).filter((k) => k.startsWith('x-forwarded'))}))
 		})
 		try {
-			await call('apps.install', {appId: 'hostnet'})
+			await assert.rejects(call('apps.install', {appId: 'hostnet'}), /share the server’s own network/)
+			await call('apps.install', {appId: 'hostnet', grant: ['host-network']})
 			await new Promise((r) => own.listen(ownPort, '127.0.0.1', r))
 			await call('apps.install', {appId: 'varport'})
 			const host = await until(async () => (await q('apps.list')).find((a) => a.id === 'hostnet' && a.state === 'running'))
@@ -412,6 +428,33 @@ describe('omarchyd apps', () => {
 		const out = YAML.parse(await readFile(join(data, 'apps', 'installed', 'boss', 'compose.omarchy.yml'), 'utf8'))
 		assert.match(out.services.boss.volumes[0], /^\/(?!var\/run).*podman\.sock:\/var\/run\/docker\.sock$/, 'your own rootless socket, never a root one')
 		await call('apps.uninstall', {appId: 'boss'})
+		await call('appStore.removeRepository', {url: `file://${store}`})
+	})
+
+	test('extra access: host network, server folders and system access ask first; home and system folders are refused', async () => {
+		const store = join(root, 'perm2-apps')
+		const listing = async (id, port, compose) => {
+			await mkdir(join(store, id), {recursive: true})
+			await writeFile(join(store, id, 'omarchy-app.yml'), `manifestVersion: 1\nid: ${id}\nname: ${id}\nport: ${port}\nweb:\n  service: web\n  port: 9000\n`)
+			await writeFile(join(store, id, 'docker-compose.yml'), compose)
+		}
+		await listing('peek', appPort + 13, `services:\n  web:\n    image: x\n    volumes:\n      - \${APP_DATA_DIR}/data:/data\n      - \${VIDEOS_DIR}:/videos\n      - /etc/localtime:/etc/localtime:ro\n      - /srv/media:/media\n      - /run/dbus:/run/dbus:ro\n    pid: host\n    cap_add: [SYS_PTRACE, CHOWN]\n`)
+		await listing('thief', appPort + 14, `services:\n  web:\n    image: x\n    volumes:\n      - ${root}/home/.ssh:/keys\n`)
+		await listing('wholehome', appPort + 15, `services:\n  web:\n    image: x\n    volumes:\n      - ~:/home\n      - /etc:/host-etc\n`)
+		git(['init', '-q', '-b', 'main'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
+		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
+		await call('appStore.addRepository', {url: `file://${store}`})
+		const peek = (await q('apps.installReview', {appId: 'peek'})).permissions
+		assert.deepEqual(peek.map((p) => p.id).sort(), ['host-files', 'system'])
+		assert.deepEqual(peek.find((p) => p.id === 'host-files').what, ['/srv/media'], 'its own data, your Videos and the time zone are fine')
+		assert.deepEqual(peek.find((p) => p.id === 'system').what.sort(), ['/run/dbus', 'SYS_PTRACE', 'pid: host'])
+		await assert.rejects(call('apps.install', {appId: 'peek', grant: ['system']}), /needs your permission: read and change folders on the server/)
+		for (const id of ['thief', 'wholehome']) {
+			const r = (await q('apps.installReview', {appId: id})).permissions
+			assert.ok(r.some((p) => p.id === 'refused'), `${id} refused`)
+			await assert.rejects(call('apps.install', {appId: id, grant: ['refused', 'host-files', 'system']}), /never gives an app/)
+		}
 		await call('appStore.removeRepository', {url: `file://${store}`})
 	})
 

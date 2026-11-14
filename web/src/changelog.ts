@@ -4,6 +4,17 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.3',
+		date: '2026-11-13',
+		title: 'Security fixes',
+		fixed: [
+			'Apps no longer receive your Omarchy Server sign-in. Browsers send a server’s cookies to every port on it; each app’s gateway now removes all of Omarchy Server’s own cookies before a request reaches the app, and stops apps from setting them.',
+			'The desktop’s screen is now shared on a private socket only you can open, instead of a local port that other programs and host-network containers could reach. Existing servers are moved over automatically.',
+			'Guessing passwords is slowed down everywhere (wrong tries queue up and wait longer each time), without ever locking you out. A 2FA code now works only once.',
+			'Installing an app now also asks before giving it the server’s own network, folders on the server, or system access (D-Bus, other programs). Your whole home folder, its hidden folders and system folders are never given to an app. Apps you already installed keep working and updating as before.',
+		],
+	},
+	{
 		version: '0.9.2',
 		date: '2026-11-13',
 		title: 'Brave and other streamed apps open securely',

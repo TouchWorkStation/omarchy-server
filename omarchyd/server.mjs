@@ -1,12 +1,12 @@
 // omarchyd: the Omarchy Server backend. It listens on localhost only; the Touch web server in front
 // of it is the one thing that faces the network. Runs as the owner's own user, not root.
-import {readFile, readdir, realpath, writeFile} from 'node:fs/promises'
+import {mkdir, readFile, readdir, realpath, rm, stat, writeFile} from 'node:fs/promises'
 import {randomBytes} from 'node:crypto'
 import http from 'node:http'
 import {fileURLToPath} from 'node:url'
 import net from 'node:net'
 import os from 'node:os'
-import {extname, join} from 'node:path'
+import {dirname, extname, join} from 'node:path'
 
 import {openAccounts} from './accounts.mjs'
 import {APP_COOKIE, createApps} from './apps.mjs'
@@ -20,9 +20,9 @@ import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.2'
+export const OMARCHYD_VERSION = '0.9.3'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const accounts = await openAccounts(dataDir)
 	const files = createFiles({home, dataDir})
 	const machines = createMachines({dataDir, files, ...machineOptions})
@@ -60,6 +60,16 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 			public: true,
 			run: async (input, {res}) => {
 				const {bearer, cookie, userId} = await accounts.loginBrowser(input)
+				await apps.ready
+				res.setHeader('set-cookie', [`OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Strict`, apps.sessionCookie(apps.issueSession(userId))])
+				return bearer
+			},
+		},
+		// The same for someone already signed in (no second password or 2FA check).
+		'user.browserSession': {
+			kind: 'mutation',
+			run: async (_input, {res, auth}) => {
+				const {bearer, cookie, userId} = await accounts.browserFor(auth)
 				await apps.ready
 				res.setHeader('set-cookie', [`OMARCHY_BROWSER_SESSION=${cookie}; Path=/; HttpOnly; SameSite=Strict`, apps.sessionCookie(apps.issueSession(userId))])
 				return bearer
@@ -223,13 +233,59 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		const {execFile} = await import('node:child_process')
 		return new Promise((resolve) => execFile(cmd, args, {timeout}, (err, out, errOut) => resolve({ok: !err, out: String(out ?? ''), err: String(errOut ?? err?.message ?? '')})))
 	}
-	const waitFor = async (port, seconds) => {
+	// The desktop's screen is shared on a private socket in your runtime folder (only you can open
+	// it; containers, even on the host network, can't). Older installs shared it on 127.0.0.1:5900,
+	// which any program on the server could reach: still used until the share is moved (below).
+	const socketUp = (path, ms = 800) =>
+		new Promise((resolve) => {
+			const c = net.connect({path})
+			const done = (ok) => (c.destroy(), resolve(ok))
+			c.setTimeout(ms, () => done(false))
+			c.once('connect', () => done(true))
+			c.once('error', () => done(false))
+		})
+	// Where the console connects: the private socket when it exists, else the old port.
+	async function desktopTarget() {
+		if ((await stat(desktopVncSocket).catch(() => null))?.isSocket()) return {path: desktopVncSocket}
+		return {host: '127.0.0.1', port: desktopVncPort}
+	}
+	const desktopUp = async () => (await socketUp(desktopVncSocket)) || (await reachable(desktopVncPort))
+	const waitFor = async (_port, seconds) => {
 		for (let i = 0; i < seconds * 4; i++) {
-			if (await reachable(port, 400)) return true
+			if (await desktopUp()) return true
 			await new Promise((r) => setTimeout(r, 250))
 		}
 		return false
 	}
+	// Move an older install's desktop share from 127.0.0.1:5900 to the private socket, so updating is
+	// enough (no need to run the installer again).
+	const DESKTOP_UNIT = `[Unit]
+Description=Omarchy Server: share this Omarchy desktop with the web app (private socket)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p -m 0700 %t/omarchy-server
+ExecStartPre=/usr/bin/rm -f %t/omarchy-server/desktop-vnc.sock
+ExecStart=/usr/bin/wayvnc --max-fps=30 --unix-socket %t/omarchy-server/desktop-vnc.sock
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+`
+	async function moveDesktopShare() {
+		if (machineOptions.run) return
+		const unit = join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd/user/omarchy-server-desktop.service')
+		const text = await readFile(unit, 'utf8').catch(() => null)
+		if (text === null || text.includes('--unix-socket')) return
+		await writeFile(unit, DESKTOP_UNIT)
+		await sh('systemctl', ['--user', 'daemon-reload'])
+		if ((await sh('systemctl', ['--user', 'is-active', 'omarchy-server-desktop.service'])).ok) await sh('systemctl', ['--user', 'restart', 'omarchy-server-desktop.service'])
+		// A one-off share started by desktopShare() on the old port.
+		await sh('systemctl', ['--user', 'stop', 'omarchy-server-desktop-now.service'])
+	}
+	moveDesktopShare().catch((e) => console.error('[omarchyd] desktop share', e.message))
 	// Restart / shut down: through logind as yourself when allowed, otherwise through the helper.
 	async function power(what) {
 		if (machineOptions.run) return true // dev/test stand-in
@@ -289,7 +345,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 
 	async function desktopShare() {
 		if (machineOptions.run) return true // the dev/test stand-in has no desktop
-		if (await reachable(desktopVncPort)) return true
+		if (await desktopUp()) return true
 		if (!(await readFile('/usr/bin/wayvnc').then(() => true, () => false)))
 			throw new RpcError('PRECONDITION_FAILED', 'Screen sharing (wayvnc) isn’t installed. Run the Omarchy Server installer again to add it.')
 		await sh('systemctl', ['--user', 'reset-failed', 'omarchy-server-desktop.service'])
@@ -301,7 +357,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 		const socket = (await readdir(runtime).catch(() => [])).find((f) => /^wayland-\d+$/.test(f))
 		const hypr = (await readdir(join(runtime, 'hypr')).catch(() => []))[0]
 		if (!socket) throw new RpcError('PRECONDITION_FAILED', 'DESKTOP_SIGNED_OUT: The Omarchy desktop is at its sign-in screen, so there’s no screen to show yet.')
-		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '127.0.0.1', String(desktopVncPort)])
+		await mkdir(dirname(desktopVncSocket), {recursive: true, mode: 0o700})
+		await rm(desktopVncSocket, {force: true})
+		await sh('systemd-run', ['--user', '--collect', '--unit=omarchy-server-desktop-now', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, ...(hypr ? [`--setenv=HYPRLAND_INSTANCE_SIGNATURE=${hypr}`] : []), '/usr/bin/wayvnc', '--max-fps=30', '--unix-socket', desktopVncSocket])
 		if (await waitFor(desktopVncPort, 5)) return true
 		const log = await sh('journalctl', ['--user', '-u', 'omarchy-server-desktop.service', '-u', 'omarchy-server-desktop-now.service', '-n', '3', '--no-pager', '-o', 'cat'])
 		const last = log.out.trim().split('\n').filter(Boolean).pop()
@@ -382,7 +440,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 			}
 			// "desktop" is this server's own Omarchy desktop, shared by wayvnc on 127.0.0.1 only.
 			const machineId = url.searchParams.get('machineId') ?? ''
-			const target = machineId === 'desktop' ? {host: '127.0.0.1', port: desktopVncPort} : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
+			const target = machineId === 'desktop' ? await desktopTarget() : await machines.vncSocket(machineId).then((path) => ({path}), () => null)
 			if (!target) return refuse('409 Conflict')
 			const vnc = net.connect(target)
 			vnc.once('error', () => refuse('502 Bad Gateway'))

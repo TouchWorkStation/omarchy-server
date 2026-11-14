@@ -245,17 +245,20 @@ NoNewPrivileges=yes
 [Install]
 WantedBy=default.target
 EOF
-# Your Omarchy desktop in the web app: wayvnc shares the running Hyprland session on 127.0.0.1 only
-# (never on the network). The web app reaches it through omarchyd, behind your sign-in. It runs while
-# you're signed in to Omarchy on this machine, and stops when you sign out.
-cat >"$UNITS/omarchy-server-desktop.service" <<EOF
+# Your Omarchy desktop in the web app: wayvnc shares the running Hyprland session on a private socket
+# in your runtime folder (never on the network, and not on a local port either, so other programs and
+# containers on this server can't reach it). The web app reaches it through omarchyd, behind your
+# sign-in. It runs while you're signed in to Omarchy on this machine, and stops when you sign out.
+cat >"$UNITS/omarchy-server-desktop.service" <<'EOF'
 [Unit]
-Description=Omarchy Server: share this Omarchy desktop with the web app (localhost only)
+Description=Omarchy Server: share this Omarchy desktop with the web app (private socket)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/wayvnc --max-fps=30 127.0.0.1 5900
+ExecStartPre=/usr/bin/mkdir -p -m 0700 %t/omarchy-server
+ExecStartPre=/usr/bin/rm -f %t/omarchy-server/desktop-vnc.sock
+ExecStart=/usr/bin/wayvnc --max-fps=30 --unix-socket %t/omarchy-server/desktop-vnc.sock
 Restart=on-failure
 RestartSec=3
 

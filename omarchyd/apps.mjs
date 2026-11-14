@@ -29,6 +29,8 @@ import {RpcError} from './rpc.mjs'
 import {dualProtocolServer, tlsContext} from './tls.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
+// Every cookie Omarchy Server itself sets (and any it may set later under these prefixes).
+export const OWN_COOKIE = /^(omarchy_server_|OMARCHY_)/i
 const STORE_FILES = ['omarchy-app-store.yml', 'umbrel-app-store.yml']
 const APP_FILES = ['omarchy-app.yml', 'umbrel-app.yml']
 const COMPOSE_FILES = ['omarchy-compose.yml', 'docker-compose.yml']
@@ -72,9 +74,25 @@ export const PERMISSIONS = {
 	devices: {label: 'Use hardware devices', detail: 'It gets direct access to devices plugged into your server, such as USB sticks or video cards.'},
 	network: {label: 'Change networking inside its container', detail: 'It can create network interfaces, routes and firewall rules inside its own container (VPNs need this). It can’t change your server’s own network.'},
 	privileged: {label: 'Run with every container permission', detail: 'It runs with all permissions inside its container. Containers here run as you, not as root, so it still can’t become root on your server.'},
+	'host-network': {label: 'Share the server’s own network', detail: 'It uses the server’s network directly instead of its own: it can reach services that listen only on this server, and other devices see it as the server. Home Assistant and similar apps need this to find devices.'},
+	'host-files': {label: 'Read and change folders on the server', detail: 'It can read and change these folders on your server, with your rights (containers here run as you).'},
+	system: {label: 'Reach into the server’s system', detail: 'It can see or talk to parts of the server outside its container (other programs, system services or kernel features). Monitoring tools and smart-home hubs sometimes need this.'},
+}
+// Bind mounts no app may have, whatever it asks: your whole home folder, its hidden folders (SSH keys,
+// settings, Omarchy Server's own data and keys), and the system's own folders.
+function refusedMount(path, home) {
+	const under = (p, base) => p === base || p.startsWith(`${base}/`)
+	if (path === '/' || path === home || path === '/home' || under(path, '/root') || under(path, '/boot') || under(path, '/proc') || under(path, '/run/user') || under(path, '/var/lib') || under(path, '/usr') || under(path, '/bin') || under(path, '/sbin')) return true
+	if (under(path, '/etc') && !['/etc/localtime', '/etc/timezone'].includes(path)) return true
+	if (home && path.startsWith(`${home}/.`)) return true
+	if (/^\/home\/[^/]+$/.test(path) || (path.startsWith('/home/') && home && !under(path, home))) return true
+	return false
 }
 const SOCKET = /(?:^|\/)(?:docker|podman)\.sock$|\$\{?DOCKER_SOCKET/
-export function appPermissions(text) {
+// What a compose file asks of the server beyond an ordinary container. `where` (when known) says
+// which folders are the app's own: its data folder, the shared folders and your media folders
+// (Videos, Music…), which apps may use without asking; `expand` resolves its variables.
+export function appPermissions(text, where = {}) {
 	const doc = (() => {
 		try {
 			return YAML.parse(String(text)) ?? {}
@@ -90,13 +108,36 @@ export function appPermissions(text) {
 	for (const [name, s] of Object.entries(doc.services ?? {})) {
 		if (!s || typeof s !== 'object' || name === 'app_proxy') continue
 		if (s.privileged === true || s.privileged === 'true') add('privileged', name)
+		if (s.network_mode === 'host') add('host-network', name)
+		for (const k of ['pid', 'ipc', 'uts', 'cgroup']) if (s[k] === 'host') add('system', `${k}: host`)
+		if (s.userns_mode) add('system', `userns_mode: ${s.userns_mode}`)
+		for (const o of s.security_opt ?? []) add('system', `security_opt: ${o}`)
 		for (const v of s.volumes ?? []) {
-			const src = typeof v === 'string' ? v.split(':')[0] : String(v?.source ?? '')
-			if (SOCKET.test(src)) add('containers', name)
-			else if (/^\/dev(\/|$)/.test(src) && !/^\/dev\/shm/.test(src)) add('devices', src)
+			const type = typeof v === 'object' ? v?.type : null
+			if (type === 'volume' || type === 'tmpfs') continue
+			// A bare "/path" is an anonymous volume (inside the container), not a server folder.
+			if (typeof v === 'string' && !v.includes(':')) continue
+			const raw = typeof v === 'string' ? (where.expand ? where.expand(v) : v).split(':')[0] : String(where.expand ? where.expand(v?.source ?? '') : (v?.source ?? ''))
+			if (SOCKET.test(raw)) add('containers', name)
+			else if (/^\/dev(\/|$)/.test(raw) && !/^\/dev\/shm/.test(raw)) add('devices', raw)
+			else if (/^\/run\/(dbus|systemd|udev)(\/|$)|^\/var\/run\/dbus(\/|$)|^\/(sys|lib\/modules)(\/|$)/.test(raw)) add('system', raw)
+			else if (raw.startsWith('/') || raw.startsWith('$') || raw.startsWith('~')) {
+				// Absolute paths (after expanding): the app's own folders are fine; anything else asks.
+				const path = raw.replace(/\/+$/, '') || '/'
+				const own = (where.allowed ?? []).some((d) => path === d || path.startsWith(`${d}/`))
+				if (own || ['/etc/localtime', '/etc/timezone'].includes(path)) continue
+				if (refusedMount(path, where.home)) add('refused', path)
+				else add('host-files', path)
+			}
 		}
 		for (const d of s.devices ?? []) add('devices', String(typeof d === 'string' ? d.split(':')[0] : d?.source ?? 'device'))
-		for (const c of s.cap_add ?? []) if (/NET_ADMIN|NET_RAW|SYS_MODULE|SYS_ADMIN|ALL/i.test(String(c))) add(/SYS_ADMIN|ALL/i.test(String(c)) ? 'privileged' : 'network', String(c))
+		for (const c of s.cap_add ?? []) {
+			const cap = String(c).toUpperCase().replace(/^CAP_/, '')
+			if (/^(SYS_ADMIN|ALL)$/.test(cap)) add('privileged', cap)
+			else if (/^(NET_ADMIN|NET_RAW|SYS_MODULE)$/.test(cap)) add('network', cap)
+			// Ordinary ones (file ownership, binding ports, signals) stay inside the container.
+			else if (!/^(CHOWN|DAC_OVERRIDE|FOWNER|FSETID|SETUID|SETGID|SETPCAP|NET_BIND_SERVICE|KILL|AUDIT_WRITE|MKNOD|SETFCAP|SYS_CHROOT|SYS_NICE|SYS_RESOURCE|IPC_LOCK)$/.test(cap)) add('system', cap)
+		}
 		if (s.sysctls && Object.keys(s.sysctls).length) add('network', 'sysctls')
 		for (const p of s.ports ?? []) {
 			const t = typeof p === 'object' ? String(p.published ?? '') : String(p).split('/')[0]
@@ -105,7 +146,7 @@ export function appPermissions(text) {
 			if (Number.isInteger(host) && host > 0 && host < 1024) add('low-ports', host)
 		}
 	}
-	return [...found].map(([id, set]) => ({id, ...PERMISSIONS[id], what: [...set].slice(0, 6)}))
+	return [...found].map(([id, set]) => ({id, ...(PERMISSIONS[id] ?? {label: 'Not allowed', detail: 'Omarchy Server never gives an app these folders.'}), what: [...set].slice(0, 8)}))
 }
 
 // Compose-style ${NAME}, $NAME, ${NAME:-default}, ${NAME-default} and ${NAME:?message}.
@@ -275,6 +316,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await save()
 		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
+		// Newer versions ask about more kinds of access (host network, server folders, system access).
+		// Apps you already installed keep what they have, so they keep working and updating.
+		if ((state.permissionsVersion ?? 1) < 2) {
+			for (const a of state.apps) {
+				if (!Array.isArray(a.permissions)) continue
+				const c = await readYaml(appDir(a.id), ['compose.omarchy.yml', ...COMPOSE_FILES]).catch(() => null)
+				if (!c) continue
+				const text = await readFile(join(appDir(a.id), c.name), 'utf8').catch(() => '')
+				a.permissions = [...new Set([...a.permissions, ...appPermissions(text, whereFor(a)).map((p) => p.id)])]
+			}
+			state.permissionsVersion = 2
+			await save()
+		}
 		for (const a of state.apps) if (a.port && a.state !== 'error') await openGateways(a).catch((e) => console.error('[omarchyd] gateway', a.id, e.message))
 	})()
 	const save = async () => {
@@ -310,10 +364,13 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// ---- gateway --------------------------------------------------------------------------------
 	function forwardHeaders(req) {
 		const h = {...req.headers}
+		// Browsers send a server's cookies to every port on it, so Omarchy Server's own sign-in cookies
+		// (the web app's session, omarchyd's browser session, the app session) arrive here too. None of
+		// them is ever passed to an app: an app that saw them could act as you in Omarchy Server.
 		const cookies = (h.cookie ?? '')
 			.split(';')
 			.map((c) => c.trim())
-			.filter((c) => c && !c.startsWith(`${APP_COOKIE}=`))
+			.filter((c) => c && !OWN_COOKIE.test(c.slice(0, c.indexOf('=') >>> 0)))
 		if (cookies.length) h.cookie = cookies.join('; ')
 		else delete h.cookie
 		h['x-forwarded-for'] = req.socket.remoteAddress ?? ''
@@ -385,7 +442,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const upstreamHttps = !view && app.internalHttps
 			const up = (upstreamHttps ? https : http).request({host: '127.0.0.1', port: target, method: req.method, path: req.url, headers: headersFor(req), timeout: 120_000, ...(upstreamHttps ? {rejectUnauthorized: false} : {})}, (r) => {
 				up.setTimeout(0) // it answered: long-lived responses (live updates, downloads) are fine
-				res.writeHead(r.statusCode ?? 502, frameable(r.headers, hostOnly(req)))
+				// Nor may an app set them (it could swap in a session of its choosing).
+				const headers = {...r.headers}
+				if (headers['set-cookie']) headers['set-cookie'] = [].concat(headers['set-cookie']).filter((c) => !OWN_COOKIE.test(String(c).trim().split('=')[0]))
+				res.writeHead(r.statusCode ?? 502, frameable(headers, hostOnly(req)))
 				r.pipe(res)
 			})
 			up.on('timeout', () => up.destroy(new Error('timeout')))
@@ -541,7 +601,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				deterministicPassword: a.deterministicPassword === true,
 				// Needs a secure (https://) page in the browser, e.g. for WebCodecs or the Web Crypto API.
 				...(a.requiresHttps === true ? {requiresHttps: true} : {}),
-				permissions: appPermissions(compose).map((p) => p.id),
+				permissions: appPermissions(compose, whereFor({id: a.id, port: a.port, version: a.version})).map((p) => p.id),
 				...(Array.isArray(a.openPorts) ? {openPorts: a.openPorts.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535 && n !== 22).slice(0, 16)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
 				...(unsupported ? {unsupported} : {}),
@@ -896,9 +956,18 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const satisfied = (need) => state.apps.some((a) => a.state !== 'error' && (a.id === need || (a.implements ?? []).includes(need)))
 
 	// The extra access a listing's compose file asks for.
+	// The folders an app may use without asking, and how its variables expand, for appPermissions.
+	function whereFor(app) {
+		const env = composeEnv({id: app.id, port: app.port, version: app.version})
+		return {
+			home,
+			expand: (v) => expandVars(String(v), env).replace(/^\.(?=\/|$)/, appDir(app.id)).replace(/^~(?=\/|$)/, home),
+			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d))],
+		}
+	}
 	async function permissionsOf(src) {
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
-		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8')) : []
+		return c ? appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src)) : []
 	}
 
 	// What installing `id` involves: the apps it needs that aren't installed yet, then the app.
@@ -932,7 +1001,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// Every extra access the apps ask for must be allowed explicitly, for this install.
 		const granted = new Set(Array.isArray(input?.grant) ? input.grant.map(String) : [])
 		const needs = new Map()
-		for (const src of plan) needs.set(src.id, (await permissionsOf(src)).map((p) => p.id))
+		for (const src of plan) {
+			const perms = await permissionsOf(src)
+			const refused = perms.find((p) => p.id === 'refused')
+			if (refused) throw new RpcError('FORBIDDEN', `${src.name} asks for folders Omarchy Server never gives an app: ${refused.what.join(', ')}.`)
+			needs.set(src.id, perms.map((p) => p.id))
+		}
 		const missing = [...new Set([...needs.values()].flat())].filter((p) => !granted.has(p))
 		if (missing.length) throw new RpcError('PRECONDITION_FAILED', `Installing needs your permission: ${missing.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}.`)
 		if (!(await engineAvailable())) throw new RpcError('PRECONDITION_FAILED', 'Apps need Podman. Run the Omarchy Server installer again to add it.')

@@ -58,8 +58,13 @@ export function totpCode(secret, time = Date.now(), step = 0) {
 	const offset = mac[mac.length - 1] & 15
 	return String((mac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).padStart(6, '0')
 }
-// One step either side, for clocks that are a little off.
-const totpOk = (secret, token) => /^\d{6}$/.test(String(token ?? '')) && [-1, 0, 1].some((s) => timingSafeEqual(Buffer.from(totpCode(secret, Date.now(), s)), Buffer.from(String(token))))
+// One step either side, for clocks that are a little off. Returns the matching time step (or null).
+const totpStep = (secret, token) => {
+	if (!/^\d{6}$/.test(String(token ?? ''))) return null
+	for (const s of [-1, 0, 1]) if (timingSafeEqual(Buffer.from(totpCode(secret, Date.now(), s)), Buffer.from(String(token)))) return Math.floor(Date.now() / 30_000) + s
+	return null
+}
+const totpOk = (secret, token) => totpStep(secret, token) !== null
 export const secretFromUri = (uri) => {
 	try {
 		const u = new URL(String(uri))
@@ -104,7 +109,36 @@ export async function openAccounts(dataDir) {
 	const userById = (id) => state.users.find((u) => u.userId === id)
 	const publicUser = (u) => ({userId: u.userId, name: u.name, role: u.role, language: u.language ?? 'en', wallpaper: u.wallpaper ?? {id: 'omarchy'}})
 
-	async function verify({userId, password, totpToken}, {twoFactor = true} = {}) {
+	// Guessing passwords: checks for an account run one at a time, and after a few wrong ones each
+	// further try waits longer (up to 30 s). Nobody is ever locked out, but guessing becomes far too
+	// slow to work, whoever asks: the web app, or any program on this server.
+	const failures = new Map() // userId -> [times]
+	const queues = new Map() // userId -> promise of the check in progress
+	const usedSteps = new Map() // userId -> last 2FA time step used (a code works once)
+	async function verify(input, opts) {
+		const key = input?.userId ?? state.users[0]?.userId ?? '-'
+		const prev = queues.get(key) ?? Promise.resolve()
+		const run = prev.catch(() => {}).then(async () => {
+			const recent = (failures.get(key) ?? []).filter((t) => now() - t < 15 * 60_000)
+			failures.set(key, recent)
+			if (recent.length >= 5) await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * 2 ** (recent.length - 5))))
+			try {
+				return await check(input, opts)
+			} catch (error) {
+				if (error instanceof RpcError && error.code === 'UNAUTHORIZED' && !/^Enter the 6-digit/.test(error.message)) failures.set(key, [...(failures.get(key) ?? []), now()])
+				throw error
+			}
+		})
+		queues.set(key, run)
+		try {
+			const user = await run
+			failures.delete(key)
+			return user
+		} finally {
+			if (queues.get(key) === run) queues.delete(key)
+		}
+	}
+	async function check({userId, password, totpToken}, {twoFactor = true} = {}) {
 		const user = userId ? userById(userId) : state.users[0]
 		if (!user || typeof password !== 'string' || !(await checkPassword(password, user))) {
 			await new Promise((r) => setTimeout(r, 300 + Math.random() * 300))
@@ -113,12 +147,22 @@ export async function openAccounts(dataDir) {
 		// Signing in also needs the authenticator code when two-factor is on.
 		if (twoFactor && user.totp) {
 			if (!totpToken) throw new RpcError('UNAUTHORIZED', 'Enter the 6-digit code from your authenticator app (2FA)')
-			if (!totpOk(Buffer.from(user.totp, 'base64'), totpToken)) {
+			const step = totpStep(Buffer.from(user.totp, 'base64'), totpToken)
+			if (step === null || step <= (usedSteps.get(user.userId) ?? -1)) {
 				await new Promise((r) => setTimeout(r, 300 + Math.random() * 300))
-				throw new RpcError('UNAUTHORIZED', 'That 2FA code isn’t right. Try the current one.')
+				throw new RpcError('UNAUTHORIZED', step === null ? 'That 2FA code isn’t right. Try the current one.' : 'That 2FA code was already used. Wait for the next one.')
 			}
+			usedSteps.set(user.userId, step)
 		}
 		return user
+	}
+	async function issueBrowser(userId) {
+		prune()
+		const bearer = token('bt_')
+		const cookie = token()
+		state.browsers[bearer] = {userId, cookie, sessionId: token('s_'), createdAt: now(), expiresAt: now() + BROWSER_TTL}
+		await save()
+		return {bearer, cookie, userId}
 	}
 	function issueAccess(userId, sessionId) {
 		const accessToken = token('at_')
@@ -211,13 +255,13 @@ export async function openAccounts(dataDir) {
 		},
 		// Browser login: a bearer token tied to a cookie, for file links and (later) consoles.
 		async loginBrowser(input) {
-			const user = await verify(input ?? {})
-			prune()
-			const bearer = token('bt_')
-			const cookie = token()
-			state.browsers[bearer] = {userId: user.userId, cookie, sessionId: token('s_'), createdAt: now(), expiresAt: now() + BROWSER_TTL}
-			await save()
-			return {bearer, cookie, userId: user.userId}
+			return issueBrowser((await verify(input ?? {})).userId)
+		},
+		// A browser session for someone already signed in (the web app's console session): no second
+		// password check, so a one-time 2FA code isn't needed twice.
+		async browserFor(auth) {
+			if (!auth?.userId) throw new RpcError('UNAUTHORIZED', 'Sign in first')
+			return issueBrowser(auth.userId)
 		},
 		async renewBrowser(bearer) {
 			const b = state.browsers[bearer]

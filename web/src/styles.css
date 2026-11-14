@@ -7126,3 +7126,9 @@ html.page-locked body {
 :is([data-theme='mocha'], [data-theme='tokyo'], [data-theme='gruvbox'], [data-theme='latte'], [data-theme='omarchy']) .dock button[aria-current='page'] svg {
 	color: var(--tone);
 }
+.access-refused {
+	margin: 4px 0 0;
+	color: var(--red);
+	font-size: 13.5px;
+	line-height: 1.45;
+}

@@ -482,13 +482,17 @@ function StoreSheet({
 										{access.some((x) => x.appId !== app.id) ? ` · ${p.appName}` : ''}
 									</b>
 									<span>{p.detail}</span>
-									{p.id === 'low-ports' || p.id === 'devices' ? <span className="access-what">{p.what.join(', ')}</span> : null}
+									{['low-ports', 'devices', 'host-files', 'system', 'refused'].includes(p.id) && p.what?.length ? <span className="access-what">{p.what.join(', ')}</span> : null}
 								</div>
 							))}
-							<label className="access-allow">
-								<input type="checkbox" checked={allowed} onChange={(e) => setAllowed(e.target.checked)} />
-								<span>I understand. Allow this for {app.name}.</span>
-							</label>
+							{access.some((p) => p.id === 'refused') ? (
+								<p className="access-refused">{app.name} asks for folders Omarchy Server never gives an app (your whole home, its hidden folders, or system folders), so it can’t be installed.</p>
+							) : (
+								<label className="access-allow">
+									<input type="checkbox" checked={allowed} onChange={(e) => setAllowed(e.target.checked)} />
+									<span>I understand. Allow this for {app.name}.</span>
+								</label>
+							)}
 						</div>
 					)}
 					{review.data && !review.data.requiredFolders.length && !review.data.gpuAccess && !access.length && (
@@ -500,7 +504,7 @@ function StoreSheet({
 						</div>
 					)}
 					<div className="stack">
-						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || (access.length > 0 && !allowed)}>
+						<button className="btn primary block" onClick={install} disabled={!review.data || action.isPending || (access.length > 0 && !allowed) || access.some((p) => p.id === 'refused')}>
 							<Icon name="download" size={20} />
 							{review.data?.alsoInstalls?.length ? `Install all ${review.data.alsoInstalls.length + 1}` : `Install ${app.name}`}
 						</button>
