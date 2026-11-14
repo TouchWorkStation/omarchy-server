@@ -4,6 +4,23 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.4',
+		date: '2026-11-13',
+		title: 'More security, nothing taken away',
+		added: [
+			'Settings → Security. “Always use the secure address” (off until you turn it on) sends browsers opening a page over http:// to https://, here and in your apps. App clients and phone apps aren’t redirected.',
+			'“Lock after viewing remotely” (on): after you sign in to the server’s screen from here, it locks again a minute after the last viewer leaves, so it isn’t left signed in at the machine. A reload or reconnect within that minute keeps it open.',
+			'New servers get a certificate that browsers only accept for your home network (local names and private addresses), never for a real website. Existing servers keep theirs, so your devices keep working; Settings → Security → Replace switches when you’re ready.',
+		],
+		fixed: [
+			'Storage pools never run setuid programs or use device files stored on them. New and imported pools are set up that way, and existing pools are updated automatically once the installer has been run again.',
+			'An app’s exports.sh no longer receives the server’s key for app secrets; it gets the same values as before, and apps installed from now on only get their own.',
+			'The machine Monitor tab accepts commands that look at or act on the machine (info, sendkey, stop, cont, system_reset…), but not ones that read or write files on the server or start programs.',
+			'Only the owner can change which server this web app connects to.',
+			'The “Use network ports below 1024” permission now says plainly that it applies to the whole server.',
+		],
+	},
+	{
 		version: '0.9.3',
 		date: '2026-11-13',
 		title: 'Security fixes',

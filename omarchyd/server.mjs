@@ -16,11 +16,12 @@ import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createStorage} from './storage.mjs'
 import {bridge, openShell} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
+import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
 import {RpcError, handleRpc, sendError, sendJson} from './rpc.mjs'
 import * as system from './system.mjs'
 import {WebSocketServer} from 'ws'
 
-export const OMARCHYD_VERSION = '0.9.3'
+export const OMARCHYD_VERSION = '0.9.4'
 
 export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, home = os.homedir(), webPort = 7780, machineOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, desktopVncPort = 5900, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const accounts = await openAccounts(dataDir)
@@ -28,7 +29,14 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 	const machines = createMachines({dataDir, files, ...machineOptions})
 	const storage = createStorage({dataDir, home, files, ...storageOptions})
 	const updater = createUpdater({appDir: fileURLToPath(new URL('..', import.meta.url)), dataDir, currentVersion: OMARCHYD_VERSION, ...updaterOptions})
-	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions})
+	// One certificate context for the app gateways and the Security settings.
+	const tlsDir = appOptions.tlsDir ?? join(dataDir, 'tls')
+	const secure = appOptions.secure ?? tlsContext({dir: tlsDir, lazy: true})
+	const apps = createApps({dataDir, home, webPort, firewall: storage.firewall, ...appOptions, tlsDir, secure})
+	// Security settings kept by omarchyd itself (the https setting lives with the certificates,
+	// where the web server reads it too).
+	const securityFile = join(dataDir, 'security.json')
+	const security = {lockAfterRemote: true, ...JSON.parse((await readFile(securityFile, 'utf8').catch(() => null)) ?? '{}')}
 	// Console tickets: single-use, 30 seconds, for the WebSocket bridge (same contract as before).
 	const tickets = new Map()
 	const release = await system.osRelease()
@@ -177,6 +185,39 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 				}
 			},
 		},
+		'system.security': {
+			kind: 'query',
+			run: async () => ({
+				...(await authorityInfo(tlsDir)),
+				alwaysHttps: (await readPolicy(tlsDir)).alwaysHttps,
+				lockAfterRemote: security.lockAfterRemote !== false,
+			}),
+		},
+		'system.setSecurity': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'change security settings')
+				if (typeof input?.alwaysHttps === 'boolean') {
+					await writePolicy(tlsDir, {alwaysHttps: input.alwaysHttps})
+					await secure.refresh?.()
+				}
+				if (typeof input?.lockAfterRemote === 'boolean') {
+					security.lockAfterRemote = input.lockAfterRemote
+					await writeFile(securityFile, JSON.stringify(security), {mode: 0o600})
+				}
+				return true
+			},
+		},
+		// A new, restricted certificate authority (see tls.mjs). Devices need the new certificate.
+		'system.replaceCertificate': {
+			kind: 'mutation',
+			run: async (_i, {auth}) => {
+				ownerOnly(auth, 'replace the certificate')
+				await rotateAuthority({dir: tlsDir})
+				await secure.refresh?.()
+				return authorityInfo(tlsDir)
+			},
+		},
 		// Sign the owner in to the Omarchy desktop when it's at its sign-in screen or locked out.
 		'system.desktopSignIn': {
 			kind: 'mutation',
@@ -185,6 +226,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 				await accounts.confirmPassword(auth.userId, input?.password)
 				const r = await storage.helper('desktop-sign-in')
 				signedInAt = Date.now()
+				remoteSignIn = true
 				return {result: r}
 			},
 		},
@@ -217,6 +259,47 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, h
 
 	const omarchyTheme = createOmarchyTheme({home})
 	let signedInAt = 0
+	// After a sign-in from the web, lock the desktop again once nobody is viewing it (Settings →
+	// Security), so the screen isn't left signed in at the server itself. A short wait lets a page
+	// reload or a reconnect keep the session.
+	let remoteSignIn = false
+	let desktopViewers = 0
+	let lockTimer = null
+	const lockGraceMs = machineOptions.lockGraceMs ?? 60_000
+	const viewerJoined = () => {
+		desktopViewers++
+		clearTimeout(lockTimer)
+	}
+	const viewerLeft = () => {
+		desktopViewers = Math.max(0, desktopViewers - 1)
+		if (desktopViewers || !remoteSignIn || security.lockAfterRemote === false) return
+		clearTimeout(lockTimer)
+		lockTimer = setTimeout(() => {
+			if (desktopViewers) return
+			remoteSignIn = false
+			lockDesktop().catch((e) => console.error('[omarchyd] couldn’t lock the desktop:', e.message))
+		}, lockGraceMs)
+		lockTimer.unref?.()
+	}
+	async function lockDesktop() {
+		if (machineOptions.lockDesktop) return machineOptions.lockDesktop()
+		// The owner's own graphical session on this machine: logind tells Omarchy's lock screen.
+		const me = os.userInfo().username
+		const list = await sh('loginctl', ['list-sessions', '--no-legend'])
+		for (const line of list.out.split('\n')) {
+			const [id, , user] = line.trim().split(/\s+/)
+			if (!id || user !== me) continue
+			const type = await sh('loginctl', ['show-session', id, '-p', 'Type', '--value'])
+			if (!/wayland|x11/.test(type.out)) continue
+			if ((await sh('loginctl', ['lock-session', id])).ok) return
+		}
+		// Fallback: start the lock screen directly in the desktop.
+		const runtime = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`
+		const socket = (await readdir(runtime).catch(() => [])).find((f) => /^wayland-\d+$/.test(f))
+		if (!socket) return
+		const r = await sh('systemd-run', ['--user', '--collect', `--setenv=WAYLAND_DISPLAY=${socket}`, `--setenv=XDG_RUNTIME_DIR=${runtime}`, 'hyprlock'])
+		if (!r.ok) throw new Error(r.err || 'hyprlock didn’t start')
+	}
 	const recentSignIn = () => Date.now() - signedInAt < 60_000
 
 	// The Omarchy desktop's screen, shared by wayvnc on 127.0.0.1 only. Start it when it isn't
@@ -447,6 +530,10 @@ WantedBy=graphical-session.target
 			vnc.once('connect', () => {
 				vnc.removeAllListeners('error')
 				wss.handleUpgrade(req, socket, head, (ws) => {
+					if (machineId === 'desktop') {
+						viewerJoined()
+						ws.once('close', viewerLeft)
+					}
 					vnc.on('data', (d) => ws.readyState === ws.OPEN && ws.send(d, {binary: true}))
 					ws.on('message', (d) => vnc.write(d))
 					vnc.on('close', () => ws.close(1000))
@@ -465,6 +552,13 @@ WantedBy=graphical-session.target
 	})
 	// Remove a one-time desktop sign-in an interrupted attempt may have left.
 	if (!machineOptions.run) storage.helper('desktop-sign-in-cleanup').catch(() => {})
+	// Pools set up by earlier versions: mount them nosuid,nodev too. A helper from before 0.9.4
+	// answers "Unknown action" until install.sh is run again; that's fine.
+	if (!machineOptions.run)
+		storage
+			.helper('harden-pools')
+			.then((r) => r && r !== '{"fstab":0,"zfs":0}' && console.log('[omarchyd] hardened pool mounts', r))
+			.catch(() => {})
 
 	// Once: put the Omarchy Server icon in the Omarchy top bar (servers installed before the
 	// icon supported Omarchy's own bar never got it). `omarchy-server widget off` removes it for good.

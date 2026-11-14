@@ -449,6 +449,8 @@ describe('omarchyd machines', () => {
 		await call('machines.resume', {id})
 		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'running')
 		assert.match((await call('machines.monitor', {id, command: 'info status'})).output, /VM status: running \(info status\)/)
+		await assert.rejects(call('machines.monitor', {id, command: 'migrate "exec:touch /tmp/x"'}), /isn’t available here/)
+		await assert.rejects(call('machines.monitor', {id, command: 'drive_add 0 file=/etc/shadow'}), /isn’t available here/)
 		await call('machines.hibernate', {id})
 		await until(async () => (await q('machines.list')).find((x) => x.id === id).state === 'hibernated')
 		await call('machines.start', {id})

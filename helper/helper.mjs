@@ -19,12 +19,14 @@
 //   zfs-pools                         imported ZFS pools: layout, health, space, last check
 //   zfs-importable                    ZFS pools on connected drives that aren't imported yet
 //   zfs-create NAME LAYOUT DEV...     new ZFS pool on BLANK drives, mounted at ~/Pools/NAME
-//   zfs-import NAME [force]           import an existing pool (unchanged), shown at ~/Pools/NAME
+//   zfs-import NAME [force]           import an existing pool (setuid and devices off), shown at ~/Pools/NAME
 //   zfs-scrub NAME                    start an error check
 //   zfs-export NAME                   stop using a pool (data untouched; can be imported again)
 //   shares-apply                      network shares from stdin JSON, folders inside the owner's home only
 //   smb-password                      set the owner's network-share password from stdin
-//   firewall-open PORT | firewall-close PORT   an app's TCP port, 1024-65535
+//   firewall-open PORT | firewall-close PORT   an app’s port (TCP and UDP); not 22, 2021 or 5900
+//   low-ports N                       let your containers use ports from N up (only ever lowered)
+//   harden-pools                      add nosuid,nodev to pools set up by earlier versions
 //
 // Drives that hold anything (partitions or filesystem signatures) are never erased by this helper.
 // Wiping one is left to a person at a terminal (`sudo wipefs -a /dev/sdX`).
@@ -37,6 +39,9 @@ const NAME = /^[a-z][a-z0-9-]{0,31}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SYSTEM_MOUNTS = new Set(['/', '/boot', '/efi', '/boot/efi', '/home', '/var', '/usr', '[SWAP]'])
 const FSTAB_MARK = '# omarchy-server pool'
+// nosuid,nodev: a program or device file on a pool (an imported drive could carry one) can never
+// gain root.
+const POOL_OPTIONS = 'defaults,noatime,nosuid,nodev,compress=zstd:3,nofail,x-systemd.device-timeout=10s'
 const ZFS_MARK = '# omarchy-server zfs'
 // Mountpoints an imported pool must never land on.
 const PROTECTED = ['/', '/boot', '/efi', '/etc', '/usr', '/var', '/home', '/root', '/opt', '/srv', '/bin', '/sbin', '/lib', '/lib64', '/dev', '/proc', '/sys', '/run', '/tmp']
@@ -105,7 +110,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 	async function addFstab(name, uuid) {
 		const lines = (await fstab()).filter((l) => !l.endsWith(`${FSTAB_MARK} ${name}`))
 		while (lines.length && lines.at(-1) === '') lines.pop()
-		lines.push(`UUID=${uuid} ${mountOf(name)} btrfs defaults,noatime,compress=zstd:3,nofail,x-systemd.device-timeout=10s 0 0 ${FSTAB_MARK} ${name}`, '')
+		lines.push(`UUID=${uuid} ${mountOf(name)} btrfs ${POOL_OPTIONS} 0 0 ${FSTAB_MARK} ${name}`, '')
 		await writeAtomic('/etc/fstab', lines.join('\n'))
 	}
 	async function poolMount(name) {
@@ -300,6 +305,38 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			return 'ok'
 		},
 
+		// Pools set up by earlier versions: add nosuid,nodev to their mounts (now and at boot).
+		'harden-pools': async () => {
+			const ours = (l) => l.includes(FSTAB_MARK) || l.includes(ZFS_MARK)
+			let changed = 0
+			const out = (await fstab()).map((l) => {
+				const f = l.trim().split(/\s+/)
+				if (!ours(l) || l.trim().startsWith('#') || f.length < 4) return l
+				const opts = f[3].split(',')
+				if (opts.includes('nosuid') && opts.includes('nodev')) return l
+				changed++
+				f[3] = [...opts, ...['nosuid', 'nodev'].filter((o) => !opts.includes(o))].join(',')
+				return f.join(' ')
+			})
+			if (changed) {
+				await writeAtomic('/etc/fstab', out.join('\n'))
+				await run('systemctl', ['daemon-reload']).catch(() => {})
+				for (const l of out) if (ours(l) && !l.trim().startsWith('#')) await run('mount', ['-o', 'remount,nosuid,nodev', l.trim().split(/\s+/)[1]]).catch(() => {})
+			}
+			let zfsChanged = 0
+			const tab = await fstab()
+			for (const name of await zfsPoolNames().catch(() => [])) {
+				const mp = (await zfs('get', '-H', '-o', 'value', 'mountpoint', name).catch(() => '')).trim()
+				if (!(mp.startsWith(`${poolsDir}/`) || tab.some((l) => l.endsWith(`${ZFS_MARK} ${name}`)))) continue
+				for (const prop of ['setuid', 'devices']) {
+					const v = (await zfs('get', '-H', '-o', 'value,source', prop, name).catch(() => '')).trim().split('\t')
+					// Leave a value someone set on purpose alone; only change the default.
+					if (v[0] === 'on' && v[1] !== 'local') { await zfs('set', `${prop}=off`, name).catch(() => {}); zfsChanged++ }
+				}
+			}
+			return JSON.stringify({fstab: changed, zfs: zfsChanged})
+		},
+
 		'pool-scrub': async ([name]) => {
 			await run('btrfs', ['scrub', 'start', await poolMount(name)])
 			return 'ok'
@@ -367,7 +404,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 			await fs.mkdir(poolsDir, {recursive: true})
 			await fs.chown(poolsDir, user.uid, user.gid)
 			const vdev = layout === 'stripe' ? ids : [layout, ...ids]
-			await zpool('create', '-o', 'ashift=12', '-O', 'compression=lz4', '-O', 'atime=off', '-O', 'xattr=sa', '-O', 'acltype=posixacl', '-O', `mountpoint=${mountOf(name)}`, name, ...vdev)
+			await zpool('create', '-o', 'ashift=12', '-O', 'compression=lz4', '-O', 'atime=off', '-O', 'xattr=sa', '-O', 'acltype=posixacl', '-O', 'setuid=off', '-O', 'devices=off', '-O', `mountpoint=${mountOf(name)}`, name, ...vdev)
 			await zpool('set', 'cachefile=/etc/zfs/zpool.cache', name)
 			await ensureZfsServices()
 			await fs.chown(mountOf(name), user.uid, user.gid)
@@ -386,6 +423,10 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				await zpool('export', name).catch(() => {})
 				fail(`${bad[0]} would be mounted at ${bad[1]}, a system folder, so the pool wasn’t imported. Change its mountpoint on the system it came from, or import it by hand.`)
 			}
+			// No setuid programs or device files from a pool brought in from elsewhere. Undo with
+			// `sudo zfs inherit setuid NAME` and `sudo zfs inherit devices NAME` for a pool you trust.
+			await zfs('set', 'setuid=off', name)
+			await zfs('set', 'devices=off', name)
 			await zfs('mount', '-a')
 			await zpool('set', 'cachefile=/etc/zfs/zpool.cache', name)
 			await ensureZfsServices()
@@ -397,7 +438,7 @@ export function createHelper({run = defaultRun, user, fs = {readFile, writeFile,
 				await fs.chown(poolsDir, user.uid, user.gid)
 				const lines = (await fstab()).filter((l) => !l.endsWith(`${ZFS_MARK} ${name}`))
 				while (lines.length && lines.at(-1) === '') lines.pop()
-				lines.push(`${top} ${mountOf(pretty)} none bind,nofail,x-systemd.requires=zfs-mount.service 0 0 ${ZFS_MARK} ${name}`, '')
+				lines.push(`${top} ${mountOf(pretty)} none bind,nosuid,nodev,nofail,x-systemd.requires=zfs-mount.service 0 0 ${ZFS_MARK} ${name}`, '')
 				await writeAtomic('/etc/fstab', lines.join('\n'))
 				await run('systemctl', ['daemon-reload'])
 				await run('mount', [mountOf(pretty)])

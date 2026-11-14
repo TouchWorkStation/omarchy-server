@@ -26,7 +26,7 @@ import tls from 'node:tls'
 import YAML from 'yaml'
 
 import {RpcError} from './rpc.mjs'
-import {dualProtocolServer, tlsContext} from './tls.mjs'
+import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
 
 export const APP_COOKIE = 'OMARCHY_APP_SESSION'
 // Every cookie Omarchy Server itself sets (and any it may set later under these prefixes).
@@ -70,7 +70,7 @@ const APP_UID = 1000
 // explicit permission when installing; plain apps need none.
 export const PERMISSIONS = {
 	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
-	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. Omarchy Server lets your containers use those ports on this server.'},
+	'low-ports': {label: 'Use network ports below 1024', detail: 'It listens on system ports such as 53 (DNS), 80 or 443. To allow it, Omarchy Server lets programs running as you use ports from that number up, for the whole server, and keeps that after this app is removed.'},
 	devices: {label: 'Use hardware devices', detail: 'It gets direct access to devices plugged into your server, such as USB sticks or video cards.'},
 	network: {label: 'Change networking inside its container', detail: 'It can create network interfaces, routes and firewall rules inside its own container (VPNs need this). It can’t change your server’s own network.'},
 	privileged: {label: 'Run with every container permission', detail: 'It runs with all permissions inside its container. Containers here run as you, not as root, so it still can’t become root on your server.'},
@@ -422,6 +422,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		const server = http.createServer((req, res) => {
 			const url = new URL(req.url ?? '/', 'http://x')
+			// "Always use the secure address" (Settings): a browser opening a page over http:// is sent to https://.
+			if (wantsUpgrade(req, secure.policy?.(), secure.get())) {
+				res.writeHead(308, {location: `https://${hostOnly(req)}:${listenPort}${safePath(req.url)}`, 'cache-control': 'no-store'})
+				return res.end()
+			}
 			if (url.pathname === '/__omarchy/enter') {
 				const t = tickets.get(url.searchParams.get('t') ?? '')
 				tickets.delete(url.searchParams.get('t') ?? '')
@@ -802,28 +807,51 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		if (!(await exists(join(dir, 'exports.sh')))) return {}
 		const base = composeEnv({...app, exports: {}})
 		const ips = Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address).join(' ')
+		// The server's key never enters the sandbox. derive_entropy looks its answer up in a table
+		// made here; an identifier that isn't in it yet is noted, and the script runs again with it
+		// (same values as before, so nothing an app stored changes). Apps installed from 0.9.4 on
+		// get only their own values ("app-<its id>-…"), not another app's.
+		const own = `app-${app.id}-`
+		const allowed = (id) => !app.ownSecretsOnly || id.startsWith(own)
+		const MARK = '__OMARCHY_WANTED__'
 		const script = [
-			'derive_entropy() { printf "%s" "$1" | openssl dgst -sha256 -hmac "$OMARCHY_ENTROPY_KEY" | sed "s/^.* //"; }',
+			'derive_entropy() { local v; v=$(printf "%s\\n" "$OMARCHY_DERIVED" | awk -F "\\t" -v id="$1" \'$1 == id { print $2; exit }\'); if [ -z "$v" ]; then printf "%s\\n" "$1" >> /tmp/.wanted; v=0000000000000000000000000000000000000000000000000000000000000000; fi; printf "%s" "$v"; }',
 			'hostname() { case "$1" in -I|--all-ip-addresses) echo "$OMARCHY_HOST_IPS" ;; *) echo "$DEVICE_HOSTNAME" ;; esac; }',
 			'app_entropy_identifier="app-${APP_ID}-seed"',
 			'EXPORTS_APP_ID="$APP_ID" EXPORTS_APP_DIR="$APP_DATA_DIR" EXPORTS_TOR_DATA_DIR="$TOR_DATA_DIR"',
 			'cd "$APP_DATA_DIR" && . ./exports.sh >/dev/null 2>&1',
-			'unset OMARCHY_ENTROPY_KEY',
+			'unset OMARCHY_DERIVED',
 			'env -0',
+			`if [ -f /tmp/.wanted ]; then printf '${MARK}\\0'; tr '\\n' '\\0' < /tmp/.wanted; fi`,
 		].join('\n')
-		const env = {...base, OMARCHY_ENTROPY_KEY: entropyKey(), OMARCHY_HOST_IPS: ips, PATH: '/usr/bin'}
-		delete env.DOCKER_HOST
-		const setenv = Object.entries(env).flatMap(([k, v]) => ['--setenv', k, String(v)])
-		const out = await run(
-			'bwrap',
-			['--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib', '/lib64', '--ro-bind', '/etc/ssl', '/etc/ssl', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', dir, dir, '--unshare-all', '--die-with-parent', '--clearenv', ...setenv, '/usr/bin/bash', '-c', script],
-			{timeout: 15_000},
-		).catch(() => '')
-		const result = {}
-		for (const pair of out.split('\0')) {
-			const i = pair.indexOf('=')
-			const k = pair.slice(0, i)
-			if (i > 0 && /^[A-Z][A-Z0-9_]*$/.test(k) && !(k in env) && k !== 'PWD' && k !== 'SHLVL' && k !== 'OLDPWD' && k !== '_') result[k] = pair.slice(i + 1)
+		const table = new Map()
+		const refused = new Set()
+		let result = {}
+		for (let pass = 0; pass < 4; pass++) {
+			const env = {...base, OMARCHY_DERIVED: [...table].map(([k, v]) => `${k}\t${v}`).join('\n'), OMARCHY_HOST_IPS: ips, PATH: '/usr/bin'}
+			delete env.DOCKER_HOST
+			const setenv = Object.entries(env).flatMap(([k, v]) => ['--setenv', k, String(v)])
+			const out = await run(
+				'bwrap',
+				['--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib', '/lib64', '--ro-bind', '/etc/ssl', '/etc/ssl', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--bind', dir, dir, '--unshare-all', '--die-with-parent', '--clearenv', ...setenv, '/usr/bin/bash', '-c', script],
+				{timeout: 15_000},
+			).catch(() => '')
+			const parts = out.split('\0')
+			const at = parts.indexOf(MARK)
+			const wanted = at < 0 ? [] : parts.slice(at + 1).filter((id) => id && !table.has(id) && !refused.has(id))
+			result = {}
+			for (const pair of at < 0 ? parts : parts.slice(0, at)) {
+				const i = pair.indexOf('=')
+				const k = pair.slice(0, i)
+				if (i > 0 && /^[A-Z][A-Z0-9_]*$/.test(k) && !(k in env) && k !== 'PWD' && k !== 'SHLVL' && k !== 'OLDPWD' && k !== '_') result[k] = pair.slice(i + 1)
+			}
+			if (!wanted.length) break
+			for (const id of wanted.slice(0, 64)) {
+				if (id.length > 512 || /[\t\n]/.test(id) || !allowed(id)) {
+					refused.add(id)
+					console.error(`[omarchyd] ${app.id}: exports.sh asked for another app’s secret (${id.slice(0, 80)}); refused`)
+				} else table.set(id, deriveEntropy(id))
+			}
 		}
 		return result
 	}
@@ -1022,7 +1050,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const queued = plan.map((src) => {
 			const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 			if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? []}
+			const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
 			state.apps.push(app)
 			busy.set(app.id, {state: 'installing', progress: 0})
 			return {src, app}

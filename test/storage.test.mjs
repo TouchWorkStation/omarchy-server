@@ -189,7 +189,7 @@ describe('helper', () => {
 		assert.ok(log.some((l) => l.join(' ') === 'systemctl enable zfs-import-cache.service'))
 	})
 
-	test('ZFS import: unchanged pool, refused if it would mount over a system folder, force only when asked', async () => {
+	test('ZFS import: setuid and devices off, refused if it would mount over a system folder, force only when asked', async () => {
 		const log = []
 		let mountpoints = 'tank\t/tank\ton\ntank/media\t/tank/media\ton\n'
 		const fs = fakeFs({'/etc/fstab': 'UUID=1 / btrfs d 0 0\n'})
@@ -198,8 +198,8 @@ describe('helper', () => {
 		await assert.rejects(h.handle('zfs-import', ['tank', 'yes']), /Bad option/)
 		await h.handle('zfs-import', ['tank', 'force'])
 		assert.ok(log.some((l) => l.join(' ') === 'zpool import -N -f tank'))
-		assert.match(fs.files.get('/etc/fstab'), /^\/tank \/home\/chris\/Pools\/tank none bind,nofail.* # omarchy-server zfs tank$/m)
-		assert.ok(!log.some((l) => l[0] === 'zfs' && l[1] === 'set'), 'pool properties untouched')
+		assert.match(fs.files.get('/etc/fstab'), /^\/tank \/home\/chris\/Pools\/tank none bind,nosuid,nodev,nofail.* # omarchy-server zfs tank$/m)
+		assert.deepEqual(log.filter((l) => l[0] === 'zfs' && l[1] === 'set').map((l) => l[2]), ['setuid=off', 'devices=off'], 'only setuid and devices are changed')
 		mountpoints = 'evil\t/evil\ton\nevil/x\t/usr/local\ton\n'
 		log.length = 0
 		await assert.rejects(h.handle('zfs-import', ['evil']), /system folder/)
@@ -253,6 +253,58 @@ errors: No known data errors
 		assert.equal(await h.handle('firewall-open', ['53']), 'ok', 'system ports, for apps you allowed to use them')
 		await assert.rejects(h.handle('firewall-close', ['7780']), /Bad port/)
 	})
+	test('pools never honour setuid programs or device files; older pools get hardened', async () => {
+		// New Btrfs pool line
+		const log = []
+		const fs = fakeFs({
+			'/etc/fstab': [
+				'UUID=1 / btrfs defaults 0 0',
+				'UUID=2 /home/chris/Pools/media btrfs defaults,noatime,compress=zstd:3,nofail,x-systemd.device-timeout=10s 0 0 # omarchy-server pool media',
+				'/tank /home/chris/Pools/tank none bind,nofail,x-systemd.requires=zfs-mount.service 0 0 # omarchy-server zfs tank',
+				'UUID=3 /home/chris/Pools/done btrfs defaults,nosuid,nodev 0 0 # omarchy-server pool done',
+				'',
+			].join('\n'),
+		})
+		const zfsProps = {'tank:setuid': 'on\tdefault', 'tank:devices': 'on\tdefault', 'other:setuid': 'on\tdefault', 'other:devices': 'on\tdefault'}
+		const run = fakeRun(log, {
+			zpool: (a) => (a[0] === 'list' ? 'tank\nother\n' : ''),
+			zfs: (a) => (a[0] === 'get' && a.at(-2) === 'mountpoint' ? (a.at(-1) === 'tank' ? '/tank\n' : '/srv/other\n') : a[0] === 'get' ? zfsProps[`${a.at(-1)}:${a.at(-2)}`] ?? '' : ''),
+		})
+		const h = createHelper({user, fs, run})
+		assert.deepEqual(JSON.parse(await h.handle('harden-pools', [])), {fstab: 2, zfs: 2})
+		const tab = fs.files.get('/etc/fstab').split('\n')
+		assert.equal(tab[0], 'UUID=1 / btrfs defaults 0 0', 'system mounts untouched')
+		assert.match(tab[1], /btrfs defaults,noatime,compress=zstd:3,nofail,x-systemd.device-timeout=10s,nosuid,nodev 0 0 # omarchy-server pool media$/)
+		assert.match(tab[2], /none bind,nofail,x-systemd.requires=zfs-mount.service,nosuid,nodev 0 0 # omarchy-server zfs tank$/)
+		assert.equal(tab[3], 'UUID=3 /home/chris/Pools/done btrfs defaults,nosuid,nodev 0 0 # omarchy-server pool done')
+		assert.ok(log.some((l) => l.join(' ') === 'mount -o remount,nosuid,nodev /home/chris/Pools/media'))
+		assert.ok(log.some((l) => l.join(' ') === 'zfs set setuid=off tank'))
+		assert.ok(!log.some((l) => l.join(' ').endsWith('off other')), 'a ZFS pool Omarchy Server doesn’t manage is left alone')
+		// Running it again changes nothing.
+		const before = fs.files.get('/etc/fstab')
+		zfsProps['tank:setuid'] = 'off\tlocal'
+		zfsProps['tank:devices'] = 'off\tlocal'
+		assert.deepEqual(JSON.parse(await h.handle('harden-pools', [])), {fstab: 0, zfs: 0})
+		assert.equal(fs.files.get('/etc/fstab'), before)
+	})
+
+	test('new and imported pools mount nosuid,nodev', async () => {
+		const log = []
+		const fs = fakeFs({'/etc/fstab': ''})
+		fs.readdir = async () => ['ata-A', 'ata-B']
+		fs.realpath = async (p) => ({'/dev/disk/by-id/ata-A': '/dev/sda', '/dev/disk/by-id/ata-B': '/dev/sdb'})[p] ?? p
+		const h = createHelper({user, fs, run: fakeRun(log, {zpool: () => '', zfs: (a) => (a[0] === 'list' ? 'tank\t/tank\ton\n' : '')})})
+		await h.handle('pool-create', ['media', 'single', '/dev/sda'])
+		assert.match(fs.files.get('/etc/fstab'), /btrfs defaults,noatime,nosuid,nodev,/)
+		await h.handle('zfs-create', ['vault', 'mirror', '/dev/sda', '/dev/sdb'])
+		const create = log.find((l) => l[0] === 'zpool' && l[1] === 'create')
+		assert.ok(create.includes('setuid=off') && create.includes('devices=off'))
+		await h.handle('zfs-import', ['tank'])
+		const i = log.findIndex((l) => l.join(' ') === 'zfs set setuid=off tank')
+		assert.ok(i > 0 && i < log.findIndex((l) => l.join(' ') === 'zfs mount -a'), 'set before anything is mounted')
+		assert.match(fs.files.get('/etc/fstab'), /none bind,nosuid,nodev,nofail/)
+	})
+
 	test('low ports: only ever lowers the limit, and remembers it', async () => {
 		const log = []
 		let now = 1024

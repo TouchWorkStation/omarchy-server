@@ -60,6 +60,7 @@ describe('omarchyd apps', () => {
 		}
 		if (cmd === 'setfacl') return ''
 		if (cmd === 'bwrap') {
+			calls.push({bwrap: args})
 			// Stand-in for the sandbox: same clean environment, plain bash.
 			const env = {}
 			for (let i = 0; i < args.length; i++) if (args[i] === '--setenv') (env[args[i + 1]] = args[i + 2]), (i += 2)
@@ -249,7 +250,7 @@ describe('omarchyd apps', () => {
 		await app('needs-node', 'dependencies:\n  - bitcoin\n', 'services:\n  web:\n    image: x\n')
 		await app('needs-vars', '', 'services:\n  web:\n    image: x\n    environment:\n      RPC: ${APP_BITCOIN_NODE_IP}\n')
 		await app('with-exports', '', 'services:\n  web:\n    image: x\n    environment:\n      SSH: ${APP_GITEA_SSH_PORT}\n      KEY: ${APP_X_KEY}\n      URLS: ${APP_X_URLS}\n      DOMAIN: ${APP_DOMAIN}\n')
-		await writeFile(join(store, 'with-exports', 'exports.sh'), 'export APP_GITEA_SSH_PORT="2222"\nexport APP_X_KEY=$(derive_entropy "${app_entropy_identifier}-X")\nips=$(hostname --all-ip-addresses)\nexport APP_X_URLS="${ips}"\n')
+		await writeFile(join(store, 'with-exports', 'exports.sh'), 'export APP_GITEA_SSH_PORT="2222"\nexport APP_X_KEY=$(derive_entropy "${app_entropy_identifier}-X")\nexport APP_X_KEY2=$(derive_entropy "${app_entropy_identifier}-X")\nexport APP_X_OTHER=$(derive_entropy "app-bitcoin-seed")\nips=$(hostname --all-ip-addresses)\nexport APP_X_URLS="${ips}"\n')
 		git(['init', '-q', '-b', 'main'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], store)
 		git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'apps'], store)
@@ -274,6 +275,12 @@ describe('omarchyd apps', () => {
 		assert.equal(env.APP_GITEA_SSH_PORT, '2222')
 		assert.match(env.APP_X_KEY, /^[0-9a-f]{64}$/)
 		assert.notEqual(env.APP_X_KEY, env.APP_PASSWORD)
+		assert.notEqual(env.APP_X_KEY, '0'.repeat(64))
+		assert.equal(env.APP_X_KEY2, env.APP_X_KEY, 'the same identifier gives the same value')
+		assert.equal(env.APP_X_OTHER, '0'.repeat(64), 'another app’s secret isn’t handed out')
+		assert.equal(env.OMARCHY_DERIVED, undefined)
+		const sandbox = calls.filter((c) => c.bwrap).map((c) => c.bwrap.join(' ')).join(' ')
+		assert.ok(!/OMARCHY_ENTROPY_KEY/.test(sandbox), 'the server’s key never enters the sandbox')
 		assert.match(env.APP_DOMAIN, /\.local$/)
 		assert.equal(env.OMARCHY_ENTROPY_KEY, undefined, 'the entropy key isn’t passed on')
 		await call('apps.uninstall', {appId: 'with-exports'})

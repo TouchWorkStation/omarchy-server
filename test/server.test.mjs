@@ -107,7 +107,7 @@ describe('Omarchy Server server against an omarchyd stand-in', () => {
 		assert.match(appSession, /HttpOnly/)
 		assert.match(appSession, /SameSite=Lax/)
 		const login = fake.calls.findLast((c) => c.path === 'user.loginNative')
-		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.3', appBuild: '1', osVersion: 'web'})
+		assert.deepEqual(login.input.client, {id: 'omarchy-server', platform: 'ios', deviceClass: 'phone', appVersion: '0.9.4', appBuild: '1', osVersion: 'web'})
 		const saved = await readFile(join(touch.dir, 'sessions.json'), 'utf8')
 		assert.ok(!saved.includes(touch.getCookie().split('=')[1]), 'cookie value must not be stored in plain form')
 		assert.equal((await stat(join(touch.dir, 'sessions.json'))).mode & 0o777, 0o600)
@@ -500,6 +500,46 @@ describe('older Omarchy Server without native login', () => {
 		} finally {
 			await touch.close()
 			await fake.close()
+		}
+	})
+})
+
+describe('always use the secure address', () => {
+	test('page loads over http go to https when turned on; API calls and the certificate don’t', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'touch-https-'))
+		const store = await createStore(dir)
+		let alwaysHttps = false
+		const tls = {get: () => ({}), ca: () => '-----BEGIN CERTIFICATE-----\n', policy: () => ({alwaysHttps})}
+		const app = createApp({store, tls, relayPortBase: 0, relayHost: '127.0.0.1'})
+		const server = await new Promise((r) => {
+			const s = app.listen(0, '127.0.0.1', () => r(s))
+		})
+		const base = `http://127.0.0.1:${server.address().port}`
+		const nav = {'sec-fetch-mode': 'navigate', accept: 'text/html'}
+		// fetch() sets its own Sec-Fetch-Mode, so ask like a browser does, with plain http.
+		const {request} = await import('node:http')
+		const fetch = (url, {headers = {}} = {}) =>
+			new Promise((resolve, reject) =>
+				request(url, {headers}, (res) => {
+					let body = ''
+					res.on('data', (c) => (body += c))
+					res.on('end', () => resolve({status: res.statusCode, headers: {get: (k) => res.headers[k] ?? null}, json: async () => JSON.parse(body)}))
+				})
+					.on('error', reject)
+					.end(),
+			)
+		try {
+			assert.notEqual((await fetch(`${base}/settings`, {headers: nav, redirect: 'manual'})).status, 308, 'off by default')
+			alwaysHttps = true
+			const r = await fetch(`${base}/settings?x=1`, {headers: nav, redirect: 'manual'})
+			assert.equal(r.status, 308)
+			assert.equal(r.headers.get('location'), `https://127.0.0.1:${server.address().port}/settings?x=1`)
+			assert.notEqual((await fetch(`${base}/api/tls/status`, {redirect: 'manual'})).status, 308)
+			assert.equal((await fetch(`${base}/api/tls/ca.crt`, {headers: nav, redirect: 'manual'})).status, 200)
+			assert.equal((await (await fetch(`${base}/api/tls/status`)).json()).alwaysHttps, true)
+			assert.notEqual((await fetch(`${base}/settings`, {headers: {...nav, host: 'evil.example/"'}, redirect: 'manual'})).headers.get('location')?.includes('"'), true)
+		} finally {
+			server.close()
 		}
 	})
 })

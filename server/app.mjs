@@ -16,11 +16,11 @@ import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
-import {dualProtocolServer} from '../omarchyd/tls.mjs'
+import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
 
-export const VERSION = '0.9.3'
+export const VERSION = '0.9.4'
 const COOKIE = 'omarchy_server_sid'
 const SESSION_MAX_AGE_S = 60 * 60 * 24 * 365
 const REFRESH_MARGIN_MS = 2 * 60 * 1000
@@ -30,6 +30,9 @@ const REFRESH_MARGIN_MS = 2 * 60 * 1000
 export const ALLOWED = {
 	'user.revokeAppPasses': 'mutation',
 	'system.desktopSignIn': 'mutation',
+	'system.security': 'query',
+	'system.setSecurity': 'mutation',
+	'system.replaceCertificate': 'mutation',
 	'system.desktopShare': 'mutation',
 	'apps.probe': 'query',
 	'omarchy.themes': 'query',
@@ -186,7 +189,7 @@ export const ALLOWED = {
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-const SLOW = new Set(['system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
+const SLOW = new Set(['system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.addRepository', 'apps.logs', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz'])
 
 function parseCookies(header = '') {
 	const out = {}
@@ -249,7 +252,14 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		res.set({'content-type': 'application/x-x509-ca-cert', 'content-disposition': 'attachment; filename="omarchy-server.crt"', 'cache-control': 'no-store'})
 		res.send(ca)
 	})
-	app.get('/api/tls/status', (_req, res) => res.json({available: !!tls?.get()}))
+	app.get('/api/tls/status', (_req, res) => res.json({available: !!tls?.get(), alwaysHttps: !!tls?.policy?.().alwaysHttps}))
+	// "Always use the secure address" (Settings → Security): page loads over http:// go to https://.
+	// The certificate download above stays reachable either way.
+	app.use((req, res, next) => {
+		const host = req.headers.host ?? ''
+		if (!wantsUpgrade(req, tls?.policy?.(), tls?.get()) || !/^(\[[0-9a-f:.]+\]|[a-z0-9.-]{1,253})(:\d{1,5})?$/i.test(host)) return next()
+		res.set('cache-control', 'no-store').redirect(308, `https://${host}${req.originalUrl.startsWith('/') && !req.originalUrl.startsWith('//') ? req.originalUrl : '/'}`)
+	})
 
 	let client = null
 	const getClient = () => {
@@ -440,6 +450,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		// on the network can aim it at a look-alike to collect passwords.
 		if (configured && !store.getSession(req.sid)) {
 			return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Sign in first to change the server address'}})
+		}
+		// …and only the owner may (a family member's account can't repoint it to collect the
+		// owner's password). If the current backend can't be asked, a signed-in session still will do.
+		if (configured) {
+			const me = await authedCall(req, 'user.get', 'query').catch(() => null)
+			if (me?.role === 'member') return res.status(403).json({error: {code: 'FORBIDDEN', message: 'Only the server’s owner can change the server address'}})
 		}
 		let url
 		try {

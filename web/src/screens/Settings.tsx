@@ -441,6 +441,8 @@ export function Settings({prefs, setPrefs, onBack, onSignedOut}: {prefs: Prefs; 
 				<Row icon="download" color="var(--teal)" label="Trust this server on this device" value="Certificate" href="/api/tls/ca.crt" />
 			</Group>
 
+			{owner && <SecurityGroup />}
+
 			<Group title="More">
 				<Row icon="download" color="var(--blue)" label="Installer ISO" value="Set up another server" href="https://github.com/TouchWorkStation/omarchy-server/releases/latest/download/omarchy-server.iso" />
 				{owner && <Row icon="logfile" color="#8e8e93" label="System logs" onClick={() => setSheet('logs')} />}
@@ -801,5 +803,53 @@ function UpdateNotes({text}: {text: string}) {
 				return line ? <p key={i}>{line}</p> : null
 			})}
 		</div>
+	)
+}
+
+type Security = {exists: boolean; restricted: boolean; alwaysHttps: boolean; lockAfterRemote: boolean}
+
+// Security settings: each one is off-by-default or keeps today's behaviour, so nothing changes until
+// the owner chooses it.
+function SecurityGroup() {
+	const sec = useQ<Security>('system.security')
+	const save = useSave()
+	const confirm = useConfirm()
+	const set = (input: Partial<Security>, done: string) => save.mutate({path: 'system.setSecurity', input, done, refresh: ['system.security']})
+	const replace = async () => {
+		const ok = await confirm({
+			title: 'Replace the certificate?',
+			body: 'Omarchy Server makes a new certificate that browsers only accept for your home network (local names and private addresses), never for a real website. Every device that trusted the old one needs the new one: download it again from “Trust this server on this device” and trust it as before. Until then those devices show a warning on https:// pages.',
+			confirm: 'Replace',
+		})
+		if (ok) save.mutate({path: 'system.replaceCertificate', done: 'New certificate made. Trust it again on your devices.', refresh: ['system.security']})
+	}
+	const s = sec.data
+	return (
+		<Group
+			title="Security"
+			footer={
+				<>
+					“Always use the secure address” sends a browser that opens a page over http:// to https:// (here and in your apps). App clients and phone apps that talk to an app directly are not
+					redirected. Turn it on once your devices trust the certificate. “Lock after viewing remotely” locks the server’s own screen again a minute after the last remote viewer
+					leaves, when you signed in to it from here.
+				</>
+			}
+		>
+			<Row
+				icon="shield"
+				color="var(--green)"
+				label="Certificate"
+				value={!s ? '' : !s.exists ? 'Not made yet' : s.restricted ? 'Home network only' : 'Older, unrestricted'}
+				trailing={
+					s?.exists && !s.restricted ? (
+						<button className="btn get" onClick={replace} disabled={save.isPending}>
+							Replace
+						</button>
+					) : undefined
+				}
+			/>
+			<Row icon="key" color="var(--blue)" label="Always use the secure address" trailing={<Switch on={!!s?.alwaysHttps} disabled={!s} label="Always use the secure address" onChange={(v) => set({alwaysHttps: v}, v ? 'Pages now open over https://' : 'http:// pages allowed again')} />} />
+			<Row icon="clock" color="var(--peach)" label="Lock after viewing remotely" trailing={<Switch on={s?.lockAfterRemote !== false} disabled={!s} label="Lock after viewing remotely" onChange={(v) => set({lockAfterRemote: v}, v ? 'The screen locks after remote viewing' : 'The screen stays signed in')} />} />
+		</Group>
 	)
 }

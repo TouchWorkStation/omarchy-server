@@ -1405,11 +1405,17 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	// QEMU's own monitor (HMP), for the commands Proxmox's Monitor tab offers ("info status"…).
+	const MONITOR_COMMANDS = new Set(['info', 'help', '?', 'system_reset', 'system_powerdown', 'system_wakeup', 'sendkey', 'stop', 'cont', 'c', 'nmi', 'mouse_move', 'mouse_button', 'balloon', 'set_link'])
 	async function monitor(input = {}) {
 		await ready
 		const m = find(input.id)
 		const command = String(input.command ?? '').trim()
 		if (!command || command.length > 500 || /[\r\n]/.test(command)) throw new RpcError('BAD_REQUEST', 'Enter one monitor command')
+		// Only commands that look at or act on the machine itself: none that read or write files on
+		// this server or start programs on it (migrate "exec:…", drive_add, dump-guest-memory,
+		// screendump, chardev-add and the like).
+		const verb = command.split(/\s+/)[0].toLowerCase()
+		if (!MONITOR_COMMANDS.has(verb)) throw new RpcError('FORBIDDEN', `“${verb}” isn’t available here. You can use: ${[...MONITOR_COMMANDS].filter((c) => c.length > 2).join(', ')}.`)
 		if ((await liveState(m)) === 'stopped') throw new RpcError('PRECONDITION_FAILED', `${m.name} isn’t running`)
 		const out = await virsh('qemu-monitor-command', domain(m.id), '--hmp', command).catch((e) => e.message)
 		return {output: String(out).slice(0, 64_000)}
