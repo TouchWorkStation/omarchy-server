@@ -4,6 +4,14 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.8',
+		date: '2026-11-13',
+		title: 'Your desktop follows you',
+		fixed: [
+			'The desktop’s wallpaper, look, accent, dock and desktop icons were kept only in the browser you set them in. They’re now saved on the server for your account, so every browser you sign in on shows the same desktop. The newest change wins, and a browser picks up changes made elsewhere when you switch back to it.',
+		],
+	},
+	{
 		version: '0.9.7',
 		date: '2026-11-13',
 		title: 'Right-click and paste',

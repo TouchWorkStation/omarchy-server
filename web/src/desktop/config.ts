@@ -130,23 +130,88 @@ export function loadConfig(): DeskConfig {
 	}
 }
 
-// One shared, live config for the whole desktop (dock, icons and the settings window).
+// One shared, live config for the whole desktop (dock, icons and the settings window). It's kept
+// in this browser for an instant start and saved on the server for your account, so every browser
+// you sign in on gets the same desktop: the newest change wins, and a browser that comes back to the
+// front picks up changes made elsewhere.
 let current: DeskConfig | null = null
 const listeners = new Set<(c: DeskConfig) => void>()
+const AT_KEY = `${KEY}:at`
+const localAt = () => {
+	try {
+		return Number(localStorage.getItem(AT_KEY)) || 0
+	} catch {
+		return 0
+	}
+}
+function keepLocal(c: DeskConfig, at: number) {
+	try {
+		localStorage.setItem(KEY, JSON.stringify(c))
+		localStorage.setItem(AT_KEY, String(at))
+	} catch {
+		/* private mode: this visit only */
+	}
+}
+let pushTimer: number | undefined
+function push() {
+	window.clearTimeout(pushTimer)
+	pushTimer = window.setTimeout(() => {
+		if (!current) return
+		fetch('/api/desktop', {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: {'content-type': 'application/json', 'x-omarchy-server': '1'},
+			body: JSON.stringify({config: current, updatedAt: localAt()}),
+		}).catch(() => {})
+	}, 600)
+}
+let lastPull = 0
+let syncing = false
+async function pull() {
+	if (syncing || Date.now() - lastPull < 3000) return
+	syncing = true
+	lastPull = Date.now()
+	try {
+		const r = await fetch('/api/desktop', {credentials: 'same-origin'})
+		if (!r.ok) return
+		const saved = (await r.json())?.desktop as {config: unknown; updatedAt: number} | null
+		const mine = localAt()
+		if (saved && saved.updatedAt > mine) {
+			current = clean(saved.config)
+			keepLocal(current, saved.updatedAt)
+			listeners.forEach((l) => l(current!))
+		} else if (!saved || saved.updatedAt < mine || (!mine && localStorage.getItem(KEY))) {
+			// Nothing saved yet, or this browser has newer changes: save them for the others.
+			if (!mine) keepLocal(current ?? loadConfig(), Date.now())
+			current ??= loadConfig()
+			push()
+		}
+	} catch {
+		/* offline: this browser's copy stays */
+	} finally {
+		syncing = false
+	}
+}
+let started = false
+function startSync() {
+	if (started) return
+	started = true
+	pull()
+	window.addEventListener('focus', () => pull())
+	document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull())
+}
 export function useDeskConfig() {
 	const [cfg, setCfg] = useState<DeskConfig>(() => (current ??= loadConfig()))
 	useEffect(() => {
 		listeners.add(setCfg)
+		startSync()
 		return () => void listeners.delete(setCfg)
 	}, [])
 	const update = useCallback((fn: (c: DeskConfig) => DeskConfig) => {
 		current = fn(current ?? loadConfig())
-		try {
-			localStorage.setItem(KEY, JSON.stringify(current))
-		} catch {
-			/* private mode: this visit only */
-		}
+		keepLocal(current, Date.now())
 		listeners.forEach((l) => l(current!))
+		push()
 	}, [])
 	return [cfg, update] as const
 }
