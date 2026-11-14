@@ -4,6 +4,15 @@ export type Release = {version: string; date: string; title: string; added?: str
 
 export const CHANGELOG: Release[] = [
 	{
+		version: '0.9.2',
+		date: '2026-11-13',
+		title: 'Brave and other streamed apps open securely',
+		fixed: [
+			'Apps installed before their listing was marked as needing a secure page (Brave (HTTPS) and others) kept opening over http:// and showed “This application requires a secure connection”. Installed apps now follow their listing without reinstalling.',
+			'Chromium, Firefox, Calibre, digiKam, Kdenlive, FileZilla, LibreOffice and Obsidian open over https:// too.',
+		],
+	},
+	{
 		version: '0.9.1',
 		date: '2026-11-13',
 		title: 'Icons that follow your theme',

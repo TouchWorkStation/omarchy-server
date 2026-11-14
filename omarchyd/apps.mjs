@@ -243,6 +243,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const gateways = new Map() // appId -> {server, port}
 	const tickets = new Map() // one-time hand-overs from the web app
 	let registryCache = null
+	let registryWarm = null
 
 	const ready = (async () => {
 		await mkdir(storesDir, {recursive: true, mode: 0o700})
@@ -585,6 +586,16 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				list.push(loaded)
 			} catch {}
 		}
+		// Installed apps pick up how their listing says to open them (https, an https app inside),
+		// so an app installed before its listing changed doesn't need reinstalling.
+		for (const app of state.apps) {
+			const src = list.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? list.flatMap((l) => l.apps).find((x) => x.id === app.id)
+			if (!src) continue
+			if (src.requiresHttps) app.requiresHttps = true
+			else delete app.requiresHttps
+			if (src.web?.https) app.internalHttps = true
+			else delete app.internalHttps
+		}
 		await save()
 		registryCache = {at: Date.now(), list}
 		return list
@@ -785,6 +796,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// ---- procedures -----------------------------------------------------------------------------
 	async function list() {
 		await ready
+		// Read the stores once after start, in the background, so installed apps get any listing changes.
+		if (!registryCache && !registryWarm) registryWarm = registry().catch(() => {}).finally(() => (registryWarm = null))
 		const live = await liveStates()
 		return state.apps.map((a) => {
 			const b = busy.get(a.id)
