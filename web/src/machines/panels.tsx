@@ -94,7 +94,7 @@ function Actions({onCancel, onSave, saving, disabled, label = 'Save', danger}: {
 		</div>
 	)
 }
-export function PendingBanner({d}: {d: MachineDetails}) {
+export function PendingBanner({d}: {d: Pick<MachineDetails, 'name'> & {pending?: boolean}}) {
 	if (!d.pending) return null
 	return (
 		<div className="mx-pending">
@@ -615,12 +615,16 @@ export function OptionsPanel({d}: {d: MachineDetails}) {
 	const [order, setOrder] = useState(String(o.startupOrder ?? ''))
 	const [delay, setDelay] = useState(String(o.startupDelay ?? 0))
 	useEffect(() => {
-		setName(d.name)
-		setOrder(String(o.startupOrder ?? ''))
-		setDelay(String(o.startupDelay ?? 0))
-	}, [open, d.name, o.startupOrder, o.startupDelay])
+		if (open === 'name') setName(d.name)
+	}, [open, d.name])
+	useEffect(() => {
+		if (open === 'order') {
+			setOrder(String(o.startupOrder ?? ''))
+			setDelay(String(o.startupDelay ?? 0))
+		}
+	}, [open, o.startupOrder, o.startupDelay])
 	const flag = (k: keyof MachineDetails['options'], label: string, note: string) => (
-		<Toggle label={label} note={note} on={!!o[k]} disabled={action.isPending} onChange={(v) => set({[k]: v}, `${label} ${v ? 'on' : 'off'}`)} />
+		<Toggle label={label} note={note} on={!!o[k]} disabled={action.isPending} onChange={(v) => action.mutate({path: 'machines.updateOptions', input: {id: d.id, [k]: v}, done: `${label} ${v ? 'on' : 'off'}`})} />
 	)
 	return (
 		<div className="mx-panel">

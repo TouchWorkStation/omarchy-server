@@ -333,7 +333,7 @@ export type RegistryApp = {
 }
 export type Registry = {meta: {id: string; name: string}; apps: RegistryApp[]}[]
 
-export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number}
+export type PortForward = {id: string; protocol: 'tcp' | 'udp'; hostPort: number; guestPort: number; pending?: boolean}
 
 export type Machine = {
 	id: string

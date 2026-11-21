@@ -139,6 +139,12 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			for (const m of machines) if (m.layout?.video === 'virtio') m.layout.video = 'vga'
 			for (const m of machines) if (m.state === 'installing') Object.assign(m, {state: 'error', errorMessage: 'Setup was interrupted. Delete this machine and create it again.'})
 			for (const m of machines) normalize(m)
+			const interruptedAt = Date.now()
+			for (const m of machines) {
+				for (const t of m.tasks ?? []) {
+					if (t.status === 'running') Object.assign(t, {status: 'error', endedAt: interruptedAt, message: 'Interrupted by a restart'})
+				}
+			}
 			await save().catch(() => {})
 		}
 		await removeUnfinishedBackups()
@@ -491,6 +497,8 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	}
 
 	// ---- procedures -----------------------------------------------------------------------------
+	const forwardKey = (f) => `${f.protocol}:${f.hostPort}->${f.guestPort}`
+	const forwardsFor = (m, state) => (m.portForwards ?? []).map((f) => (state === 'running' && m.pending && Array.isArray(m.liveForwards) && !m.liveForwards.includes(forwardKey(f)) ? {...f, pending: true} : f))
 	async function list() {
 		await ready
 		touchWatch()
@@ -513,7 +521,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				...(m.options?.protection ? {protected: true} : {}),
 				...(m.options?.onBoot ? {onBoot: true} : {}),
 				networkMode: 'nat',
-				portForwards: m.portForwards ?? [],
+				portForwards: forwardsFor(m, state),
 				...(b?.progress !== undefined ? {installProgress: b.progress} : {}),
 				...(state === 'error' && m.errorMessage ? {errorMessage: m.errorMessage} : {}),
 			}
@@ -625,6 +633,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					await define(m)
 					step(97)
 					await virsh('start', domain(id))
+					m.liveForwards = (m.portForwards ?? []).map(forwardKey)
 					delete m.state
 					delete m.errorMessage
 					endTask(m, t)
@@ -657,6 +666,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		await ready
 		const m = find(input?.id)
 		if (isBusy(m.id)) throw new RpcError('CONFLICT', `${m.name} is busy`)
+		let defined = false
 		if (m.state === 'error') {
 			// If setup got as far as this machine's own disk, Start finishes it: define again and boot.
 			// A failed copy still names the source machine's files, and those must not be booted.
@@ -664,6 +674,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			const ownDisks = (m.layout?.disks ?? []).every((d) => d.device !== 'disk' || !d.file || d.file.startsWith(own))
 			if (pending !== 'starting' || !ownDisks || !(await exists(join(vmsDir, m.id, 'disk.qcow2')))) throw new RpcError('PRECONDITION_FAILED', `${m.name} didn’t finish setting up. Delete it and create it again.`)
 			await define(m)
+			defined = true
 			delete m.state
 			delete m.errorMessage
 			await save()
@@ -679,12 +690,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					if (Date.now() > end) throw new Error(`${m.name} didn’t shut down within 3 minutes; use Stop, then Start`)
 					await new Promise((r) => setTimeout(r, 1000))
 				}
+				await define(m)
 				await virsh('start', domain(m.id))
-			} else await virsh(...verb(domain(m.id)))
+			} else {
+				if (pending === 'starting' && !defined) await define(m)
+				await virsh(...verb(domain(m.id)))
+			}
 			if (pending === 'starting' || pending === 'restarting') {
 				delete m.pending
 				delete m.hibernated
+				m.liveForwards = (m.portForwards ?? []).map(forwardKey)
 			}
+			if (pending === 'stopping' && verb(domain(m.id))[0] === 'destroy') delete m.liveForwards
 			if (pending === 'hibernating') m.hibernated = true
 			if (pending !== 'starting' && pending !== 'pausing' && pending !== 'resuming') await dropAnswerFile(m)
 			endTask(m, t)
@@ -774,6 +791,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				seen.add(key)
 				return {id: typeof f.id === 'string' && /^[\w-]{1,40}$/.test(f.id) ? f.id : randomBytes(4).toString('hex'), protocol, hostPort, guestPort}
 			})
+			const running = (await liveState(m)) !== 'stopped'
+			if (running && m.liveForwards === undefined) m.liveForwards = (m.portForwards ?? []).map(forwardKey)
+			else if (!running) delete m.liveForwards
 			m.portForwards = next
 			await markChanged(m)
 		}
@@ -826,10 +846,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		if ((await liveState(m)) !== 'stopped') throw new RpcError('PRECONDITION_FAILED', `Shut down ${m.name} first to ${what}`)
 	}
 	// A changed definition: libvirt keeps it for the next start. While running, it's pending until then.
-	async function markChanged(m) {
+	async function markChanged(m, {markPending = true} = {}) {
 		if (m.state !== 'error' && !isBusy(m.id)) {
 			await define(m)
-			if ((await liveState(m)) !== 'stopped') m.pending = true
+			if (markPending && (await liveState(m)) !== 'stopped') m.pending = true
 		}
 		await save()
 	}
@@ -1063,7 +1083,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				notes: m.options?.notes ?? '',
 			},
 			cloudInit: m.cloudInit ? {username: m.cloudInit.username ?? '', hostname: m.cloudInit.hostname ?? hostnameFor(m.name, m.id), sshKeys: m.cloudInit.sshKeys ?? []} : null,
-			portForwards: m.portForwards ?? [],
+			portForwards: forwardsFor(m, live),
 			snapshots: m.snapshots ?? [],
 			tasks: (m.tasks ?? []).slice(0, 50),
 			guestIps,
@@ -1107,6 +1127,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		})
 	}
 
+	const HARDWARE_OPTION_DEFAULTS = {tablet: true, acpi: true, kvm: true, agent: false, bootMenu: false}
 	async function updateOptions(input = {}) {
 		await ready
 		const m = find(input.id)
@@ -1140,11 +1161,18 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		return task(m, 'options', null, async () => {
 			const prevName = m.name
 			const prevOptions = m.options
+			const hardwareChanged = Object.entries(HARDWARE_OPTION_DEFAULTS).some(([k, def]) => {
+				const before = prevOptions?.[k] === undefined ? def : !!prevOptions[k]
+				const after = o[k] === undefined ? def : !!o[k]
+				return before !== after
+			})
+			const effectiveName = nextName !== undefined ? nextName : prevName
+			const xmlChanged = hardwareChanged || effectiveName !== prevName || (o.notes ?? '') !== (prevOptions?.notes ?? '')
 			if (nextName !== undefined) m.name = nextName
 			m.options = o
 			try {
-				if (m.state === 'error') await save()
-				else await markChanged(m)
+				if (m.state === 'error' || !xmlChanged) await save()
+				else await markChanged(m, {markPending: hardwareChanged})
 			} catch (error) {
 				m.name = prevName
 				m.options = prevOptions
@@ -1300,10 +1328,16 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			if ((await liveState(m)) === 'running') {
 				const dev = targets(m.layout).get(d.id)
 				if (file) await virsh('change-media', domain(m.id), dev, file, '--update', '--live')
-				else await virsh('change-media', domain(m.id), dev, '--eject', '--live').catch(() => {})
+				else if (d.file) await virsh('change-media', domain(m.id), dev, '--eject', '--live')
 			}
+			const prevFile = d.file
 			d.file = file
-			if (m.state !== 'error') await define(m)
+			try {
+				if (m.state !== 'error') await define(m)
+			} catch (error) {
+				d.file = prevFile
+				throw error
+			}
 			await save()
 			return true
 		})
@@ -1480,9 +1514,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		const target = join(dir, id)
 		const disks = qcowDisks(m)
 		const need = (await Promise.all(disks.map((d) => diskInfo(d.file)))).reduce((a, i) => a + (i.usedGb ?? 1), 0)
-		const fs = await statfs(dir)
-		if ((fs.bavail * fs.bsize) / 1024 ** 3 < need + 1) throw new RpcError('PRECONDITION_FAILED', `Not enough free space for the backup (about ${Math.ceil(need)} GB)`)
 		const running = await domainOpen(m)
+		const required = running ? need * 2 : need
+		const fs = await statfs(dir)
+		if ((fs.bavail * fs.bsize) / 1024 ** 3 < required + 1) throw new RpcError('PRECONDITION_FAILED', `Not enough free space for the backup (about ${Math.ceil(required)} GB)`)
 		// A folder of its own (never one that's already there, so a failure only removes its own).
 		// Before the machine is marked busy: a failed mkdir must not stick until restart.
 		await mkdir(target, {mode: 0o700})
@@ -1532,7 +1567,11 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 						await abortJob()
 						throw new Error('QEMU couldn’t finish the backup')
 					}
-					for (const d of disks) await run('qemu-img', ['convert', '-c', '-O', 'qcow2', join(tmp, `${d.id}.qcow2`), join(target, `${d.id}.qcow2`)], {timeout: 6 * 60 * 60_000})
+					for (const d of disks) {
+						const liveFile = join(tmp, `${d.id}.qcow2`)
+						await run('qemu-img', ['convert', '-c', '-O', 'qcow2', liveFile, join(target, `${d.id}.qcow2`)], {timeout: 6 * 60 * 60_000})
+						await rm(liveFile, {force: true})
+					}
 					await rm(tmp, {recursive: true, force: true})
 				} else {
 					let i = 0
@@ -1542,7 +1581,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 					}
 				}
 				// The settings, without task history or anything secret (no seed or answer file).
-				const machine = {...m, tasks: undefined, snapshots: undefined, answerIso: undefined, state: undefined, errorMessage: undefined, pending: undefined, hibernated: undefined}
+				const machine = {...m, tasks: undefined, snapshots: undefined, answerIso: undefined, state: undefined, errorMessage: undefined, pending: undefined, hibernated: undefined, liveForwards: undefined}
 				await writeFile(join(target, 'machine.json'), JSON.stringify({format: 1, sourceId: m.id, createdAt: Date.now(), notes, live: running, machine, disks: disks.map((d) => d.id)}, null, 2), {mode: 0o600})
 			} catch (error) {
 				await rm(target, {recursive: true, force: true})
@@ -1607,6 +1646,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			answerIso: undefined,
 			pending: undefined,
 			hibernated: undefined,
+			liveForwards: undefined,
 		})
 		machines.push(m)
 		busy.set(id, {state: 'installing', progress: 0})
