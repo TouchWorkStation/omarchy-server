@@ -11,6 +11,7 @@ import {osLook} from '../osLook'
 import {extraDisks, swarmGaugeItems, type SwarmBattery} from './gauges'
 import {newlyJoined} from './join'
 import {sameThemePicker} from './themePicker'
+import {storageRowSub} from './storageHint'
 import {StoragePage} from '../screens/Storage'
 import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, duration, haptic, levelColor, useConfirm, useToast} from '../ui'
 
@@ -304,7 +305,7 @@ function AgentSheet({a, onClose, onTerminal, onDesktop, onStorage}: {a: Agent; o
 					icon="disk"
 					color="var(--teal)"
 					label="Storage"
-					sub={offline ? undefined : may(a, 'storage') ? 'Drives, format extra disks, and pools on this computer' : 'Pair this computer again with Storage switched on.'}
+					sub={offline ? undefined : storageRowSub(a.allowed.storage, a.on.storage)}
 					onClick={a.online && may(a, 'storage') ? () => (haptic(8), onStorage()) : undefined}
 					disabled={offline}
 				/>

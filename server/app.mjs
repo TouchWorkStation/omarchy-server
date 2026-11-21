@@ -800,9 +800,11 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
 		const now = Date.now()
-		const recent = (attempts.get(ip) ?? []).filter((t) => now - t < 5 * 60 * 1000)
+		const LOGIN_WINDOW_MS = 5 * 60 * 1000
+		const recent = (attempts.get(ip) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS)
 		if (recent.length >= 10) {
-			return res.status(429).json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
+			const retryAfter = Math.max(1, Math.ceil((recent[0] + LOGIN_WINDOW_MS - now) / 1000))
+			return res.set('Retry-After', String(retryAfter)).status(429).json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
 		}
 		attempts.set(ip, [...recent, now])
 
@@ -1154,7 +1156,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				const v = upstream.headers.get(h)
 				if (v) res.setHeader(h, v)
 			}
-			res.setHeader('Cache-Control', kind === 'thumbnail' ? 'private, max-age=3600' : 'private, no-store')
+			res.setHeader('Cache-Control', kind === 'thumbnail' && upstream.ok ? 'private, max-age=3600' : 'private, no-store')
 			res.setHeader('X-Content-Type-Options', 'nosniff')
 			// Previews render inline but sandboxed, so a file can't script this app.
 			if (kind === 'view') res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
@@ -1762,7 +1764,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 					const target = new URL(getClient().baseUrl)
 					target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
 					target.pathname = '/connector/ws'
-					const upstream = new WebSocket(target, {headers: {authorization: String(req.headers.authorization ?? '')}, handshakeTimeout: 10_000, maxPayload: 16 * 1024 * 1024})
+					const upstream = new WebSocket(target, {headers: {authorization: String(req.headers.authorization ?? '')}, handshakeTimeout: 10_000, maxPayload: 16 * 1024 * 1024, autoPong: false})
 					upstream.once('unexpected-response', (_q, r) => refuse(`${r.statusCode === 401 ? '401 Unauthorized' : '502 Bad Gateway'}`))
 					upstream.once('error', () => refuse('502 Bad Gateway'))
 					upstream.once('open', () => {
@@ -1770,12 +1772,17 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 						wss.handleUpgrade(req, socket, head, (client) => {
 							upstream.on('message', (data, isBinary) => client.readyState === WebSocket.OPEN && client.send(data, {binary: isBinary}))
 							client.on('message', (data, isBinary) => upstream.readyState === WebSocket.OPEN && upstream.send(data, {binary: isBinary}))
-							upstream.on('close', () => client.readyState === WebSocket.OPEN && client.close(1000))
+							upstream.on('close', (code) => {
+								if (client.readyState !== WebSocket.OPEN) return
+								if (code === 1006) client.terminate()
+								else client.close(1000)
+							})
 							client.on('close', () => upstream.readyState === WebSocket.OPEN && upstream.close(1000))
 							upstream.on('error', () => client.terminate())
 							client.on('error', () => upstream.terminate())
-							// Keep it open through idle stretches (pings from omarchyd reach the connector).
+							// Keep it open through idle stretches (pings and pongs pass between omarchyd and the connector).
 							upstream.on('ping', (d) => client.readyState === WebSocket.OPEN && client.ping(d))
+							client.on('pong', (d) => upstream.readyState === WebSocket.OPEN && upstream.pong(d))
 						})
 					})
 					return
@@ -1957,7 +1964,7 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 		if (!Object.hasOwn(ALLOWED, path)) return res.status(404).json({error: {code: 'NOT_FOUND', message: `${path} is not available in Omarchy Server`}})
 		const kind = ALLOWED[path]
 		if ((kind === 'query') !== (req.method === 'GET')) {
-			return res.status(405).json({error: {code: 'METHOD_NOT_SUPPORTED', message: 'Wrong method'}})
+			return res.set('Allow', kind === 'query' ? 'GET' : 'POST').status(405).json({error: {code: 'METHOD_NOT_SUPPORTED', message: 'Wrong method'}})
 		}
 		let input
 		try {
@@ -2049,8 +2056,12 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 	// ---- PWA -----------------------------------------------------------------
 	if (staticDir && existsSync(staticDir)) {
 		app.use('/assets', express.static(join(staticDir, 'assets'), {immutable: true, maxAge: '1y'}))
+		app.use('/assets', (_req, res) => res.status(404).end())
 		app.use(express.static(staticDir, {index: false, maxAge: 0}))
-		app.get('*', (req, res) => res.set('Cache-Control', 'no-cache').sendFile(join(staticDir, 'index.html')))
+		app.get('*', (req, res) => {
+			if (req.path.startsWith('/.well-known/') || /\/[^/]+\.[^/]+$/.test(req.path)) return res.status(404).end()
+			res.set('Cache-Control', 'no-cache').sendFile(join(staticDir, 'index.html'))
+		})
 	}
 	return app
 }

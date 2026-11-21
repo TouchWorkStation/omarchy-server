@@ -145,7 +145,7 @@ function serverAddresses() {
 	return out
 }
 
-export function createConnector({dataDir, tlsDir, plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now()}) {
+export function createConnector({dataDir, tlsDir, plugins = null, source = async () => 'https://raw.githubusercontent.com/TouchWorkStation/omarchy-server', webPort = 7780, now = () => Date.now(), pingInterval = 25_000}) {
 	const file = join(dataDir, 'swarm.json')
 	let state = {agents: []}
 	// Set when swarm.json exists but cannot be used. Nothing may write it until the owner repairs it.
@@ -388,7 +388,17 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			}
 			const l = {ws, metrics: a.metrics ?? null, channels: new Map(), nextCh: 0, calls: new Map(), nextCall: 0}
 			live.set(a.id, l)
-			const alive = setInterval(() => ws.readyState === ws.OPEN && ws.ping(), 25_000)
+			let ponged = true
+			ws.on('pong', () => {
+				ponged = true
+			})
+			const alive = setInterval(() => {
+				if (ws.readyState !== ws.OPEN) return
+				if (!ponged) return ws.terminate()
+				ponged = false
+				ws.ping()
+			}, pingInterval)
+			alive.unref?.()
 			ws.on('message', async (data, isBinary) => {
 				try {
 					if (isBinary) {
