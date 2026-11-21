@@ -4,6 +4,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -29,6 +30,7 @@ import { SearchField } from "./Apps";
 import { useDesktop } from "../desktop/Desktop";
 import { openTerminalWith } from "../terminalEvent";
 import { actionsForItems, batchToast, offersDownload, selectionAfterQuery, type BatchKind } from "./filesRules";
+import { canSubmitNamePrompt, collectUploadDirs, type DirectoryHandleLike, type FavoriteItem, favoritePath, fileKindLabel, filterUnsyncedPhotos, handleFileDragEnter, handleFileDragOver, handleFileDrop, pickDirectoryFromWindow, readDirectoryHandle, readDroppedEntries, sharePasswordAction, sharePasswordLabel, shouldActivateRowOnKey, UPLOAD_REFRESH_KEYS, type UploadBatch } from "../filesHelpers";
 
 const FileViewer = lazy(() =>
   import("./viewer/FileViewer").then((m) => ({ default: m.FileViewer })),
@@ -277,36 +279,46 @@ function uploadOne(
 function useUploads(onDone: () => void) {
   const [uploads, setUploads] = useState<Upload[]>([]);
   const toast = useToast();
-  const start = async (input: FileList | File[] | UploadItem[], dir: string) => {
-    const items: UploadItem[] = Array.from(input as ArrayLike<File | UploadItem>).map((x) =>
+  const start = async (input: FileList | File[] | UploadItem[] | UploadBatch, dir: string) => {
+    const raw = "dirs" in input ? input.files : input;
+    const extraDirs = "dirs" in input ? input.dirs : [];
+    const items: UploadItem[] = Array.from(raw as ArrayLike<File | UploadItem>).map((x) =>
       x instanceof File
         ? { file: x, rel: (x as File & { webkitRelativePath?: string }).webkitRelativePath || undefined }
         : x,
     );
-    if (!items.length) return;
+    const dirs = collectUploadDirs(items, extraDirs);
+    if (!items.length && !dirs.length) return;
     haptic(8);
     const ids = items.map(() => Math.random());
-    setUploads((u) => [
-      ...u,
-      ...items.map((it, i) => ({
-        id: ids[i],
-        name: it.rel ?? it.file.name,
-        loaded: 0,
-        total: it.file.size,
-        state: "uploading" as const,
-      })),
-    ]);
+    if (items.length) {
+      setUploads((u) => [
+        ...u,
+        ...items.map((it, i) => ({
+          id: ids[i],
+          name: it.rel ?? it.file.name,
+          loaded: 0,
+          total: it.file.size,
+          state: "uploading" as const,
+        })),
+      ]);
+    }
     // Folder uploads: make the folders first (parents before children). One that already
     // exists is fine: files land inside it, and name clashes keep both copies.
-    const dirs = [
-      ...new Set(
-        items.flatMap((it) => {
-          const parts = (it.rel ?? "").split("/").slice(0, -1);
-          return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
-        }),
-      ),
-    ].sort((x, y) => x.split("/").length - y.split("/").length);
-    for (const d of dirs) await mutate("files.createDirectory", { path: `${dir}/${d}` }).catch(() => {});
+    let dirFailed = false;
+    for (const d of dirs) {
+      await mutate("files.createDirectory", { path: `${dir}/${d}` }).catch((e) => {
+        const msg = (e as Error).message;
+        if (msg === "[already-exists]" || msg === "[destination-already-exists]") return;
+        if (!dirFailed) toast(`${d}: ${nice(msg)}`, true);
+        dirFailed = true;
+      });
+    }
+    if (!items.length) {
+      onDone();
+      if (!dirFailed) toast(dirs.length === 1 ? "Folder created" : `${dirs.length} folders created`);
+      return;
+    }
     // Three at a time, so a folder of hundreds of files doesn't swamp the connection.
     let next = 0;
     let failed = 0;
@@ -336,28 +348,12 @@ function useUploads(onDone: () => void) {
 }
 
 // Files and folders dropped from the computer. Folders are walked so their structure is kept.
-async function droppedItems(dt: DataTransfer): Promise<UploadItem[]> {
+async function droppedItems(dt: DataTransfer): Promise<UploadBatch> {
   const entries = [...dt.items]
     .map((i) => (i.kind === "file" ? (i as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.() : null))
     .filter(Boolean) as FileSystemEntry[];
-  if (!entries.length) return [...dt.files].map((file) => ({ file }));
-  const out: UploadItem[] = [];
-  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
-    if (entry.isFile) {
-      const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej));
-      out.push({ file, rel: prefix ? `${prefix}/${file.name}` : undefined });
-    } else if (entry.isDirectory) {
-      const reader = (entry as FileSystemDirectoryEntry).createReader();
-      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      for (;;) {
-        const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej));
-        if (!batch.length) break;
-        for (const child of batch) await walk(child, path);
-      }
-    }
-  };
-  for (const e of entries) await walk(e, "");
-  return out;
+  if (!entries.length) return { files: [...dt.files].map((file) => ({ file })), dirs: [] };
+  return readDroppedEntries(entries);
 }
 
 // ---- screen -----------------------------------------------------------------------------
@@ -405,7 +401,9 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   const photoInput = useRef<HTMLInputElement>(null);
   const [dropping, setDropping] = useState(false);
   const dragDepth = useRef(0);
-  const refresh = () => qc.invalidateQueries({ queryKey: ["files.list"] });
+  const refresh = () => {
+    for (const key of UPLOAD_REFRESH_KEYS) qc.invalidateQueries({ queryKey: [...key] });
+  };
   const { uploads, start: upload, clear: clearUploads } = useUploads(refresh);
 
   useEffect(() => {
@@ -430,7 +428,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   });
   const favorites = useQuery({
     queryKey: ["files.favorites"],
-    queryFn: () => query<string[]>("files.favorites"),
+    queryFn: () => query<FavoriteItem[]>("files.favorites"),
   });
   const owner = user.data != null && user.data.role !== "member";
   const shares = useQuery({
@@ -446,7 +444,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
     enabled: q.trim().length >= 2,
     staleTime: 10_000,
   });
-  const favSet = useMemo(() => new Set(favorites.data ?? []), [favorites.data]);
+  const favSet = useMemo(() => new Set((favorites.data ?? []).map(favoritePath)), [favorites.data]);
   const shareMap = useMemo(
     () => new Map((shares.data ?? []).map((s) => [s.path, s])),
     [shares.data],
@@ -477,7 +475,20 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   const canUpload = !!uploadDir;
   const finePointer = typeof matchMedia !== "undefined" && matchMedia("(pointer: fine)").matches;
   // iPhone/iPad Safari can't pick a whole folder; computers can.
-  const canPickFolder = finePointer && "webkitdirectory" in HTMLInputElement.prototype;
+  const canPickFolder = finePointer && ("showDirectoryPicker" in window || "webkitdirectory" in HTMLInputElement.prototype);
+  const pickFolder = async () => {
+    if (!uploadDir) return;
+    const win = window as Window & { showDirectoryPicker?: () => Promise<DirectoryHandleLike> };
+    if (!win.showDirectoryPicker) return folderInput.current?.click();
+    try {
+      const handle = await pickDirectoryFromWindow(win);
+      if (!handle) return;
+      const batch = await readDirectoryHandle(handle);
+      if (batch.files.length || batch.dirs.length) upload(batch, uploadDir);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") toast((e as Error).message, true);
+    }
+  };
   const toggle = (f: FileEntry) => {
     haptic(6);
     setSelected((s) => {
@@ -521,13 +532,13 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
         : path === "::favorites"
           ? (favorites.data ?? []).map(
               (p) =>
-                ({
+                (typeof p === "string" ? {
                   name: baseName(p) || p,
                   path: p,
                   type: "directory",
                   modified: 0,
                   operations: ["favorite"],
-                }) as FileEntry,
+                } : p) as FileEntry,
             )
           : (listing.data?.files ?? []);
   const activeQ =
@@ -768,7 +779,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
         role="button"
         tabIndex={0}
         onClick={() => activate(f)}
-        onKeyDown={(e) => e.key === "Enter" && activate(f)}
+        onKeyDown={(e) => shouldActivateRowOnKey(e) && activate(f)}
         {...press}
       >
         {selecting && (
@@ -824,27 +835,24 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
   };
 
   const onDragEnter = (e: React.DragEvent) => {
-    if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
+    if (!handleFileDragEnter(e, canUpload)) return;
     dragDepth.current++;
     setDropping(true);
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "copy";
+    handleFileDragOver(e, canUpload);
   };
   const onDragLeave = () => {
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (!dragDepth.current) setDropping(false);
   };
   const onDrop = async (e: React.DragEvent) => {
-    if (!canUpload || !uploadDir) return;
-    e.preventDefault();
+    const allowed = handleFileDrop(e, canUpload && !!uploadDir);
     dragDepth.current = 0;
     setDropping(false);
-    const items = await droppedItems(e.dataTransfer).catch(() => [] as UploadItem[]);
-    if (items.length) upload(items, uploadDir);
+    if (!allowed || !uploadDir) return;
+    const batch = await droppedItems(e.dataTransfer).catch((): UploadBatch => ({ files: [], dirs: [] }));
+    if (batch.files.length || batch.dirs.length) upload(batch, uploadDir);
   };
 
   return (
@@ -869,9 +877,8 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           const picked = e.target.files ? [...e.target.files] : [];
           e.target.value = "";
           if (!picked.length) return;
-          // Sync: upload only what isn't in Photos yet (same name and size).
-          const have = new Set((listing.data?.files ?? []).map((f) => `${f.name}:${f.size}`));
-          const fresh = picked.filter((f) => !have.has(`${f.name}:${f.size}`));
+          // Sync: upload only what isn't in Photos yet (same name or keep-both copy, and size).
+          const fresh = filterUnsyncedPhotos(picked, listing.data?.files ?? []);
           const skipped = picked.length - fresh.length;
           if (!fresh.length) return toast(`All ${picked.length} already synced`);
           if (skipped) toast(`${fresh.length} new · ${skipped} already synced`);
@@ -908,7 +915,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
             {path === null ? "Upload to Home" : "Upload"}
           </button>
           {canPickFolder && (
-            <button className="btn" onClick={() => folderInput.current?.click()}>
+            <button className="btn" onClick={pickFolder}>
               <Icon name="folder-share" size={18} />
               Upload folder
             </button>
@@ -1265,6 +1272,7 @@ export function Files({ initialPath }: { initialPath?: string } = {}) {
           initial={prompt.kind === "rename" ? prompt.entry!.name : "New folder"}
           submit={prompt.kind === "folder" ? "Create" : "Rename"}
           selectStem={prompt.kind === "rename" && !isDir(prompt.entry!)}
+          requireChange={prompt.kind === "rename"}
           onClose={() => setPrompt(null)}
           onSubmit={async (name) => {
             if (prompt.kind === "folder")
@@ -1584,7 +1592,7 @@ function ItemSheet(p: {
         {!isDir(f) && (
           <div className="row static">
             <span className="k">Kind</span>
-            <span className="v">{f.type.split("/").pop()}</span>
+            <span className="v">{fileKindLabel(f)}</span>
           </div>
         )}
         {f.modified ? (
@@ -1681,6 +1689,7 @@ function NamePrompt({
   initial,
   submit,
   selectStem,
+  requireChange,
   onClose,
   onSubmit,
 }: {
@@ -1688,6 +1697,7 @@ function NamePrompt({
   initial: string;
   submit: string;
   selectStem?: boolean;
+  requireChange?: boolean;
   onClose: () => void;
   onSubmit: (name: string) => Promise<void>;
 }) {
@@ -1701,15 +1711,14 @@ function NamePrompt({
     const dot = initial.lastIndexOf(".");
     el.setSelectionRange(0, selectStem && dot > 0 ? dot : initial.length);
   }, [initial, selectStem]);
-  const valid =
-    name.trim() !== "" && !name.includes("/") && name !== "." && name !== "..";
+  const canSubmit = canSubmitNamePrompt({ name, initial, requireChange, busy });
   return (
     <Sheet open onClose={onClose} label={title}>
       <SheetHeader title={title} onClose={onClose} />
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (!valid) return;
+          if (!canSubmit) return;
           setBusy(true);
           await onSubmit(name.trim()).catch(() => {});
           setBusy(false);
@@ -1731,7 +1740,7 @@ function NamePrompt({
         </div>
         <button
           className="btn primary block"
-          disabled={!valid || busy || name === initial}
+          disabled={!canSubmit}
         >
           {busy && <span className="spinner" />}
           {submit}
@@ -1928,6 +1937,33 @@ function UploadPanel({
 // Share a folder on your home LAN (Samba), or see and change how it's shared. Other computers open
 // it at smb://<server>/<name>; with a password, they sign in with your server account's user name
 // and your share password.
+/** Module-level radio choice so re-renders keep focus on the active access option. */
+function ShareAccessChoice({
+  name,
+  on,
+  title,
+  note,
+  onPick,
+  disabled,
+}: {
+  name: string;
+  on: boolean;
+  title: string;
+  note: string;
+  onPick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 2px", fontSize: 14.5, opacity: disabled ? 0.55 : 1 }}>
+      <input type="radio" name={name} checked={on} disabled={disabled} onChange={onPick} />
+      <span>
+        {title}
+        <small className="muted" style={{ display: "block" }}>{note}</small>
+      </span>
+    </label>
+  );
+}
+
 export function ShareSheet({
   path,
   name,
@@ -1944,6 +1980,7 @@ export function ShareSheet({
   const toast = useToast();
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const accessRadioName = useId();
   const shares = useQuery({ queryKey: ["files.shares"], queryFn: () => query<SmbShare[]>("files.shares") });
   const options = useQuery({
     queryKey: ["files.shareOptions"],
@@ -1981,20 +2018,12 @@ export function ShareSheet({
       () => toast(v),
     );
   const noPasswordOk = options.data?.noPassword === true;
-  const Choice = ({ on, title, note, onPick, disabled }: { on: boolean; title: string; note: string; onPick: () => void; disabled?: boolean }) => (
-    <label style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 2px", fontSize: 14.5, opacity: disabled ? 0.55 : 1 }}>
-      <input type="radio" checked={on} disabled={disabled} onChange={onPick} />
-      <span>
-        {title}
-        <small className="muted" style={{ display: "block" }}>{note}</small>
-      </span>
-    </label>
-  );
   const passwordChoices = (current: boolean, pick: (v: boolean) => void) => (
     <div className="glass card" style={{ borderRadius: 18, marginBottom: 12 }}>
       <b style={{ fontSize: 14 }}>Who can open it</b>
-      <Choice on={current} title="Password needed" note={`Sign in as ${username ?? "your server user"} with your share password.`} onPick={() => pick(true)} />
-      <Choice
+      <ShareAccessChoice name={accessRadioName} on={current} title="Password needed" note={`Sign in as ${username ?? "your server user"} with your share password.`} onPick={() => pick(true)} />
+      <ShareAccessChoice
+        name={accessRadioName}
         on={!current}
         title="No password"
         note={noPasswordOk ? "Anyone on your home LAN can open it. Writes are not saved as you. Only for folders you don’t mind anyone at home seeing." : "Needs Omarchy Server’s installer to run once more on this server."}
@@ -2092,9 +2121,23 @@ export function ShareSheet({
               </button>
             )}
             {share.password && (
-              <button className="row" style={{ minHeight: 56 }} onClick={() => (pw.data ? copy(pw.data, "Password") : setReveal(true))}>
+              <button
+                className="row"
+                style={{ minHeight: 56 }}
+                onClick={() => {
+                  const action = sharePasswordAction({ data: pw.data, reveal, isFetching: pw.isFetching });
+                  if (action === "copy") copy(pw.data!, "Password");
+                  else if (action === "refetch") void pw.refetch();
+                  else if (action === "reveal") setReveal(true);
+                }}
+              >
                 <span className="k">Password</span>
-                <span className="v mono" style={{ fontSize: 12.5 }}>{pw.data ?? (pw.isFetching ? "…" : "Tap to show")}</span>
+                <span
+                  className={!pw.data && pw.error && !pw.isFetching ? "v" : "v mono"}
+                  style={{ fontSize: 12.5, ...(!pw.data && pw.error && !pw.isFetching ? { color: "var(--red)" } : {}) }}
+                >
+                  {sharePasswordLabel({ data: pw.data, isFetching: pw.isFetching, error: pw.error })}
+                </span>
               </button>
             )}
           </div>

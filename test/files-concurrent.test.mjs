@@ -112,7 +112,7 @@ test('concurrent favorite updates keep every change without leaving temp files',
 		Array.from({length: 8}, (_, i) => files.procedures['files.addFavorite'].run({path: `/Home/f${i}`})),
 	)
 	assert.deepEqual(
-		(await files.procedures['files.favorites'].run()).sort(),
+		(await files.procedures['files.favorites'].run()).map((e) => e.path).sort(),
 		['/Home/f0', '/Home/f1', '/Home/f2', '/Home/f3', '/Home/f4', '/Home/f5', '/Home/f6', '/Home/f7'],
 	)
 	await Promise.all([
@@ -124,7 +124,7 @@ test('concurrent favorite updates keep every change without leaving temp files',
 		files.procedures['files.removeFavorite'].run({path: '/Home/f6'}),
 	])
 	assert.deepEqual(
-		(await files.procedures['files.favorites'].run()).sort(),
+		(await files.procedures['files.favorites'].run()).map((e) => e.path).sort(),
 		['/Home/f1', '/Home/f3', '/Home/f5', '/Home/f7', '/Home/f8', '/Home/f9'],
 	)
 	assert.deepEqual(await readdir(dataDir), ['favorites.json'])
