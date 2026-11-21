@@ -7,6 +7,7 @@ import { mutate, type FileEntry } from "../../api";
 import { useDialogFocus } from "../../focus";
 import { Icon, type IconName } from "../../icons";
 import { bytes, haptic, usePortalRoot, useToast } from "../../ui";
+import { ZIP_ENTRY_LIMIT, handleDocumentLinkClick, renderMarkdownHtml, shouldIgnoreViewerKey, zipTruncatedNote } from "./helpers";
 import type { Sheet, Shape, ZipEntry } from "./office";
 
 const enc = encodeURIComponent;
@@ -530,7 +531,7 @@ function PdfView(b: BodyProps) {
   }, [doc, page]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!doc) return;
+      if (!doc || shouldIgnoreViewerKey(e.target)) return;
       if (e.key === "ArrowRight" || e.key === "PageDown") goPage(Math.min(doc.numPages, page + 1));
       if (e.key === "ArrowLeft" || e.key === "PageUp") goPage(Math.max(1, page - 1));
     };
@@ -617,8 +618,8 @@ function useText(f: FileEntry, reload: number) {
   return state;
 }
 async function renderMarkdown(src: string) {
-  const [{ marked }, { default: DOMPurify }] = await Promise.all([import("marked"), import("dompurify")]);
-  const html = await marked.parse(src, { gfm: true, breaks: false });
+  const [{ Marked }, { default: DOMPurify }] = await Promise.all([import("marked"), import("dompurify")]);
+  const html = await renderMarkdownHtml(src, Marked);
   return DOMPurify.sanitize(html, { FORBID_TAGS: ["style", "form", "input"], USE_PROFILES: { html: true } });
 }
 function TextView(b: BodyProps) {
@@ -718,13 +719,7 @@ function TextView(b: BodyProps) {
         <article
           className="fv-md"
           dangerouslySetInnerHTML={{ __html: html }}
-          onClick={(e) => {
-            const a = (e.target as HTMLElement).closest("a");
-            if (a?.href) {
-              e.preventDefault();
-              if (/^https?:/.test(a.href)) window.open(a.href, "_blank", "noopener,noreferrer");
-            }
-          }}
+          onClick={(e) => void handleDocumentLinkClick(e)}
         />
       </div>
     );
@@ -919,7 +914,11 @@ function DocxView(b: BodyProps) {
   if (loading || html == null) return <Loading />;
   return (
     <div className="fv-scroll fv-paper-bg">
-      <article className="fv-paper" dangerouslySetInnerHTML={{ __html: html || "<p><i>This document is empty.</i></p>" }} />
+      <article
+        className="fv-paper"
+        dangerouslySetInnerHTML={{ __html: html || "<p><i>This document is empty.</i></p>" }}
+        onClick={(e) => void handleDocumentLinkClick(e)}
+      />
     </div>
   );
 }
@@ -947,7 +946,7 @@ function PptxView(b: BodyProps) {
   }, [deck, cur]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!deck) return;
+      if (!deck || shouldIgnoreViewerKey(e.target)) return;
       if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") (e.preventDefault(), go(Math.min(deck.slides.length - 1, cur + 1)));
       if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") (e.preventDefault(), go(Math.max(0, cur - 1)));
     };
@@ -1077,7 +1076,7 @@ function ZipView(b: BodyProps) {
       <div className="fv-zip">
         <p className="muted">{files.length.toLocaleString()} {files.length === 1 ? "file" : "files"} · {bytes(total)} uncompressed</p>
         <ul className="glass">
-          {entries.slice(0, 5000).map((e) => {
+          {entries.slice(0, ZIP_ENTRY_LIMIT).map((e) => {
             const depth = e.name.replace(/\/$/, "").split("/").length - 1;
             const name = e.name.replace(/\/$/, "").split("/").pop();
             return (
@@ -1089,6 +1088,7 @@ function ZipView(b: BodyProps) {
             );
           })}
         </ul>
+        {entries.length > ZIP_ENTRY_LIMIT && <p className="fv-note">{zipTruncatedNote(entries.length)}</p>}
       </div>
     </div>
   );

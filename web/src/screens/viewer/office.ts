@@ -10,9 +10,29 @@ const first = (n: Element | Document | null | undefined, local: string) =>
 const kids = (n: Element, local?: string) => [...n.children].filter((c) => !local || c.localName === local);
 const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
+const CP437_HIGH =
+  "\u00c7\u00fc\u00e9\u00e2\u00e4\u00e0\u00e5\u00e7\u00ea\u00eb\u00e8\u00ef\u00ee\u00ec\u00c4\u00c5" +
+  "\u00c9\u00e6\u00c6\u00f4\u00f6\u00f2\u00fb\u00f9\u00ff\u00d6\u00dc\u00a2\u00a3\u00a5\u20a7\u0192" +
+  "\u00e1\u00ed\u00f3\u00fa\u00f1\u00d1\u00aa\u00ba\u00bf\u2310\u00ac\u00bd\u00bc\u00a1\u00ab\u00bb" +
+  "\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510" +
+  "\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567" +
+  "\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580" +
+  "\u03b1\u00df\u0393\u03c0\u03a3\u03c3\u00b5\u03c4\u03a6\u0398\u03a9\u03b4\u221e\u03c6\u03b5\u2229" +
+  "\u2261\u00b1\u2265\u2264\u2320\u2321\u00f7\u2248\u00b0\u2219\u00b7\u221a\u207f\u00b2\u25a0\u00a0";
+
+export function decodeCp437(bytes: ArrayLike<number | string>): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const raw = bytes[i];
+    const b = (typeof raw === "string" ? raw.charCodeAt(0) : raw) & 0xff;
+    out += b < 0x80 ? String.fromCharCode(b) : CP437_HIGH[b - 0x80];
+  }
+  return out;
+}
+
 export async function openZip(buf: ArrayBuffer): Promise<Zip> {
   const { default: JSZip } = await import("jszip");
-  return JSZip.loadAsync(buf);
+  return JSZip.loadAsync(buf, { decodeFileName: decodeCp437 });
 }
 const read = async (zip: Zip, path: string) => {
   const f = zip.file(path.replace(/^\//, ""));
@@ -52,33 +72,170 @@ const colIndex = (ref: string) => {
   for (const ch of ref.replace(/\d+/g, "")) n = n * 26 + (ch.charCodeAt(0) - 64);
   return n - 1;
 };
-const DATE_IDS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47]);
-function excelDate(serial: number, withTime: boolean) {
-  const d = new Date(Math.round((serial - 25569) * 86400 * 1000));
-  if (Number.isNaN(d.getTime())) return String(serial);
-  const iso = d.toISOString();
-  const day = iso.slice(0, 10);
-  if (!withTime) return day;
-  const time = iso.slice(11, 16);
-  return serial < 1 ? time : `${day} ${time}`;
+export type ExcelFormatKind =
+  | "date"
+  | "datetime"
+  | "datetime-sec"
+  | "time-hm"
+  | "time-hms"
+  | "time-ms"
+  | "dur-hm"
+  | "dur-hms"
+  | "dur-ms"
+  | "dur-m"
+  | "dur-s";
+
+const BUILTIN_FORMATS: Record<number, ExcelFormatKind> = {
+  14: "date",
+  15: "date",
+  16: "date",
+  17: "date",
+  18: "time-hm",
+  19: "time-hms",
+  20: "time-hm",
+  21: "time-hms",
+  22: "datetime",
+  27: "date",
+  28: "date",
+  29: "date",
+  30: "date",
+  31: "date",
+  32: "time-hm",
+  33: "time-hms",
+  34: "time-hm",
+  35: "time-hms",
+  36: "date",
+  45: "time-ms",
+  46: "dur-hms",
+  47: "time-ms",
+  50: "date",
+  51: "date",
+  52: "date",
+  53: "date",
+  54: "date",
+  55: "time-hm",
+  56: "time-hms",
+  57: "date",
+  58: "date",
+};
+
+function firstFormatSection(raw: string): string {
+  let inQuotes = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && !inQuotes) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (ch === ";" && !inQuotes) return raw.slice(0, i);
+  }
+  return raw;
 }
-const cleanNum = (v: string) => {
+
+function stripFormatLiterals(section: string): string {
+  return section.replace(/"[^"]*"|\\.|_.|\*./g, "");
+}
+
+export function classifyExcelFormat(numFmtId: number, formatCode?: string): ExcelFormatKind | null {
+  if (formatCode !== undefined) {
+    const noLit = stripFormatLiterals(firstFormatSection(formatCode));
+    const stripped = noLit.replace(/\[[^\]]*\]/g, "");
+    if (/\[h+\]/i.test(noLit)) return /s/i.test(stripped) ? "dur-hms" : "dur-hm";
+    if (/\[m+\]/i.test(noLit)) return /s/i.test(stripped) ? "dur-ms" : "dur-m";
+    if (/\[s+\]/i.test(noLit)) return "dur-s";
+    const code = stripped.replace(/am\/pm|a\/p/gi, "");
+    const hasDate = /[dy]/i.test(code);
+    const hasHour = /h/i.test(code);
+    const hasSec = /s/i.test(code);
+    const hasM = /m/i.test(code);
+    if (!hasDate && !hasHour && !hasSec && !hasM) return null;
+    if (hasDate) return hasSec ? "datetime-sec" : hasHour ? "datetime" : "date";
+    if (hasHour && hasSec) return "time-hms";
+    if (hasHour) return "time-hm";
+    if (hasSec) return "time-ms";
+    return "date";
+  }
+  return BUILTIN_FORMATS[numFmtId] ?? null;
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const xmlBool = (v: string | null | undefined) => v === "1" || v === "true";
+
+export function formatExcelSerial(serial: number, kind: ExcelFormatKind, date1904 = false): string {
+  if (!Number.isFinite(serial)) return String(serial);
+  if (kind.startsWith("dur-")) {
+    const totalSec = Math.round(Math.abs(serial) * 86400);
+    const sign = serial < 0 && totalSec > 0 ? "-" : "";
+    if (kind === "dur-s") return `${sign}${totalSec}`;
+    if (kind === "dur-m") return `${sign}${Math.floor(totalSec / 60)}`;
+    if (kind === "dur-ms") return `${sign}${Math.floor(totalSec / 60)}:${pad2(totalSec % 60)}`;
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return kind === "dur-hms" ? `${sign}${h}:${pad2(m)}:${pad2(s)}` : `${sign}${h}:${pad2(m)}`;
+  }
+  const totalSec = Math.round(serial * 86400);
+  if (kind === "time-ms") {
+    const secOfHour = ((totalSec % 3600) + 3600) % 3600;
+    return `${pad2(Math.floor(secOfHour / 60))}:${pad2(secOfHour % 60)}`;
+  }
+  const epoch = date1904 ? 24107 : 25569;
+  const daySerial = kind === "date" ? Math.floor(serial) : Math.floor(totalSec / 86400);
+  let day: string;
+  if (!date1904 && daySerial === 60) {
+    day = "1900-02-29";
+  } else {
+    const adj = !date1904 && daySerial < 60 ? daySerial + 1 : daySerial;
+    const d = new Date((adj - epoch) * 86400 * 1000);
+    if (Number.isNaN(d.getTime())) return String(serial);
+    day = d.toISOString().slice(0, 10);
+  }
+  if (kind === "date") return day;
+  const secOfDay = ((totalSec % 86400) + 86400) % 86400;
+  const hh = pad2(Math.floor(secOfDay / 3600));
+  const mm = pad2(Math.floor((secOfDay % 3600) / 60));
+  const ss = pad2(secOfDay % 60);
+  const time = kind === "time-hms" || kind === "datetime-sec" ? `${hh}:${mm}:${ss}` : `${hh}:${mm}`;
+  return serial >= 0 && serial < 1 ? time : `${day} ${time}`;
+}
+export const cleanNum = (v: string) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return v;
-  return Number.isInteger(n) ? String(n) : String(Math.round(n * 1e10) / 1e10);
+  return Number.isInteger(n) ? String(n) : String(Number(n.toPrecision(15)));
 };
+
+function cellText(el: Element | null): string {
+  if (!el) return "";
+  let out = "";
+  for (const child of kids(el)) {
+    if (child.localName === "t") out += child.textContent ?? "";
+    else if (child.localName === "r") for (const t of kids(child, "t")) out += t.textContent ?? "";
+  }
+  return out;
+}
 
 export async function readXlsx(buf: ArrayBuffer): Promise<Sheet[]> {
   const zip = await openZip(buf);
   const wbPath = "xl/workbook.xml";
   const wb = await read(zip, wbPath);
   if (!wb) throw new Error("This isn’t an Excel workbook");
+  const wbDoc = xml(wb);
+  const date1904 = xmlBool(first(wbDoc, "workbookPr")?.getAttribute("date1904"));
   const wbRels = await rels(zip, wbPath);
   const shared: string[] = [];
   const sst = await read(zip, "xl/sharedStrings.xml");
-  if (sst) for (const si of all(xml(sst), "si")) shared.push(all(si, "t").map((t) => t.textContent ?? "").join(""));
-  // Which number formats are dates.
-  const dateStyles: (null | "date" | "datetime")[] = [];
+  if (sst) for (const si of all(xml(sst), "si")) shared.push(cellText(si));
+  // Which number formats are dates or durations.
+  const dateStyles: (ExcelFormatKind | null)[] = [];
   const st = await read(zip, "xl/styles.xml");
   if (st) {
     const doc = xml(st);
@@ -88,13 +245,11 @@ export async function readXlsx(buf: ArrayBuffer): Promise<Sheet[]> {
     if (xfs)
       for (const xf of kids(xfs, "xf")) {
         const id = Number(xf.getAttribute("numFmtId") ?? 0);
-        const code = (custom.get(id) ?? "").replace(/"[^"]*"|\[[^\]]*\]|\\./g, "");
-        const isDate = DATE_IDS.has(id) || (custom.has(id) && /[dmy]/i.test(code) && !/^[#0.,%\s]*$/.test(code));
-        dateStyles.push(isDate ? (/[hs]/i.test(code) || [18, 19, 20, 21, 22, 45, 46, 47].includes(id) ? "datetime" : "date") : null);
+        dateStyles.push(classifyExcelFormat(id, custom.get(id)));
       }
   }
   const sheets: Sheet[] = [];
-  for (const s of all(xml(wb), "sheet")) {
+  for (const s of all(wbDoc, "sheet")) {
     const name = s.getAttribute("name") ?? `Sheet ${sheets.length + 1}`;
     const rid = s.getAttributeNS(R_NS, "id") ?? s.getAttribute("r:id") ?? "";
     const path = wbRels.get(rid);
@@ -117,12 +272,12 @@ export async function readXlsx(buf: ArrayBuffer): Promise<Sheet[]> {
         const v = first(c, "v")?.textContent ?? "";
         let val = "";
         if (t === "s") val = shared[Number(v)] ?? "";
-        else if (t === "inlineStr") val = all(c, "t").map((x) => x.textContent ?? "").join("");
+        else if (t === "inlineStr") val = cellText(first(c, "is") ?? c);
         else if (t === "b") val = v === "1" ? "TRUE" : "FALSE";
         else if (t === "str" || t === "e") val = v;
         else if (v !== "") {
           const ds = dateStyles[Number(c.getAttribute("s") ?? -1)];
-          val = ds ? excelDate(Number(v), ds === "datetime") : cleanNum(v);
+          val = ds ? formatExcelSerial(Number(v), ds, date1904) : cleanNum(v);
         }
         out[ci] = val;
       });
@@ -360,8 +515,8 @@ export async function readPptx(buf: ArrayBuffer): Promise<Deck> {
               runs.push({
                 text: first(r, "t")?.textContent ?? "",
                 size: sz ? Number(sz) / 100 : undefined,
-                bold: rPr?.getAttribute("b") === "1",
-                italic: rPr?.getAttribute("i") === "1",
+                bold: xmlBool(rPr?.getAttribute("b")),
+                italic: xmlBool(rPr?.getAttribute("i")),
                 color: rPr ? color(kids(rPr, "solidFill")[0]) : undefined,
               });
             }
@@ -406,6 +561,16 @@ export async function iworkPreview(buf: ArrayBuffer): Promise<string | null> {
 
 // ---- zip listing -------------------------------------------------------------------------------
 export type ZipEntry = { name: string; dir: boolean; size: number; date?: Date };
+export function compareZipEntries(a: Pick<ZipEntry, "name" | "dir">, b: Pick<ZipEntry, "name" | "dir">): number {
+  const pa = a.name.replace(/\/$/, "").split("/");
+  const pb = b.name.replace(/\/$/, "").split("/");
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    if (pa[i] !== pb[i]) return pa[i].localeCompare(pb[i]) || (pa[i] < pb[i] ? -1 : 1);
+  }
+  if (pa.length !== pb.length) return pa.length - pb.length;
+  if (a.dir !== b.dir) return (a.dir ? 1 : 0) - (b.dir ? 1 : 0);
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
 export async function listZip(buf: ArrayBuffer): Promise<ZipEntry[]> {
   const zip = await openZip(buf);
   const out: ZipEntry[] = [];
@@ -425,5 +590,5 @@ export async function listZip(buf: ArrayBuffer): Promise<ZipEntry[]> {
       const d = e.name.slice(0, i + 1);
       if (!dirs.has(d)) dirs.add(d), out.push({ name: d, dir: true, size: 0 });
     }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  return out.sort(compareZipEntries);
 }
