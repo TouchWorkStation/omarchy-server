@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import {describe, test} from 'node:test'
 
-import {collapse, contains, flipSplit, focusDir, insert, isNode, leafIds, rebuild, reconcile, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
+import {GAP, collapse, contains, flipSplit, focusDir, insert, isNode, leafIds, moveWorkspace, rebuild, reconcile, rects, remove, swapDir} from '../web/src/desktop/hyprland/layout.ts'
 
 const area = {x: 0, y: 0, w: 1000, h: 800}
 
@@ -94,5 +94,32 @@ describe('hyprland layout', () => {
 		assert.equal(contains(next, 'b'), true)
 		assert.ok(leafIds(next).includes('c'))
 		assert.deepEqual(Object.keys(rects(collapse(next, new Set(['b'])), area, 0)).sort(), ['a', 'c'])
+	})
+
+	test('moveWorkspace to the same workspace leaves tiles unchanged', () => {
+		const wide = {x: 8, y: 42, w: 1904, h: 1030}
+		const t1 = insert(null, null, 'A', wide, GAP)
+		const t2 = insert(t1, 'A', 'B', wide, GAP)
+		const t3 = insert(t2, 'B', 'C', wide, GAP)
+		const before = rects(t3, wide, GAP)
+		const trees = {1: t3}
+
+		const same = moveWorkspace(trees, 'A', 1, 1, {targetFocusId: 'C', area: wide, gap: GAP})
+		assert.equal(same, trees)
+		assert.deepEqual(rects(same[1], wide, GAP), before)
+	})
+
+	test('moveWorkspace to another workspace moves tiled or floating windows cleanly', () => {
+		const wide = {x: 8, y: 42, w: 1904, h: 1030}
+		const t1 = insert(insert(null, null, 'A', wide, GAP), 'A', 'B', wide, GAP)
+		const trees = {1: t1, 2: null}
+
+		const moved = moveWorkspace(trees, 'A', 1, 2, {area: wide, gap: GAP})
+		assert.deepEqual(moved[1], {kind: 'leaf', id: 'B'})
+		assert.deepEqual(moved[2], {kind: 'leaf', id: 'A'})
+
+		const movedFloat = moveWorkspace(trees, 'A', 1, 2, {floating: true, area: wide, gap: GAP})
+		assert.deepEqual(movedFloat[1], {kind: 'leaf', id: 'B'})
+		assert.equal(movedFloat[2], null)
 	})
 })

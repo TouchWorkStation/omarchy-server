@@ -65,3 +65,18 @@ export function actionOf(e: KeyLike, opts: {consoleFocused: boolean} = {consoleF
 	}
 	return null
 }
+
+export type HyprKeyResult =
+	| {kind: 'grab-toggle'}
+	| {kind: 'console-forward'}
+	| {kind: 'action'; action: Action}
+	| null
+
+// Decide whether a keydown in Hyprland mode runs a shortcut, grabs keys, or forwards to a focused console.
+export function resolveHyprKey(e: KeyLike, opts: {consoleFocused: boolean} = {consoleFocused: false}): HyprKeyResult {
+	const act = actionOf(e, opts)
+	if (act?.type === 'grab-toggle') return {kind: 'grab-toggle'}
+	if (opts.consoleFocused && isSuper(e) && !act) return {kind: 'console-forward'}
+	if (act) return {kind: 'action', action: act}
+	return null
+}

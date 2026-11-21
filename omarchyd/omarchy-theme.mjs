@@ -248,6 +248,7 @@ export function createOmarchyTheme({home, run = null, env = process.env, systemS
 		if (!d?.user) throw Object.assign(new Error('Only themes you added can be removed'), {code: 'PRECONDITION_FAILED'})
 		if ((await currentName()) === slug) throw Object.assign(new Error('Switch to another theme before removing this one'), {code: 'PRECONDITION_FAILED'})
 		await inTurn('omarchy-theme-remove', [slug])
+		jobs.delete(slug)
 		return true
 	}
 

@@ -180,6 +180,26 @@ export function reconcile(tree: unknown, ids: string[], area: Rect, gap = GAP): 
 	return next
 }
 
+export function moveWorkspace(
+	trees: Record<number, Node | null>,
+	id: string,
+	fromWs: number,
+	toWs: number,
+	opts: {floating?: boolean; targetFocusId?: string | null; area: Rect; gap?: number; hidden?: Iterable<string>},
+): Record<number, Node | null> {
+	if (fromWs === toWs) return trees
+	const next: Record<number, Node | null> = {...trees}
+	for (const k of Object.keys(next)) {
+		const n = Number(k)
+		next[n] = remove(next[n] ?? null, id)
+	}
+	if (!opts.floating) {
+		const targetTree = next[toWs] ?? null
+		next[toWs] = insert(targetTree, opts.targetFocusId ?? firstLeaf(targetTree), id, opts.area, opts.gap ?? GAP, opts.hidden)
+	}
+	return next
+}
+
 function replaceLeaf(tree: Node, id: string, next: Node): Node {
 	if (tree.kind === 'leaf') return tree.id === id ? next : tree
 	return {...tree, a: replaceLeaf(tree.a, id, next), b: replaceLeaf(tree.b, id, next)}

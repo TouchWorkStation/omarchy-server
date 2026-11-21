@@ -28,10 +28,13 @@ import {LockChip, WorkspacePills} from './hyprland/Bar'
 import {Cheatsheet} from './hyprland/Cheatsheet'
 import {injectConsoleKey, keysymFromEvent, lastMinimizedOn, releaseConsoleSuper, topVisibleWindow} from './hyprland/consoleBridge'
 import {CAPTURE_KEY, ONBOARDING_KEY, canUseKeyboardLock, chipIntent, keyboardLockApi, onCaptureModeChange, onFullscreenChange, resolveMode, toggleLock, type GrabState} from './hyprland/grab'
-import {actionOf, isSuper, type Action} from './hyprland/keymap'
+import {isSuper, resolveHyprKey, type Action} from './hyprland/keymap'
 import {Launcher} from './hyprland/Launcher'
-import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
+import {GAP, collapse, contains, firstLeaf, flipSplit, focusDir, insert as insertTile, isNode, moveWorkspace, reconcile, rects as tileRectsOf, remove as removeTile, swapDir, type Node} from './hyprland/layout'
 import {Onboarding} from './hyprland/Onboarding'
+import {loadWallpaper} from './wallpaperLoader'
+import {clampDragY, clampWindowRect} from './windowGeometry'
+import {startMinuteClock} from './clock'
 
 const HINT_KEY = 'omarchy-server:desk-hint-closed'
 
@@ -95,7 +98,7 @@ const snapRect = (snap: Exclude<Snap, null>): Rect => {
 	if (snap === 'right') return {x: a.x + Math.floor(a.w / 2), y: a.y, w: Math.ceil(a.w / 2), h: a.h}
 	return a
 }
-const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : {x: win.x, y: win.y, w: win.w, h: win.h})
+const rectOf = (win: Win): Rect => (win.snap ? snapRect(win.snap) : clampWindowRect({x: win.x, y: win.y, w: win.w, h: win.h}, area(), {minW: MIN_W, minH: MIN_H}))
 
 const dockThickness = (cfg: DeskConfig) => cfg.dock.iconSize + 26 + (cfg.dock.floating ? 14 : 0)
 const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -694,15 +697,17 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 			return void setHyprWs((n) => (n === 1 ? 9 : n - 1))
 		}
 		if (act.type === 'move-workspace' && focused) {
-			dropFromTrees(focused.id)
+			if (act.n === ws) return
 			update(focused.id, {workspace: act.n})
-			if (!focused.float) {
-				setTrees((ts) => {
-					const t = ts[act.n] ?? null
-					const other = topTileOn(act.n, focused.id)
-					return {...ts, [act.n]: insertTile(t, other?.id ?? firstLeaf(t), focused.id, usable(), GAP, hiddenIds(act.n))}
-				})
-			}
+			setTrees((ts) =>
+				moveWorkspace(ts, focused.id, ws, act.n, {
+					floating: focused.float,
+					targetFocusId: topTileOn(act.n, focused.id)?.id,
+					area: usable(),
+					gap: GAP,
+					hidden: hiddenIds(act.n),
+				}),
+			)
 			setHyprWs(act.n)
 			return
 		}
@@ -734,37 +739,41 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 				api.openTerminal()
 				if (cfg.shell === 'hyprland') return
 			}
+			if (cfg.shell === 'hyprland') {
+				const top = topVisibleWindow(winsRef.current, hyprWsRef.current, true)
+				const consoleFocused = top?.kind === 'console'
+				const res = resolveHyprKey(e, {consoleFocused: !!consoleFocused})
+				const act = res?.kind === 'grab-toggle' ? {type: 'grab-toggle' as const} : res?.kind === 'action' ? res.action : null
+				const forwardsToConsole = !!(res?.kind === 'console-forward' && top && keysymFromEvent(e))
+				if (ignoreRepeatedDesktopShortcut({repeat: e.repeat, terminalChord: false, action: act, forwardsToConsole})) return
+				if (res?.kind === 'grab-toggle') {
+					e.preventDefault()
+					e.stopPropagation()
+					releaseLastConsole()
+					setGrab((s) => toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll'))
+					return
+				}
+				if (res?.kind === 'console-forward' && top) {
+					if (!keysymFromEvent(e)) return
+					e.preventDefault()
+					e.stopPropagation()
+					if (lastConsoleRef.current && lastConsoleRef.current !== top.id) releaseConsoleSuper(lastConsoleRef.current)
+					lastConsoleRef.current = top.id
+					injectConsoleKey(top.id, e)
+					return
+				}
+				if (res?.kind === 'action') {
+					e.preventDefault()
+					e.stopPropagation()
+					runHyprRef.current(res.action)
+					return
+				}
+			}
 			if (e.key === 'Escape') {
 				if (hasOpenDialog()) return
 				setLauncher(false)
 				setCheatsheet(false)
 			}
-			if (cfg.shell !== 'hyprland') return
-			const top = topVisibleWindow(winsRef.current, hyprWsRef.current, true)
-			const consoleFocused = top?.kind === 'console'
-			const act = actionOf(e, {consoleFocused: !!consoleFocused})
-			const forwardsToConsole = !!(consoleFocused && top && isSuper(e) && !act && keysymFromEvent(e))
-			if (ignoreRepeatedDesktopShortcut({repeat: e.repeat, terminalChord: false, action: act, forwardsToConsole})) return
-			if (act?.type === 'grab-toggle') {
-				e.preventDefault()
-				e.stopPropagation()
-				releaseLastConsole()
-				setGrab((s) => toggleLock(s, e.code === 'F12' ? 'f12' : 'scroll'))
-				return
-			}
-			if (consoleFocused && top && isSuper(e) && !act) {
-				if (!keysymFromEvent(e)) return
-				e.preventDefault()
-				e.stopPropagation()
-				if (lastConsoleRef.current && lastConsoleRef.current !== top.id) releaseConsoleSuper(lastConsoleRef.current)
-				lastConsoleRef.current = top.id
-				injectConsoleKey(top.id, e)
-				return
-			}
-			if (!act) return
-			e.preventDefault()
-			e.stopPropagation()
-			runHyprRef.current(act)
 		}
 		const up = (e: KeyboardEvent) => {
 			if (cfg.shell !== 'hyprland' && (e.key === 'Meta' || e.key === 'OS') && superAlone)
@@ -1212,16 +1221,14 @@ export function Desktop({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {
 
 function Wall({url}: {url: string}) {
 	const [layers, setLayers] = useState<string[]>([])
-	useEffect(() => {
-		const show = (u: string, fallback?: string) => {
-			const img = new Image()
-			img.onload = () => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u])
-			// No Omarchy background here (or it went away): a built-in one instead.
-			img.onerror = () => fallback && show(fallback)
-			img.src = u
-		}
-		show(url, url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined)
-	}, [url])
+	useEffect(
+		() =>
+			loadWallpaper(url, {
+				fallback: url.startsWith('/api/omarchy/') ? wallpaperSrc('valley') : undefined,
+				onLoad: (u) => setLayers((l) => [...l.filter((x) => x !== u).slice(-1), u]),
+			}),
+		[url],
+	)
 	return (
 		<div className="desk-wall" aria-hidden="true">
 			{layers.map((u, i) => (
@@ -1708,8 +1715,18 @@ function DesktopIcons(p: {
 function useClock() {
 	const [now, setNow] = useState(() => new Date())
 	useEffect(() => {
-		const t = window.setInterval(() => setNow(new Date()), 15_000)
-		return () => window.clearInterval(t)
+		let stop = startMinuteClock(setNow)
+		const onVisible = () => {
+			if (document.visibilityState !== 'visible') return
+			setNow(new Date())
+			stop()
+			stop = startMinuteClock(setNow)
+		}
+		document.addEventListener('visibilitychange', onVisible)
+		return () => {
+			stop()
+			document.removeEventListener('visibilitychange', onVisible)
+		}
 	}, [])
 	return now
 }
@@ -2181,7 +2198,7 @@ function WindowFrame({
 			}
 			const a = area()
 			const x = rect.x + dx
-			const y = Math.min(Math.max(a.y, rect.y + dy), window.innerHeight - 48)
+			const y = clampDragY(rect.y + dy, a)
 			node.style.left = `${x}px`
 			node.style.top = `${y}px`
 			snap = ev.clientY <= TOP + 2 ? 'max' : ev.clientX <= a.x + 4 ? 'left' : ev.clientX >= a.x + a.w - 5 ? 'right' : null
@@ -2195,7 +2212,7 @@ function WindowFrame({
 			if (!moved) return
 			const a = area()
 			const x = rect.x + (ev.clientX - start.px)
-			const y = Math.min(Math.max(a.y, rect.y + (ev.clientY - start.py)), window.innerHeight - 48)
+			const y = clampDragY(rect.y + (ev.clientY - start.py), a)
 			onUpdate(win.id, snap ? {snap, x, y, w: rect.w, h: rect.h} : {snap: null, x, y, w: rect.w, h: rect.h})
 		}
 		window.addEventListener('pointermove', move)

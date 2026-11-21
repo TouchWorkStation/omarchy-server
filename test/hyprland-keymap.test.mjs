@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import {readFileSync} from 'node:fs'
 import {describe, test} from 'node:test'
 
-import {actionOf} from '../web/src/desktop/hyprland/keymap.ts'
+import {actionOf, resolveHyprKey} from '../web/src/desktop/hyprland/keymap.ts'
 
 const e = (code, extra = {}) => ({code, key: extra.key ?? code, metaKey: extra.meta ?? false, altKey: !!extra.alt, shiftKey: !!extra.shift, ctrlKey: !!extra.ctrl, ...extra})
 const superE = (code, extra = {}) => e(code, {meta: true, ...extra})
@@ -44,5 +45,22 @@ describe('hyprland keymap', () => {
 	test('keys without Super do nothing except Scroll Lock', () => {
 		assert.equal(actionOf(e('Enter')), null)
 		assert.equal(actionOf(e('KeyQ')), null)
+	})
+
+	test('resolveHyprKey distinguishes Super+Escape from plain Escape and handles console/grab', () => {
+		assert.deepEqual(resolveHyprKey(superE('Escape'), {consoleFocused: false}), {kind: 'action', action: {type: 'system-menu'}})
+		assert.equal(resolveHyprKey(e('Escape'), {consoleFocused: false}), null)
+		assert.deepEqual(resolveHyprKey(superE('Escape'), {consoleFocused: true}), {kind: 'console-forward'})
+		assert.deepEqual(resolveHyprKey(e('ScrollLock'), {consoleFocused: false}), {kind: 'grab-toggle'})
+		assert.deepEqual(resolveHyprKey(superE('F12'), {consoleFocused: true}), {kind: 'grab-toggle'})
+	})
+
+	test('Desktop keydown runs Hyprland key resolution before generic Escape cleanup', () => {
+		const src = readFileSync(new URL('../web/src/desktop/Desktop.tsx', import.meta.url), 'utf8')
+		const hyprIdx = src.indexOf('resolveHyprKey(')
+		const escIdx = src.indexOf("if (e.key === 'Escape')")
+		assert.ok(hyprIdx !== -1, 'Desktop.tsx must use resolveHyprKey')
+		assert.ok(escIdx !== -1, 'Desktop.tsx must retain generic Escape handler')
+		assert.ok(hyprIdx < escIdx, 'Hyprland shortcuts must be handled before generic Escape cleanup')
 	})
 })

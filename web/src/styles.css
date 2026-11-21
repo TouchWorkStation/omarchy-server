@@ -7567,23 +7567,27 @@ html.page-locked .auth {
 }
 
 /* Desktop top bar: the notification bell (rings while an Omarchy Server update is ready). */
-.top-bell {
+.desk-top .top-bell {
 	position: relative;
 	display: inline-grid;
 	place-items: center;
 	width: 30px;
 	height: 26px;
+	padding: 0;
 	border: 0;
 	border-radius: 13px;
 	background: transparent;
 	color: rgba(255, 255, 255, 0.82);
 	cursor: pointer;
 }
-.top-bell:hover,
-.top-bell.on {
+.desk-top .top-bell:hover,
+.desk-top .top-bell.on {
 	background: rgba(255, 255, 255, 0.14);
 }
-.top-bell.lit {
+.style-daylight .desk-top .top-bell {
+	color: rgba(0, 0, 0, 0.62);
+}
+.desk-top .top-bell.lit {
 	color: var(--accent-text);
 }
 .top-bell .badge-n {
@@ -7837,6 +7841,9 @@ html.page-locked .auth {
 	padding: 8px;
 	max-height: 50vh;
 	overflow: auto;
+}
+.hypr-launcher li {
+	scroll-margin-block: 8px;
 }
 .hypr-launcher button {
 	width: 100%;

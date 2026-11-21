@@ -166,3 +166,37 @@ test('a copied current/theme does not list the same wallpaper twice', async () =
 	const nord = (await t.list()).groups.find((g) => g.theme === 'nord')
 	assert.deepEqual(nord.items.map((i) => i.name), ['1-city', 'omarchy'])
 })
+
+test('removing a theme clears any prior failed job for that slug', async () => {
+	const home = join(root, 'home-remove-job')
+	const omarchy = join(root, 'omarchy-remove-job')
+	const userTheme = join(home, '.config/omarchy/themes/monokai')
+	await mkdir(join(omarchy, 'themes/nord/backgrounds'), {recursive: true})
+	await writeFile(join(omarchy, 'themes/nord/backgrounds/1.webp'), 'img')
+	await mkdir(userTheme, {recursive: true})
+	await writeFile(join(userTheme, 'colors.toml'), 'background = "#272822"\n')
+	await mkdir(join(omarchy, 'bin'), {recursive: true})
+	for (const b of ['omarchy-theme-set', 'omarchy-theme-install', 'omarchy-theme-remove']) await writeFile(join(omarchy, 'bin', b), '#!/bin/sh\n', {mode: 0o755})
+	const state = join(home, '.local/state/omarchy/current')
+	await mkdir(state, {recursive: true})
+	await symlink(join(omarchy, 'themes/nord'), join(state, 'theme'))
+	await writeFile(join(state, 'theme.name'), 'nord\n')
+
+	const t = createOmarchyTheme({
+		home,
+		env: {OMARCHY_PATH: omarchy, PATH: '/usr/bin'},
+		run: async (cmd) => {
+			if (cmd.endsWith('omarchy-theme-set')) throw new Error('switch failed')
+			if (cmd.endsWith('omarchy-theme-remove')) await rm(userTheme, {recursive: true, force: true})
+		},
+	})
+
+	await t.setTheme('monokai')
+	await new Promise((r) => setTimeout(r, 15))
+	assert.equal((await t.themes()).installed.find((x) => x.slug === 'monokai')?.job?.state, 'error')
+
+	await t.removeTheme('monokai')
+	const after = await t.themes()
+	assert.equal(after.installed.some((x) => x.slug === 'monokai'), false)
+	assert.equal(after.more.find((x) => x.slug === 'monokai')?.job, undefined)
+})

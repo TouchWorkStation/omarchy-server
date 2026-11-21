@@ -3,6 +3,7 @@ import {useQuery, useQueryClient} from '@tanstack/react-query'
 
 import {mutate, query} from './api'
 import {Icon} from './icons'
+import {isMoreThemeBusy, runThemeAction, shouldPollThemes} from './omarchyThemesLogic'
 import {haptic, useConfirm, useToast} from './ui'
 
 type Job = {state: 'installing' | 'switching' | 'removing' | 'error'; error?: string}
@@ -23,7 +24,7 @@ export function OmarchyThemes({owner}: {owner: boolean}) {
 		queryKey: ['omarchy.themes'],
 		queryFn: () => query<Themes>('omarchy.themes'),
 		// While something is switching or installing, keep checking.
-		refetchInterval: (q) => (pending || q.state.data?.installed.some((t) => t.job && t.job.state !== 'error') || q.state.data?.more.some((t) => t.job && t.job.state !== 'error') ? 1500 : false),
+		refetchInterval: (q) => (shouldPollThemes(pending, q.state.data) ? 1500 : false),
 	})
 	const data = themes.data
 	// When the desktop's theme changes, the web app's Omarchy colours and backgrounds follow.
@@ -39,17 +40,17 @@ export function OmarchyThemes({owner}: {owner: boolean}) {
 		for (const t of [...data.installed, ...data.more]) if (t.job?.state === 'error' && pending === t.slug) (setPending(null), toast(t.job.error ?? 'That didn’t work', true))
 	}, [data])
 
-	const act = async (path: string, slug: string, done?: string) => {
+	const act = (path: string, slug: string, done?: string) => {
 		haptic(8)
-		setPending(slug)
-		try {
-			await mutate(path, {slug})
-			if (done) toast(done)
-			qc.invalidateQueries({queryKey: ['omarchy.themes']})
-		} catch (e) {
-			setPending(null)
-			toast((e as Error).message, true)
-		}
+		return runThemeAction({
+			path,
+			slug,
+			done,
+			mutate,
+			invalidate: () => qc.invalidateQueries({queryKey: ['omarchy.themes']}),
+			setPending,
+			toast,
+		})
 	}
 	const more = useMemo(() => {
 		const q = search.trim().toLowerCase()
@@ -121,7 +122,7 @@ export function OmarchyThemes({owner}: {owner: boolean}) {
 					<input className="omt-search" type="search" placeholder={`Search ${data.more.length} themes`} value={search} onChange={(e) => setSearch(e.target.value)} />
 					<div className="omt-grid">
 						{more.map((t) => {
-							const busy = (t.job && t.job.state !== 'error') || pending === t.slug
+							const busy = isMoreThemeBusy(t, pending)
 							return (
 								<div key={t.slug} className="omt-card more">
 									<button className="omt-pick" disabled={!!busy} onClick={() => act('omarchy.installTheme', t.slug, `Getting ${t.name}…`)}>

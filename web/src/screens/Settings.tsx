@@ -17,6 +17,7 @@ import {BackupsPage} from '../backups'
 import {UnraidPage} from '../unraid'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
+import {PASSWORD_SHEET_SUBTITLE} from './settingsHelpers'
 
 function useQ<T>(path: string, input?: unknown, opts: {enabled?: boolean; refetchInterval?: number | false; staleTime?: number; refetchOnWindowFocus?: boolean; refetchOnReconnect?: boolean} = {}) {
 	return useQuery({queryKey: [path, input], queryFn: () => query<T>(path, input), retry: false, staleTime: 15_000, ...opts})
@@ -1175,7 +1176,7 @@ function PasswordSheet({open, onClose}: {open: boolean; onClose: () => void}) {
 		<FormSheet
 			open={open}
 			title="Change password"
-			subtitle="Used for Omarchy Server and Omarchy Server"
+			subtitle={PASSWORD_SHEET_SUBTITLE}
 			onClose={onClose}
 			submit="Change password"
 			busy={save.isPending}
