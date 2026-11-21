@@ -120,7 +120,8 @@ export function AppSheet({app, update, onClose, onTerminal}: Props) {
 	const creds = app.credentials
 	const rows: [string, React.ReactNode][] = []
 	if (creds?.defaultUsername) rows.push(['Username', creds.defaultUsername])
-	if (creds?.defaultPassword) rows.push(['Password', creds.defaultPassword])
+	if (creds?.defaultPassword) rows.push([creds.label || 'Password', creds.defaultPassword])
+	if (app.apiPort) rows.push(['Job API', `${boot.server!.host}:${app.apiPort}`])
 	rows.push(['Version', update ? `${app.version} → ${update.version}` : (app.version ?? '–')])
 	const webNow = app.state === 'running' ? webStatus(web.data) : null
 	if (webNow) rows.push(['Web page', <span key="web" style={{color: webNow.tone === 'bad' ? 'var(--red)' : webNow.tone === 'wait' ? 'var(--yellow)' : undefined}}>{webNow.label}</span>])

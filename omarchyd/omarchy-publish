@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Publish or unpublish an app on this Omarchy Server.
+
+Runs inside a studio container. Omarchy Server mounts the token, a socket that
+only accepts these two calls, and a map of container folders to home folders.
+The studio does not get the Podman socket.
+"""
+import json
+import os
+import socket
+import sys
+
+SOCK = os.environ.get("OMARCHY_PUBLISH_SOCK", "/run/omarchy/publish.sock")
+TOKEN_FILE = os.environ.get("OMARCHY_PUBLISH_TOKEN", "/run/omarchy/publish.token")
+MOUNTS = os.environ.get("OMARCHY_PUBLISH_MOUNTS", "/run/omarchy/publish.mounts")
+
+
+def die(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def host_path(path):
+    """Turn a path inside a mounted folder into the home folder omarchyd checks."""
+    if not path.startswith("/"):
+        die("Pass an absolute path to the binary")
+    if ".." in path.split("/") or any(c in path for c in "\n\r\t"):
+        die("That path can't be published")
+    best = None
+    if os.path.isfile(MOUNTS):
+        with open(MOUNTS, encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.rstrip("\n")
+                if not line or line.startswith("#") or "\t" not in line:
+                    continue
+                dest, host = line.split("\t", 1)
+                dest = dest.rstrip("/") or "/"
+                host = host.rstrip("/")
+                if path == dest or path.startswith(dest + "/"):
+                    if best is None or len(dest) > len(best[0]):
+                        best = (dest, host)
+    if best is None:
+        return path
+    dest, host = best
+    return host + path[len(dest):]
+
+
+def call(procedure, payload, token):
+    body = json.dumps(payload).encode()
+    request = (
+        f"POST /trpc/{procedure} HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        f"Authorization: Bearer {token}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode() + body
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(SOCK)
+        sock.sendall(request)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        head, _, rest = data.partition(b"\r\n\r\n")
+        status = int(head.decode().split(" ", 2)[1])
+        length = 0
+        for line in head.decode().split("\r\n")[1:]:
+            if line.lower().startswith("content-length:"):
+                length = int(line.split(":", 1)[1].strip())
+        while len(rest) < length:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            rest += chunk
+    except OSError as error:
+        die(f"Can't reach Omarchy Server ({error})")
+    finally:
+        sock.close()
+    try:
+        parsed = json.loads(rest[:length] or b"{}")
+    except json.JSONDecodeError:
+        die(f"Omarchy Server answered {status} with something that isn't JSON")
+    if status != 200 or "error" in parsed:
+        message = parsed.get("error", {}).get("message") or f"Omarchy Server answered {status}"
+        die(message)
+    return parsed.get("result", {}).get("data")
+
+
+def options(argv):
+    out = {}
+    i = 0
+    while i < len(argv):
+        key = argv[i]
+        if not key.startswith("--") or len(key) < 3:
+            die(f"Unknown argument {key}")
+        if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+            die(f"{key} needs a value")
+        out[key[2:]] = argv[i + 1]
+        i += 2
+    return out
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print("Usage: omarchy-publish publish --id ID --name NAME (--binary PATH | --image REF)\n           [--port N] [--api-port N] [--container-port N] [--assets PATH] [--version V]\n       omarchy-publish unpublish --id ID", file=sys.stderr)
+        raise SystemExit(0 if len(argv) > 1 else 1)
+    command = argv[1]
+    if command not in ("publish", "unpublish"):
+        die("Use publish or unpublish")
+    opt = options(argv[2:])
+    if not opt.get("id"):
+        die("Pass --id")
+    try:
+        token = open(TOKEN_FILE, encoding="utf-8").read().strip()
+    except OSError as error:
+        die(f"Can't read the publish token ({error})")
+    if not token:
+        die("The publish token is empty")
+    if command == "unpublish":
+        call("apps.unpublish", {"appId": opt["id"]}, token)
+        print(f"unpublished {opt['id']}")
+        return
+    if not opt.get("name"):
+        die("Pass --name")
+    payload = {"appId": opt["id"], "name": opt["name"]}
+    if "binary" in opt:
+        payload["binary"] = host_path(opt["binary"])
+    if "image" in opt:
+        payload["image"] = opt["image"]
+    for flag, field in (("port", "port"), ("api-port", "apiPort"), ("container-port", "containerPort"), ("assets", "assets"), ("version", "version"), ("tagline", "tagline"), ("description", "description"), ("category", "category")):
+        if flag in opt:
+            if field in ("port", "apiPort", "containerPort"):
+                try:
+                    payload[field] = int(opt[flag])
+                except ValueError:
+                    die(f"--{flag} has to be a number")
+            elif field == "assets":
+                payload["assets"] = host_path(opt[flag])
+            else:
+                payload[field] = opt[flag]
+    data = call("apps.publish", payload, token)
+    verb = "updated" if data and data.get("updated") else "published"
+    print(f"{verb} {data['appId']} {data['image']} {data['url']}")
+
+
+if __name__ == "__main__":
+    main(sys.argv)

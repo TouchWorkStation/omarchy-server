@@ -248,7 +248,9 @@ export type UserApp = {
 	progress?: number
 	requiresHttps?: boolean
 	torOnly?: boolean
-	credentials?: {defaultUsername?: string; defaultPassword?: string; showBeforeOpen?: boolean}
+	/** LAN port of a published job API. The token is credentials.defaultPassword. */
+	apiPort?: number
+	credentials?: {defaultUsername?: string; defaultPassword?: string; showBeforeOpen?: boolean; label?: string}
 	dependencies?: string[]
 	error?: string
 	/** Runs on the server itself (Tailscale), not in a container: no container terminal. */

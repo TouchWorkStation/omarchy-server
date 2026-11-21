@@ -97,14 +97,14 @@ export function AppViewer({app, onClose}: {app: UserApp; onClose: () => void}) {
 			</header>
 			{creds && showCreds && (
 				<div className="app-creds">
-					<span className="app-creds-note">{name} has its own login inside:</span>
+					<span className="app-creds-note">{creds.label === 'API token' ? 'Other programs call this job API with this token.' : `${name} has its own login inside:`}</span>
 					{creds.defaultUsername && (
 						<button className="app-creds-chip" onClick={() => copy(creds.defaultUsername!, 'Username')}>
 							<Icon name="user" size={15} />
 							{creds.defaultUsername}
 						</button>
 					)}
-					<button className="app-creds-chip" onClick={() => copy(creds.defaultPassword!, 'Password')}>
+					<button className="app-creds-chip" onClick={() => copy(creds.defaultPassword!, creds.label || 'Password')}>
 						<Icon name="key" size={15} />
 						{creds.defaultPassword}
 					</button>

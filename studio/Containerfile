@@ -1,0 +1,24 @@
+# SolverForge Studio. It compiles a planning app on Omarchy Linux.
+# It does not get the Podman socket. Build from the worktree root so the
+# setup script in omarchyd/ is in the context:
+#   podman build -f studio/Containerfile -t localhost/omarchy-solverforge-studio:1 .
+# Omarchy Server mounts omarchy-publish, the publish socket, and Documents at /work.
+FROM docker.io/archlinux:base
+
+COPY omarchyd/omarchy-setup.sh /tmp/omarchy-setup.sh
+RUN sh /tmp/omarchy-setup.sh && rm /tmp/omarchy-setup.sh
+
+RUN pacman -S --noconfirm --needed rust \
+ && rm -rf /var/cache/pacman/pkg/*
+
+ENV CARGO_HOME=/usr/local/cargo
+ENV PATH="/usr/local/cargo/bin:${PATH}"
+RUN cargo install solverforge-cli --version 4.2.0 --locked \
+ && rm -rf /usr/local/cargo/registry /usr/local/cargo/git
+
+COPY studio/home.py /usr/local/bin/studio-home
+RUN chmod 755 /usr/local/bin/studio-home
+
+WORKDIR /work
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/studio-home"]

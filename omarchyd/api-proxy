@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Door in front of a published app.
+
+The app is started on localhost. Two listeners sit in front of it:
+the web port accepts Omarchy Server's sign-in gateway or a bearer token,
+and the API port accepts only the bearer token. That API port is the one
+published on the LAN and on the shared network.
+"""
+import hmac
+import os
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+
+APP = os.environ.get("OMARCHY_APP", "/usr/local/bin/app")
+SHIM = os.environ.get("OMARCHY_BIND_SHIM", "/usr/local/lib/omarchy-bind-localhost.so")
+CWD = os.environ.get("OMARCHY_APP_CWD", "/opt/app")
+TOKEN = os.environ.get("OMARCHY_API_TOKEN", "")
+GATEWAY = os.environ.get("APP_GATEWAY_KEY", "")
+
+
+def die(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def port_env(name):
+    try:
+        value = int(os.environ[name])
+    except (KeyError, ValueError):
+        die(f"{name} has to be a port")
+    if value < 1 or value > 65535:
+        die(f"{name} has to be a port")
+    return value
+
+
+def same(left, right):
+    if not left or not right or len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def header_map(lines):
+    found = {}
+    for line in lines:
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        found.setdefault(name.strip().lower(), value.strip())
+    return found
+
+
+def authorized(headers, mode):
+    bearer = headers.get("authorization", "")
+    if bearer.lower().startswith("bearer ") and same(bearer[7:].strip(), TOKEN):
+        return True
+    if mode == "web" and same(headers.get("x-omarchy-gateway", ""), GATEWAY):
+        return True
+    return False
+
+
+def read_head(sock):
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(65536)
+        if not chunk:
+            return None
+        data += chunk
+        if len(data) > 1024 * 1024:
+            return None
+    head, _, rest = data.partition(b"\r\n\r\n")
+    lines = head.decode("iso-8859-1", "replace").split("\r\n")
+    if not lines or len(lines[0].split(" ")) < 2:
+        return None
+    method, target = lines[0].split(" ", 2)[:2]
+    if not target.startswith("/"):
+        return None
+    return method, target, lines[0], header_map(lines[1:]), rest
+
+
+def send(sock, data):
+    sock.sendall(data)
+
+
+def reject(sock, status, message):
+    body = message.encode()
+    send(
+        sock,
+        (
+            f"HTTP/1.1 {status}\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode()
+        + body,
+    )
+
+
+def content_length(headers):
+    raw = headers.get("content-length")
+    if raw is None:
+        return 0
+    try:
+        length = int(raw)
+    except ValueError:
+        return None
+    if length < 0 or length > 32 * 1024 * 1024:
+        return None
+    return length
+
+
+def read_body(sock, have, length):
+    while len(have) < length:
+        chunk = sock.recv(min(65536, length - len(have)))
+        if not chunk:
+            break
+        have += chunk
+    return have[:length]
+
+
+def forward(client, method, target, request_line, headers, body, upstream_port):
+    up = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        up.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        up.settimeout(5)
+        up.connect(("127.0.0.1", upstream_port))
+        up.settimeout(None)
+        skip = {"connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "expect", "content-length"}
+        fields = [request_line, "Connection: close", f"Host: 127.0.0.1:{upstream_port}"]
+        for name, value in headers.items():
+            if name in skip or name == "host":
+                continue
+            fields.append(f"{name}: {value}")
+        if body:
+            fields.append(f"Content-Length: {len(body)}")
+        send(up, ("\r\n".join(fields) + "\r\n\r\n").encode("iso-8859-1", "replace") + body)
+        pending = b""
+        while b"\r\n\r\n" not in pending:
+            chunk = up.recv(65536)
+            if not chunk:
+                reject(client, "502 Bad Gateway", "The app didn’t answer\n")
+                return
+            pending += chunk
+        head, _, rest = pending.partition(b"\r\n\r\n")
+        send(client, head + b"\r\n\r\n" + rest)
+        while True:
+            chunk = up.recv(65536)
+            if not chunk:
+                break
+            send(client, chunk)
+    except OSError:
+        if client.fileno() >= 0:
+            try:
+                reject(client, "502 Bad Gateway", "The app isn’t answering yet\n")
+            except OSError:
+                pass
+    finally:
+        up.close()
+
+
+class Door(socketserver.BaseRequestHandler):
+    mode = "api"
+    upstream = 0
+
+    def handle(self):
+        client = self.request
+        try:
+            client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            parsed = read_head(client)
+            if not parsed:
+                return
+            method, target, request_line, headers, rest = parsed
+            if not authorized(headers, self.mode):
+                reject(client, "401 Unauthorized", "This job API needs its token\n")
+                return
+            if headers.get("expect", "").lower().startswith("100"):
+                send(client, b"HTTP/1.1 100 Continue\r\n\r\n")
+            length = content_length(headers)
+            if length is None or (headers.get("transfer-encoding") and "content-length" not in headers):
+                reject(client, "411 Length Required", "Send a Content-Length\n")
+                return
+            body = read_body(client, rest, length)
+            if len(body) < length:
+                return
+            forward(client, method, target, request_line, headers, body, self.upstream)
+        except OSError:
+            return
+
+
+def listen(port, mode, upstream):
+    class Handler(Door):
+        pass
+
+    Handler.mode = mode
+    Handler.upstream = upstream
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    httpd = Server(("0.0.0.0", port), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def main():
+    web = port_env("WEB_PORT")
+    api = port_env("API_PORT")
+    child_port = port_env("CHILD_PORT")
+    if len({web, api, child_port}) < 3:
+        die("The web port, the API port, and the app’s own port have to differ")
+    if not TOKEN:
+        die("The API token is missing")
+    env = os.environ.copy()
+    env["PORT"] = str(child_port)
+    env.pop("LD_PRELOAD", None)
+    if os.path.exists(SHIM):
+        env["LD_PRELOAD"] = SHIM
+    else:
+        print("omarchy: localhost shim is missing; a program that binds every interface can be reached without the token", file=sys.stderr)
+    try:
+        probe = subprocess.run(["ldd", APP], capture_output=True, text=True)
+        if "not a dynamic executable" in (probe.stdout + probe.stderr):
+            print("omarchy: this program is static, so other containers on the shared network can reach its own port without the token", file=sys.stderr)
+    except OSError:
+        pass
+    try:
+        child = subprocess.Popen([APP], env=env, cwd=CWD if os.path.isdir(CWD) else None, start_new_session=True)
+    except OSError as error:
+        die(f"Couldn’t start the app ({error})")
+
+    def stop(_signum, _frame):
+        if child.poll() is None:
+            child.terminate()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        listen(web, "web", child_port)
+        listen(api, "api", child_port)
+    except OSError as error:
+        child.terminate()
+        die(f"Couldn’t listen ({error})")
+    print(f"web on {web}, job API on {api}, app on 127.0.0.1:{child_port}", flush=True)
+    code = child.wait()
+    raise SystemExit(code if code >= 0 else 1)
+
+
+if __name__ == "__main__":
+    main()

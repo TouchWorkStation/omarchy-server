@@ -1,0 +1,16 @@
+manifestVersion: 1
+id: solverforge-studio
+name: SolverForge Studio
+tagline: Build a planning app, then publish it on this server
+category: developer
+version: "1"
+port: 31486
+publish: true
+web:
+  service: web
+  port: 8080
+developer: Published on this server
+description: >-
+  SolverForge Studio scaffolds and compiles a planning app in your Documents
+  folder. After you allow it to publish, its terminal can publish that app on
+  this server. It cannot control your other containers.

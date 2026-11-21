@@ -653,7 +653,7 @@ WantedBy=graphical-session.target
 				if (!auth) return sendError(res, new RpcError('UNAUTHORIZED', 'Invalid token'))
 				return await assistant.handleStream(req, res, auth)
 			}
-			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r))
+			if (url.pathname.startsWith('/trpc/')) return await handleRpc(req, res, url, procedures, (r) => accounts.authenticate(r) ?? apps.authenticatePublish(r))
 			if (url.pathname === '/assets/wallpapers/1.jpg' && req.method === 'GET') return await wallpaper(res)
 			// A computer's backup uploading to its own store (its connector's key; add-only, see backups.mjs).
 			if (url.pathname.startsWith('/connector/backup/')) {
@@ -790,6 +790,7 @@ WantedBy=graphical-session.target
 			refuse('500 Internal Server Error')
 		}
 	})
+	await apps.ready
 	await new Promise((resolve, reject) => {
 		server.once('error', reject)
 		server.listen(port, host, resolve)

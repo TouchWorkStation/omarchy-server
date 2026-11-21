@@ -18,17 +18,18 @@ import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {lstatSync, readlinkSync, realpathSync} from 'node:fs'
-import {access, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
+import {access, chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
 import os from 'node:os'
 import {dirname, join, resolve} from 'node:path'
+import {fileURLToPath} from 'node:url'
 import tls from 'node:tls'
 import YAML from 'yaml'
 
 import {createKeyedLock} from './locks.mjs'
-import {RpcError} from './rpc.mjs'
+import {RpcError, handleRpc, sendError} from './rpc.mjs'
 import {SYSTEM_PERMISSIONS} from './system-apps.mjs'
 import {dualProtocolServer, tlsContext, wantsUpgrade} from './tls.mjs'
 import {linkProxy} from './proxy-link.mjs'
@@ -42,6 +43,23 @@ const APP_FILES = ['omarchy-app.yml', 'umbrel-app.yml']
 const COMPOSE_FILES = ['omarchy-compose.yml', 'docker-compose.yml']
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const RESERVED = (p) => p === 7780 || p === 2021 || (p >= 40_000 && p <= 49_999)
+function bumpPort(start, avoid) {
+	let p = start
+	for (let i = 0; i < 65535; i++) {
+		if (p >= 1 && p <= 65535 && !avoid.has(p)) return p
+		p = p >= 65535 ? 1 : p + 1
+	}
+	return null
+}
+function nextHostPort(start, avoid) {
+	let p = start
+	for (let i = 0; i < 65535; i++) {
+		p = p >= 65535 ? 1024 : p + 1
+		if (p >= 1024 && !RESERVED(p) && !avoid.has(p)) return p
+		if (p === start) break
+	}
+	return null
+}
 const SESSION_DAYS = 30
 // Some stores keep icons and screenshots in a separate gallery site, by app id.
 // Stores every new Omarchy Server starts with (you can remove them under App Store → Stores). They're
@@ -80,6 +98,36 @@ const BUILTIN_STORE = 'builtin:omarchy-server'
 // Apps brought over by the Unraid importer (unraid.mjs): listings it writes on this server, never
 // fetched from anywhere, so they're listed and installed like any store's.
 const IMPORTED_STORE = 'local:imported'
+// Apps published by another app on this server (a studio). Same idea: a folder of listings, not a
+// git clone, so a refresh can't wipe what was just published.
+const PUBLISHED_STORE = 'local:published'
+// The tool mounted into an app that is allowed to publish. It talks to a Unix socket that serves
+// only apps.publish and apps.unpublish, never the Podman socket and never the rest of omarchyd.
+const PUBLISH_CLI = fileURLToPath(new URL('./omarchy-publish', import.meta.url))
+const API_PROXY = fileURLToPath(new URL('./api-proxy', import.meta.url))
+const BIND_SHIM = fileURLToPath(new URL('./bind-localhost.c', import.meta.url))
+const PUBLISH_RPC = new Set(['/trpc/apps.publish', '/trpc/apps.unpublish'])
+const IMAGE_REF = /^[a-z0-9][a-z0-9._/-]{0,200}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,40})?$/
+// The binary is not the container's entrypoint. A proxy in front of it demands the job API
+// token, and the sign-in gateway's own header on the web port. The image is Omarchy, the same
+// system the studio compiles on, so the binary's glibc matches. gcc builds the localhost shim
+// and is removed; gcc-libs stays because the binary links it.
+const OMARCHY_SETUP = fileURLToPath(new URL('./omarchy-setup.sh', import.meta.url))
+const runtimeContainerfile = ({webPort, apiPort, childPort, assets}) => `FROM docker.io/archlinux:base
+COPY omarchy-setup.sh /tmp/omarchy-setup.sh
+RUN sh /tmp/omarchy-setup.sh && rm /tmp/omarchy-setup.sh
+COPY app /usr/local/bin/app
+COPY api-proxy /usr/local/bin/api-proxy
+COPY bind-localhost.c /tmp/bind-localhost.c
+${assets ? 'COPY static /opt/app/static\n' : ''}RUN gcc -shared -fPIC -Os -o /usr/local/lib/omarchy-bind-localhost.so /tmp/bind-localhost.c -ldl \\
+ && rm /tmp/bind-localhost.c \\
+ && chmod 755 /usr/local/bin/app /usr/local/bin/api-proxy \\
+ && pacman -R --noconfirm gcc \\
+ && rm -rf /var/cache/pacman/pkg/*
+ENV WEB_PORT=${webPort} API_PORT=${apiPort} CHILD_PORT=${childPort} OMARCHY_APP_CWD=/opt/app
+WORKDIR /opt/app
+ENTRYPOINT ["/usr/local/bin/api-proxy"]
+`
 
 export const PERMISSIONS = {
 	containers: {label: 'Control your containers', detail: 'It can start, stop, create and delete every container you run (and see their settings and data). Container managers need this.'},
@@ -89,6 +137,7 @@ export const PERMISSIONS = {
 	privileged: {label: 'Run with every container permission', detail: 'It runs with all permissions inside its container. Containers here run as you, not as root, so it still can’t become root on your server.'},
 	'host-network': {label: 'Share the server’s own network', detail: 'It uses the server’s network directly instead of its own: it can reach services that listen only on this server, and other devices see it as the server. Home Assistant and similar apps need this to find devices.'},
 	'host-files': {label: 'Read and change folders on the server', detail: 'It can read and change these folders on your server, with your rights (containers here run as you).'},
+	publish: {label: 'Publish apps on this server', detail: 'It can add, update, and remove apps it publishes here. It cannot control your other containers, and it cannot change the rest of the server.'},
 	system: {label: 'Reach into the server’s system', detail: 'It can see or talk to parts of the server outside its container (other programs, system services or kernel features). Monitoring tools and smart-home hubs sometimes need this.'},
 	...SYSTEM_PERMISSIONS,
 }
@@ -681,6 +730,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	// replace the bytes the owner may still be able to repair.
 	let stateDamaged = false
 	let secret
+	let publishToken = ''
+	let publishServer = null
+	const publishSock = join(base, 'publish.sock')
+	const publishTokenFile = join(base, 'publish.token')
 	const busy = new Map() // appId -> {state, progress}
 	const lock = createKeyedLock()
 	let statesCache = new Map(), statesAt = 0, statesInFlight = null
@@ -690,6 +743,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const gateways = new Map() // appId -> {server, port}
 	const tickets = new Map() // one-time hand-overs from the web app
 	let registryCache = null
+	let registryGen = 0
+	let registryFlightGen = 0
 	let registryWarm = null
 
 	// Apps come back after a reboot only if Podman's own restart unit is on (it's off by default, and
@@ -734,6 +789,32 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await writeFile(sf, secret, {mode: 0o600})
 		}
 		if (stateDamaged) return
+		await chmod(base, 0o700).catch(() => {})
+		try {
+			publishToken = (await readFile(publishTokenFile, 'utf8')).trim()
+			if (!publishToken) throw new Error('empty')
+		} catch {
+			publishToken = randomBytes(32).toString('base64url')
+			await writeFile(publishTokenFile, `${publishToken}\n`, {mode: 0o644})
+		}
+		// The apps directory is private to this user. 0644 lets a container read the mounted file
+		// (its user is not this one). Other accounts still cannot traverse the directory.
+		await chmod(publishTokenFile, 0o644).catch(() => {})
+		await rm(publishSock, {force: true}).catch(() => {})
+		publishServer = http.createServer(async (req, res) => {
+			const url = new URL(req.url ?? '/', 'http://localhost')
+			if (req.method !== 'POST' || !PUBLISH_RPC.has(url.pathname)) {
+				sendError(res, new RpcError('NOT_FOUND', 'This socket only publishes and unpublishes apps'))
+				return
+			}
+			await handleRpc(req, res, url, {'apps.publish': {kind: 'mutation', run: publish}, 'apps.unpublish': {kind: 'mutation', run: unpublish}}, authenticatePublish)
+		})
+		await new Promise((resolve, reject) => {
+			publishServer.once('error', reject)
+			publishServer.listen(publishSock, resolve)
+		})
+		publishServer.unref()
+		await chmod(publishSock, 0o666).catch(() => {})
 		// First start: add the default stores (they download the first time the App Store opens).
 		if (!state.defaultsAdded) {
 			for (const d of defaultStores) if (!state.stores.some((x) => x.url.toLowerCase() === d.url.toLowerCase())) state.stores.push({url: d.url, ...(d.name ? {name: d.name} : {}), syncedAt: 0})
@@ -1085,7 +1166,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				// Everything installed along with it, in install order (what it needs comes first).
 				...(all.length ? {needs: orderNeeds(a.id, byId)} : {}),
 				...(Array.isArray(a.implements) ? {implements: a.implements.filter((x) => typeof x === 'string')} : {}),
-				shared: deps.length > 0 || neededByOthers.has(a.id) || /ipv4_address/.test(compose),
+				shared: a.shared === true || deps.length > 0 || neededByOthers.has(a.id) || /ipv4_address/.test(compose),
 				defaultUsername: a.defaultUsername || undefined,
 				defaultPassword: a.defaultPassword || undefined,
 				deterministicPassword: a.deterministicPassword === true,
@@ -1095,6 +1176,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				...(folderChoices(a.folders).length ? {folders: folderChoices(a.folders)} : {}),
 				...(a.web && typeof a.web.service === 'string' && Number.isInteger(Number(a.web.port)) ? {web: {service: a.web.service, port: Number(a.web.port), ...(a.web.https === true ? {https: true} : {})}} : {}),
 				...(mcp ? {mcp} : {}),
+				...(a.publish === true ? {publish: true} : {}),
 				...(unsupported ? {unsupported} : {}),
 				...(caution ? {caution} : {}),
 				folder: join(dir, entry.name),
@@ -1131,17 +1213,26 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		} else await run('git', ['clone', '--depth', '1', '--', url, dir], {timeout: 120_000})
 	}
 	let registryFlight = null
+	// A publish rewrites the local store while a registry read may already be in flight. Drop that
+	// read, and do not let it cache the listing it started with.
+	function dropRegistry() {
+		registryGen += 1
+		registryCache = null
+		registryFlight = null
+	}
 	async function registry({refresh = false} = {}) {
 		await ready
-		if (registryFlight) return registryFlight
-		if (registryCache && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
-		const flight = loadRegistry({refresh}).finally(() => {
+		if (registryFlight && registryFlightGen === registryGen) return registryFlight
+		if (registryCache && registryCache.gen === registryGen && !refresh && Date.now() - registryCache.at < 60 * 60_000) return registryCache.list
+		const gen = registryGen
+		const flight = loadRegistry({refresh, gen}).finally(() => {
 			if (registryFlight === flight) registryFlight = null
 		})
 		registryFlight = flight
+		registryFlightGen = gen
 		return flight
 	}
-	async function loadRegistry({refresh = false} = {}) {
+	async function loadRegistry({refresh = false, gen = registryGen} = {}) {
 		const list = []
 		let dirty = false
 		for (const s of state.stores) {
@@ -1166,6 +1257,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		} catch {
 			/* nothing imported */
 		}
+		try {
+			if ((await readdir(storeDir(PUBLISHED_STORE))).length) list.push(await loadStore(PUBLISHED_STORE))
+		} catch {
+			/* nothing published */
+		}
 		// Apps that are part of the server itself (Tailscale) come first, so a store can't stand in for them.
 		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'Omarchy Server'}, apps: systemApps.listings()})
 		// Installed apps pick up how their listing says to open them (https, an https app inside),
@@ -1183,7 +1279,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			else delete app.internalHttps
 		}
 		if (dirty) await save()
-		registryCache = {at: Date.now(), list}
+		if (gen === registryGen) registryCache = {at: Date.now(), list, gen}
 		return list
 	}
 	// An app's listing. An installed app stays with the store it came from (two stores can list the
@@ -1300,6 +1396,17 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			}
 			throw e
 		}
+	}
+	// An image built on this server (localhost/…) is not in a registry. `compose pull` would fail it.
+	async function pullApp(app) {
+		const text = await readFile(join(appDir(app.id), 'compose.omarchy.yml'), 'utf8').catch(() => '')
+		let local = false
+		try {
+			const doc = YAML.parse(text) ?? {}
+			const images = Object.values(doc.services ?? {}).map((s) => s?.image).filter(Boolean)
+			local = images.length > 0 && images.every((img) => String(img).startsWith('localhost/'))
+		} catch {}
+		if (!local) await compose(app, 'pull')
 	}
 
 	// Bind-mount sources that don't exist yet are folders the app expects to own (Podman won't
@@ -1559,8 +1666,10 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				...(a.state === 'error' ? {error: a.error} : {}),
 				credentials: (() => {
 					const password = a.deterministicPassword ? appPassword(a.id) : a.defaultPassword
-					return {defaultUsername: a.defaultUsername, defaultPassword: password, showBeforeOpen: !!password}
+					const apiToken = a.store === PUBLISHED_STORE && !!password && (a.openPorts?.length ?? 0) > 0
+					return {defaultUsername: a.defaultUsername, defaultPassword: password, showBeforeOpen: !!password, ...(apiToken ? {label: 'API token'} : {})}
 				})(),
+				...(a.store === PUBLISHED_STORE && a.openPorts?.[0] ? {apiPort: a.openPorts[0]} : {}),
 			}
 		})
 	}
@@ -1716,6 +1825,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			}
 			finalText = emitCompose(edited)
 		}
+		if ((app.permissions ?? []).includes('publish')) finalText = await attachPublish(finalText, app)
 		// System ports (below 1024): only for apps you allowed; the helper lowers the limit once.
 		// Expand with the env Compose will bind: the app .env, process env, and composeEnv (exports.sh).
 		const dotenv = parseDotEnv(await readFile(join(dir, '.env'), 'utf8').catch(() => ''))
@@ -1749,12 +1859,52 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			allowed: [appDir(app.id), join(base, 'shared-root'), ...Object.values(USER_DIRS).map((d) => join(home, d)), ...Object.values(folders ?? {})],
 		}
 	}
+	const publishPermission = () => ({id: 'publish', ...PERMISSIONS.publish, what: []})
 	async function permissionsOf(src) {
 		if (src.system) return systemApps?.permissions(src.id) ?? []
 		const c = await readYaml(src.folder, COMPOSE_FILES).catch(() => null)
-		if (!c) return []
+		if (!c) return src.publish === true ? [publishPermission()] : []
 		const dotenv = parseDotEnv(await readFile(join(src.folder, '.env'), 'utf8').catch(() => ''))
-		return appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src, dotenv))
+		const perms = appPermissions(await readFile(join(src.folder, c.name), 'utf8'), whereFor(src, dotenv))
+		if (src.publish === true && !perms.some((p) => p.id === 'publish')) perms.push(publishPermission())
+		return perms
+	}
+	// A studio that you allowed to publish gets the tool, the token, and a socket that serves only
+	// those two calls. The socket is not in the listing: the server adds it after you allow it.
+	async function attachPublish(text, app) {
+		const doc = YAML.parse(text) ?? {}
+		const env = composeEnv(app)
+		const expand = (v) => expandVars(String(v), {...process.env, ...env}).replace(/^~(?=\/|$)/, home)
+		const lines = []
+		const seen = new Set()
+		for (const svc of Object.values(doc.services ?? {})) {
+			if (!svc || typeof svc !== 'object') continue
+			for (const v of svc.volumes ?? []) {
+				if (typeof v !== 'string' || !v.includes(':')) continue
+				const parts = v.split(':')
+				if (parts.length >= 3 && /^(ro|rw|z|Z)$/.test(parts.at(-1))) parts.pop()
+				const dest = parts.pop()
+				const hostPath = bindHostPath(expand(parts.join(':')), {home, cwd: appDir(app.id)}).replace(/\/+$/, '')
+				const container = (expand(dest).replace(/\/+$/, '') || '/').replace(/\/+$/, '') || '/'
+				if (!container.startsWith('/') || container.split('/').includes('..')) continue
+				if (!under(hostPath, home) || hostPath === home) continue
+				if (/[\n\r\t]/.test(container) || /[\n\r\t]/.test(hostPath)) continue
+				if (hostPath.slice(home.length).split('/').some((part) => part.startsWith('.'))) continue
+				if (refusedMount(hostPath, home)) continue
+				const line = `${container}\t${hostPath}`
+				if (seen.has(line)) continue
+				seen.add(line)
+				lines.push(line)
+			}
+			svc.volumes = [...(svc.volumes ?? []), `${publishSock}:/run/omarchy/publish.sock`, `${publishTokenFile}:/run/omarchy/publish.token:ro`, `${join(appDir(app.id), 'publish.mounts')}:/run/omarchy/publish.mounts:ro`, `${PUBLISH_CLI}:/usr/local/bin/omarchy-publish:ro`]
+			const vars = {OMARCHY_PUBLISH_SOCK: '/run/omarchy/publish.sock', OMARCHY_PUBLISH_TOKEN: '/run/omarchy/publish.token', OMARCHY_PUBLISH_MOUNTS: '/run/omarchy/publish.mounts'}
+			if (Array.isArray(svc.environment)) {
+				svc.environment = svc.environment.filter((e) => !Object.keys(vars).some((k) => String(e).startsWith(`${k}=`)))
+				svc.environment.push(...Object.entries(vars).map(([k, val]) => `${k}=${val}`))
+			} else svc.environment = {...(svc.environment ?? {}), ...vars}
+		}
+		await writeFile(join(appDir(app.id), 'publish.mounts'), `${lines.join('\n')}${lines.length ? '\n' : ''}`, {mode: 0o644})
+		return YAML.stringify(doc)
 	}
 
 	// What installing `id` involves: the apps it needs that aren't installed yet, then the app.
@@ -1880,7 +2030,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 						app.internalPort = await placeApp(src, app)
 						await prepareOwnership(app)
 						busy.set(app.id, {state: 'installing', progress: 15})
-						await compose(app, 'pull')
+						await pullApp(app)
 						busy.set(app.id, {state: 'installing', progress: 85})
 						await compose(app, 'up', '-d', '--remove-orphans')
 						markStarted(app.id)
@@ -1919,6 +2069,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			app.permissions ??= wants
 			const extra = wants.filter((p) => !app.permissions.includes(p) && !(Array.isArray(input?.grant) && input.grant.includes(p)))
 			if (extra.length) throw new RpcError('PRECONDITION_FAILED', `This update asks for more access (${extra.map((p) => PERMISSIONS[p].label.toLowerCase()).join(', ')}). Uninstall and install it again to allow that.`)
+			for (const p of Array.isArray(input?.grant) ? input.grant.map(String) : []) if (wants.includes(p) && !app.permissions.includes(p)) app.permissions.push(p)
 			// Folders a newer listing lets you place start inside the app; the ones you placed stay put.
 			if (src.folders?.length) app.folderIds = [...new Set([...(app.folderIds ?? []), ...src.folders.map((f) => f.id)])]
 		} catch (error) {
@@ -1944,7 +2095,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			step = 'downloading the new version'
 			busy.set(app.id, {state: 'updating', progress: 25})
 			// The old version keeps running (and stays reachable) while the new one downloads.
-			await compose(app, 'pull')
+			await pullApp(app)
 			step = 'starting the new version'
 			busy.set(app.id, {state: 'updating', progress: 85})
 			closeGateway(app.id)
@@ -2151,6 +2302,237 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return out
 	}
 
+	const assertOwner = (auth) => {
+		if (auth?.userId !== 'owner') throw new RpcError('FORBIDDEN', 'Only the server’s owner can publish apps')
+	}
+	// A bearer token from the publish file. It is not a sign-in: other procedures ignore it.
+	function authenticatePublish(req) {
+		const path = String(req?.url ?? '').split('?')[0]
+		if (!PUBLISH_RPC.has(path)) return null
+		const bearer = /^Bearer (\S+)$/.exec(req?.headers?.authorization ?? '')?.[1]
+		if (!bearer || !publishToken) return null
+		const got = Buffer.from(bearer)
+		const want = Buffer.from(publishToken)
+		if (got.length !== want.length || !timingSafeEqual(got, want)) return null
+		return {userId: 'owner', kind: 'publish'}
+	}
+	async function assertBinary(binary) {
+		const real = await realpath(String(binary ?? '')).catch(() => '')
+		if (!real) throw new RpcError('BAD_REQUEST', 'That binary isn’t there')
+		const homeReal = await realpath(home).catch(() => home)
+		const underHome = real === homeReal || real.startsWith(`${homeReal}/`)
+		const hidden = real.slice(homeReal.length).split('/').some((part) => part.startsWith('.'))
+		if (!underHome || hidden || refusedMount(real, homeReal)) throw new RpcError('BAD_REQUEST', 'The binary has to be a file inside your home folder')
+		const st = await stat(real)
+		if (!st.isFile()) throw new RpcError('BAD_REQUEST', 'The binary has to be a file inside your home folder')
+		if (st.size > 512 * 1024 * 1024) throw new RpcError('BAD_REQUEST', 'That binary is larger than 512 MB')
+		return real
+	}
+	// Files the published web page serves (a generated app's static/). Ordinary files only.
+	async function assertAssets(dir) {
+		const real = await realpath(String(dir ?? '')).catch(() => '')
+		if (!real) throw new RpcError('BAD_REQUEST', 'Those files aren’t there')
+		const homeReal = await realpath(home).catch(() => home)
+		const hidden = real.slice(homeReal.length).split('/').some((part) => part.startsWith('.'))
+		if (!(real === homeReal || real.startsWith(`${homeReal}/`)) || hidden || refusedMount(real, homeReal)) throw new RpcError('BAD_REQUEST', 'Those files have to be inside your home folder')
+		if (!(await stat(real)).isDirectory()) throw new RpcError('BAD_REQUEST', 'Those files have to be a folder')
+		const pending = [real]
+		let size = 0
+		while (pending.length) {
+			const dir = pending.pop()
+			for (const name of await readdir(dir)) {
+				if (name.startsWith('.')) throw new RpcError('BAD_REQUEST', 'Those files can’t include a hidden folder')
+				const path = join(dir, name)
+				const st = await lstat(path)
+				if (st.isSymbolicLink()) throw new RpcError('BAD_REQUEST', 'Those files can’t include a link')
+				if (st.isDirectory()) pending.push(path)
+				else if (st.isFile()) {
+					size += st.size
+					if (size > 64 * 1024 * 1024) throw new RpcError('BAD_REQUEST', 'Those files are larger than 64 MB')
+				} else throw new RpcError('BAD_REQUEST', 'Those files have to be ordinary files')
+			}
+		}
+		return real
+	}
+	// Wrap a release binary in a small image. The studio never gets the Podman socket.
+	// The image runs the proxy, not the binary: the token stays in the container's environment.
+	async function buildRuntimeImage(id, version, binary, ports, assets) {
+		const tag = `localhost/omarchy-published/${id}:${version}`
+		const context = await mkdtemp(join(os.tmpdir(), 'omarchy-publish-'))
+		try {
+			await cp(binary, join(context, 'app'))
+			await chmod(join(context, 'app'), 0o755)
+			await cp(API_PROXY, join(context, 'api-proxy'))
+			await chmod(join(context, 'api-proxy'), 0o755)
+			await cp(BIND_SHIM, join(context, 'bind-localhost.c'))
+			await cp(OMARCHY_SETUP, join(context, 'omarchy-setup.sh'))
+			if (assets) await cp(assets, join(context, 'static'), {recursive: true})
+			await writeFile(join(context, 'Containerfile'), runtimeContainerfile({...ports, assets: !!assets}))
+			await run('podman', ['build', '-f', join(context, 'Containerfile'), '-t', tag, context], {env: engineEnv, timeout: 30 * 60_000})
+		} finally {
+			await rm(context, {recursive: true, force: true})
+		}
+		return tag
+	}
+	async function waitInstalled(id) {
+		const end = Date.now() + 60_000
+		for (;;) {
+			const app = state.apps.find((a) => a.id === id)
+			if (app && app.state !== 'installing' && !busy.has(id)) {
+				if (app.state === 'error') throw new RpcError('BAD_GATEWAY', app.error || 'It didn’t install')
+				return app
+			}
+			if (Date.now() > end) throw new RpcError('BAD_GATEWAY', 'Installing took too long')
+			await new Promise((r) => setTimeout(r, 15))
+		}
+	}
+	async function publish(input, ctx) {
+		await ready
+		assertOwner(ctx?.auth)
+		const id = String(input?.appId ?? '')
+		if (!APP_ID.test(id)) throw new RpcError('BAD_REQUEST', 'Use a short lowercase id, such as field-service')
+		const name = String(input?.name ?? '').trim().slice(0, 80)
+		if (!name) throw new RpcError('BAD_REQUEST', 'Give the app a name')
+		const installed = state.apps.find((a) => a.id === id)
+		if (installed && installed.store !== PUBLISHED_STORE) throw new RpcError('CONFLICT', `${installed.name} is already installed from another store`)
+		// The port inside the app is the one other containers call. A later publish keeps it.
+		let previousWeb = null
+		if (installed) {
+			try {
+				const prev = YAML.parse(await readFile(join(storeDir(PUBLISHED_STORE), id, 'omarchy-app.yml'), 'utf8'))
+				const n = Number(prev?.web?.port)
+				if (Number.isInteger(n) && n >= 1 && n <= 65535) previousWeb = n
+			} catch { /* the listing is rewritten below */ }
+		}
+		const containerPort = input?.containerPort === undefined ? (previousWeb ?? 7860) : Number(input.containerPort)
+		if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) throw new RpcError('BAD_REQUEST', 'The app’s own port has to be from 1 to 65535')
+		if (installed && previousWeb !== null && containerPort !== previousWeb) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing the port inside the app')
+		const publicPort = input?.port === undefined ? (installed?.port ?? containerPort) : Number(input.port)
+		if (!Number.isInteger(publicPort) || publicPort < 1024 || publicPort > 65535 || RESERVED(publicPort)) throw new RpcError('BAD_REQUEST', 'Pick a port from 1024 up that Omarchy Server doesn’t keep for itself')
+		if (installed && publicPort !== installed.port) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its port')
+		const version = String(input?.version ?? installed?.version ?? '1').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40) || '1'
+		let image = typeof input?.image === 'string' ? input.image.trim() : ''
+		const binary = input?.binary
+		if (binary && image) throw new RpcError('BAD_REQUEST', 'Pass a binary or an image, not both')
+		if (!binary && !image) throw new RpcError('BAD_REQUEST', 'Pass an image or a binary to publish')
+		let mcp = null
+		if (input?.mcp) {
+			mcp = parseMcp({...input.mcp, service: 'web'})
+			if (!mcp) throw new RpcError('BAD_REQUEST', 'MCP needs a port, a path starting with /, and transport http or sse')
+		}
+		// A binary gets a token and a second port. The web port stays behind sign-in. The API port
+		// is the one on the LAN and on the shared network, and it accepts only the token.
+		let apiHost = null
+		let apiContainerPort = null
+		let childPort = null
+		let apiToken = null
+		let assets = null
+		if (binary) {
+			const taken = new Set([publicPort])
+			for (const other of state.apps) {
+				if (other.id === id) continue
+				if (other.port) taken.add(other.port)
+				if (other.viewPort) taken.add(other.viewPort)
+				for (const p of other.openPorts ?? []) taken.add(p)
+			}
+			const previousApi = installed?.openPorts?.[0]
+			const avoidHost = new Set(taken)
+			if (mcp?.port) avoidHost.add(mcp.port)
+			apiHost = input?.apiPort === undefined ? (previousApi ?? nextHostPort(publicPort, avoidHost)) : Number(input.apiPort)
+			if (!Number.isInteger(apiHost) || apiHost < 1024 || apiHost > 65535 || RESERVED(apiHost)) throw new RpcError('BAD_REQUEST', 'Pick an API port from 1024 up that Omarchy Server doesn’t keep for itself')
+			if (apiHost === publicPort) throw new RpcError('BAD_REQUEST', 'The job API needs its own port')
+			if (mcp?.port && apiHost === mcp.port) throw new RpcError('BAD_REQUEST', 'The job API can’t use the MCP port')
+			if (installed && previousApi !== undefined && apiHost !== previousApi) throw new RpcError('PRECONDITION_FAILED', 'Unpublish it before changing its API port')
+			if ((!installed || previousApi !== apiHost) && (taken.has(apiHost) || !(await portFree(apiHost)))) throw new RpcError('CONFLICT', `Port ${apiHost} is already in use`)
+			const avoid = new Set([containerPort])
+			if (mcp?.port) avoid.add(mcp.port)
+			apiContainerPort = bumpPort(containerPort >= 65535 ? 1 : containerPort + 1, avoid)
+			childPort = bumpPort(17860, new Set([...avoid, apiContainerPort]))
+			if (!apiContainerPort || !childPort) throw new RpcError('BAD_REQUEST', 'No free port inside the app')
+			apiToken = installed?.defaultPassword || randomBytes(32).toString('base64url')
+			if (input?.assets) assets = await assertAssets(input.assets)
+			image = await buildRuntimeImage(id, version, await assertBinary(binary), {webPort: containerPort, apiPort: apiContainerPort, childPort}, assets)
+		} else if (!IMAGE_REF.test(image) || image.includes('..')) throw new RpcError('BAD_REQUEST', 'That image name can’t be published')
+		const stores = await registry()
+		if (stores.some((s) => s.url !== PUBLISHED_STORE && s.apps.some((a) => a.id === id))) throw new RpcError('CONFLICT', `${id} is already in another store`)
+		const dir = storeDir(PUBLISHED_STORE)
+		const appDirListing = join(dir, id)
+		await mkdir(dir, {recursive: true, mode: 0o700})
+		await writeFile(join(dir, 'omarchy-app-store.yml'), 'id: published\nname: Published on this server\n')
+		await mkdir(appDirListing, {recursive: true})
+		const envId = id.toUpperCase().replace(/[^A-Z0-9]/g, '_')
+		const callPort = apiContainerPort ?? containerPort
+		const internalUrl = `http://${id}_web_1:${callPort}`
+		const listing = {
+			manifestVersion: 1,
+			id,
+			name,
+			tagline: String(input?.tagline ?? name).slice(0, 140),
+			category: typeof input?.category === 'string' && /^[a-z0-9-]{1,32}$/.test(input.category) ? input.category : 'developer',
+			version,
+			port: publicPort,
+			shared: true,
+			web: {service: 'web', port: containerPort},
+			developer: 'Published on this server',
+			...(apiToken ? {defaultPassword: apiToken} : {}),
+			...(apiHost ? {openPorts: [apiHost]} : {}),
+			description: String(input?.description ?? (apiToken
+				? `Published from an app on this server. Programs on this server call ${internalUrl} with the API token. On the local network that same token is required on port ${apiHost}. The web page stays behind sign-in.`
+				: `Published from an app on this server. Other apps on the shared network call ${internalUrl}.`)).slice(0, 2000),
+			...(mcp ? {mcp} : {}),
+		}
+		await writeFile(join(appDirListing, 'omarchy-app.yml'), YAML.stringify(listing))
+		const service = apiToken
+			? {
+				image,
+				restart: 'unless-stopped',
+				environment: {
+					WEB_PORT: String(containerPort),
+					API_PORT: String(apiContainerPort),
+					CHILD_PORT: String(childPort),
+					PORT: String(childPort),
+					OMARCHY_API_TOKEN: apiToken,
+					APP_GATEWAY_KEY: deriveEntropy(`app-${id}-gateway`),
+				},
+				ports: [`${containerPort}:${containerPort}`, `0.0.0.0:${apiHost}:${apiContainerPort}`],
+			}
+			: {
+				image,
+				restart: 'unless-stopped',
+				environment: {PORT: String(containerPort)},
+				ports: [`${containerPort}:${containerPort}`],
+			}
+		if (image.startsWith('localhost/')) service.pull_policy = 'never'
+		await writeFile(join(appDirListing, 'docker-compose.yml'), YAML.stringify({services: {web: service}}))
+		const exportsText = apiToken
+			? `export APP_${envId}_URL=${internalUrl}\nexport APP_${envId}_HOST=${id}_web_1\nexport APP_${envId}_PORT=${callPort}\nexport APP_${envId}_LAN_PORT=${apiHost}\nexport APP_${envId}_TOKEN='${apiToken}'\n`
+			: `export APP_${envId}_URL=${internalUrl}\nexport APP_${envId}_HOST=${id}_web_1\nexport APP_${envId}_PORT=${containerPort}\n`
+		await writeFile(join(appDirListing, 'exports.sh'), exportsText)
+		// update() keeps a password already on the app and does not copy one from the listing.
+		if (installed && apiToken && !installed.defaultPassword) installed.defaultPassword = apiToken
+		dropRegistry()
+		if (installed) await update({appId: id})
+		else {
+			await install({appId: id, grant: []})
+			await waitInstalled(id)
+		}
+		return {appId: id, name, image, version, store: PUBLISHED_STORE, url: internalUrl, port: publicPort, ...(apiToken ? {apiPort: apiHost, apiToken} : {}), updated: !!installed}
+	}
+	async function unpublish(input, ctx) {
+		await ready
+		assertOwner(ctx?.auth)
+		const id = String(input?.appId ?? '')
+		if (!APP_ID.test(id)) throw new RpcError('BAD_REQUEST', 'Use a short lowercase id, such as field-service')
+		const installed = state.apps.find((a) => a.id === id)
+		const listing = join(storeDir(PUBLISHED_STORE), id)
+		if (installed && installed.store !== PUBLISHED_STORE) throw new RpcError('PRECONDITION_FAILED', `${installed.name} did not come from the published store`)
+		if (!installed && !(await exists(listing))) throw new RpcError('NOT_FOUND', 'That app isn’t published')
+		if (installed) await uninstall({appId: id})
+		await rm(listing, {recursive: true, force: true})
+		dropRegistry()
+		return true
+	}
+
 	return {
 		ready,
 		usage,
@@ -2181,6 +2563,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			return state.apps.length
 		},
 		close: () => {
+			publishServer?.close()
 			systemApps?.close()
 			secure.close()
 			for (const id of [...gateways.keys()]) closeGateway(id)
@@ -2189,10 +2572,15 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// listing asks for (the owner reviewed each app before the import started). Folders Omarchy Server
 		// never gives an app stay refused.
 		importedStoreDir: storeDir(IMPORTED_STORE),
+		publishedStoreDir: storeDir(PUBLISHED_STORE),
+		publishSock,
+		// The publish token only authenticates apps.publish and apps.unpublish. Any other procedure
+		// still needs a real sign-in, so a studio container can't uninstall the rest of the server.
+		authenticatePublish,
 		appDirFor: (id) => appDir(id),
 		installed: (id) => state.apps.some((a) => a.id === id),
 		async installImported(id) {
-			registryCache = null
+			dropRegistry()
 			const plan = await installPlan(id)
 			const grant = new Set()
 			for (const a of plan) for (const p of await permissionsOf({...a, folderIds: [], folders: {}})) grant.add(p.id)
@@ -2271,6 +2659,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			'apps.stop': {kind: 'mutation', run: lifecycle(['stop'], 'stopping')},
 			'apps.restart': {kind: 'mutation', run: lifecycle(['restart'], 'restarting')},
 			'apps.update': {kind: 'mutation', run: update},
+			'apps.publish': {kind: 'mutation', run: publish},
+			'apps.unpublish': {kind: 'mutation', run: unpublish},
 			'apps.updates': {kind: 'query', run: updates},
 			'apps.logs': {
 				kind: 'query',
@@ -2346,7 +2736,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 							throw e
 						}
 						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
-						registryCache = null
+						dropRegistry()
 						await save()
 						return true
 					})
@@ -2361,7 +2751,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					if (!s) throw new RpcError('NOT_FOUND', 'That store isn’t added')
 					state.stores = state.stores.filter((x) => x !== s)
 					await rm(storeDir(s.url), {recursive: true, force: true})
-					registryCache = null
+					dropRegistry()
 					await save()
 					return true
 				},

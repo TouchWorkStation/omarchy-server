@@ -28,8 +28,8 @@ export function consumeReopenAssistant() {
 }
 
 const STATUSES: readonly AssistantAction['status'][] = ['pending', 'rejected', 'running', 'done', 'error']
-const SECRET_JSON = /"(password|apiKey|credentials|defaultPassword)"\s*:\s*(?:"(?:\\.|[^"\\])*"|\{[^{}]*\}|\[[^\[\]]*\]|[^,\n\r}\]]+)/gi
-const SECRET_PAIR = /\b(password|apiKey|credentials|defaultPassword)\b(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|\S+)/gi
+const SECRET_JSON = /"(password|apiKey|credentials|defaultPassword|apiToken)"\s*:\s*(?:"(?:\\.|[^"\\])*"|\{[^{}]*\}|\[[^\[\]]*\]|[^,\n\r}\]]+)/gi
+const SECRET_PAIR = /\b(password|apiKey|credentials|defaultPassword|apiToken)\b(\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|\S+)/gi
 const BACKGROUND_ID = /^[0-9a-f]{16}$/
 
 const isStatus = (v: unknown): v is AssistantAction['status'] => STATUSES.includes(v as AssistantAction['status'])

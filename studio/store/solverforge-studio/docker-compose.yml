@@ -1,0 +1,7 @@
+services:
+  web:
+    image: localhost/omarchy-solverforge-studio:1
+    pull_policy: never
+    working_dir: /work
+    volumes:
+      - ${DOCUMENTS_DIR}:/work
