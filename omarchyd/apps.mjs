@@ -478,9 +478,10 @@ function toDetail(a) {
 
 // Turn a store compose file into what omarchyd runs: no app_proxy, the web service published on
 // 127.0.0.1 only. Returns the compose text and where the gateway should forward to.
+const stringList = (v) => (Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? x : typeof x === 'number' && Number.isFinite(x) ? String(x) : null)).filter(Boolean) : [])
 // The apps `id` needs, dependencies first (a depth-first post-order).
 function orderNeeds(id, byId, seen = new Set(), out = []) {
-	for (const d of (byId.get(id)?.a.dependencies ?? []).filter((x) => typeof x === 'string')) {
+	for (const d of stringList(byId.get(id)?.a.dependencies)) {
 		if (seen.has(d)) continue
 		seen.add(d)
 		orderNeeds(d, byId, seen, out)
@@ -691,6 +692,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	const tickets = new Map() // one-time hand-overs from the web app
 	let registryCache = null
 	let registryWarm = null
+	let storesGen = 0
 
 	// Apps come back after a reboot only if Podman's own restart unit is on (it's off by default, and
 	// rootless Podman has no daemon to do it). It's a user unit, so this needs no sudo: servers set up
@@ -754,24 +756,62 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		// read the tree you sync, the same way Software update reads the local omarchy-server clone.
 		const localDefault = defaultStores.find((d) => /^file:\/\//.test(d.url))
 		if (localDefault) {
+			const localUrl = normalize(localDefault.url)
 			let changed = false
 			for (const s of state.stores) {
-				if (!isGithubAppStore(s.url)) continue
-				await rm(storeDir(s.url), {recursive: true, force: true}).catch(() => {})
-				s.url = localDefault.url
-				s.syncedAt = 0
-				changed = true
+				if (isGithubAppStore(s.url) || (s.localDefault && s.url.toLowerCase() !== localUrl.toLowerCase())) {
+					const oldUrl = s.url
+					await rm(storeDir(oldUrl), {recursive: true, force: true}).catch(() => {})
+					s.url = localUrl
+					s.syncedAt = 0
+					s.localDefault = true
+					delete s.meta
+					for (const a of state.apps) if (a.store?.toLowerCase() === oldUrl.toLowerCase()) a.store = localUrl
+					changed = true
+				} else if (s.url.toLowerCase() === localUrl.toLowerCase() && !s.localDefault) {
+					s.localDefault = true
+					changed = true
+				}
 			}
 			for (const a of state.apps) {
 				if (!isGithubAppStore(a.store)) continue
-				a.store = localDefault.url
+				a.store = localUrl
 				changed = true
 			}
-			if (!state.stores.some((s) => s.url.toLowerCase() === localDefault.url.toLowerCase())) {
-				state.stores.unshift({url: localDefault.url, syncedAt: 0})
+			if (!state.stores.some((s) => s.url.toLowerCase() === localUrl.toLowerCase())) {
+				state.stores.unshift({url: localUrl, syncedAt: 0, localDefault: true})
 				changed = true
 			}
 			if (changed) await save()
+		} else {
+			const githubDefault = defaultStores.find((d) => isGithubAppStore(d.url))
+			if (githubDefault) {
+				const ghUrl = normalize(githubDefault.url)
+				let changed = false
+				const keep = []
+				for (const s of state.stores) {
+					const wasLocal = s.localDefault || (!allowFileStores && /^file:\/\//.test(s.url))
+					if (!wasLocal) {
+						keep.push(s)
+						continue
+					}
+					const oldUrl = s.url
+					await rm(storeDir(oldUrl), {recursive: true, force: true}).catch(() => {})
+					for (const a of state.apps) if (a.store?.toLowerCase() === oldUrl.toLowerCase()) a.store = ghUrl
+					if (!keep.some((x) => isGithubAppStore(x.url)) && !state.stores.some((x) => x !== s && isGithubAppStore(x.url))) {
+						s.url = ghUrl
+						s.syncedAt = 0
+						delete s.localDefault
+						delete s.meta
+						keep.push(s)
+					}
+					changed = true
+				}
+				if (changed) {
+					state.stores = keep
+					await save()
+				}
+			}
 		}
 		for (const a of state.apps) if (a.state === 'installing') Object.assign(a, {state: 'error', error: 'Install was interrupted. Uninstall it and install again.'})
 		// Newer versions ask about more kinds of access (host network, server folders, system access).
@@ -1022,7 +1062,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 	}
 	async function loadStore(url) {
 		const dir = storeDir(url)
-		let meta = (await readYaml(dir, STORE_FILES))?.data
+		let meta = (await readYaml(dir, STORE_FILES).catch(() => null))?.data
+		if (!meta || typeof meta !== 'object' || Array.isArray(meta)) meta = null
 		const gallery = GALLERIES[url.toLowerCase().replace(/\.git$/, '')] ?? (typeof meta?.gallery === 'string' && /^https:\/\//.test(meta.gallery) ? meta.gallery.replace(/\/+$/, '') : null)
 		const apps = []
 		// First pass: every app and the variables each one's exports.sh provides (apps that need
@@ -1032,25 +1073,27 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			await mapPool(entries, LOAD_CONCURRENCY, async (entry) => {
 				const appPath = join(dir, entry.name)
 				const [m, c, exportsText] = await Promise.all([readYaml(appPath, APP_FILES).catch(() => null), readFirst(appPath, COMPOSE_FILES).catch(() => null), readFile(join(appPath, 'exports.sh'), 'utf8').catch(() => '')])
-				if (!m?.data?.id || m.data.id !== entry.name || !APP_ID.test(m.data.id) || !c) return null
+				const rawId = m?.data?.id
+				const id = typeof rawId === 'string' || (typeof rawId === 'number' && Number.isFinite(rawId)) ? String(rawId) : ''
+				if (!id || id !== entry.name || !APP_ID.test(id) || !c) return null
 				// `export NAME=…`, a bare `export NAME`, or one written out for later (echo "export NAME=…" >> .env).
 				const exported = [...exportsText.matchAll(/\bexport\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)].map((x) => x[1])
-				return {a: m.data, entry, compose: c.text, exported}
+				return {a: {...m.data, id}, entry, compose: c.text, exported}
 			})
 		).filter(Boolean)
 		const byId = new Map(found.map((f) => [f.a.id, f]))
 		// Everything an app needs, all the way down (bitcoin → lightning → …).
 		const needsOf = (id, seen = new Set()) => {
-			for (const d of (byId.get(id)?.a.dependencies ?? []).filter((x) => typeof x === 'string')) {
+			for (const d of stringList(byId.get(id)?.a.dependencies)) {
 				if (seen.has(d)) continue
 				seen.add(d)
 				needsOf(d, seen)
 			}
 			return seen
 		}
-		const neededByOthers = new Set(found.flatMap((f) => (f.a.dependencies ?? []).filter((x) => typeof x === 'string')))
+		const neededByOthers = new Set(found.flatMap((f) => stringList(f.a.dependencies)))
 		for (const {a, entry, compose, exported} of found) {
-			const deps = (a.dependencies ?? []).filter((x) => typeof x === 'string')
+			const deps = stringList(a.dependencies)
 			const all = [...needsOf(a.id)]
 			const absent = all.filter((d) => !byId.has(d))
 			const fromDeps = all.flatMap((d) => byId.get(d)?.exported ?? [])
@@ -1079,7 +1122,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 				description: a.description,
 				developer: a.developer,
 				website: a.website,
-				gallery: (a.gallery ?? []).map(media).filter(Boolean),
+				gallery: (Array.isArray(a.gallery) ? a.gallery : []).map(media).filter(Boolean),
 				releaseNotes: a.releaseNotes,
 				dependencies: deps,
 				// Everything installed along with it, in install order (what it needs comes first).
@@ -1142,18 +1185,36 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		return flight
 	}
 	async function loadRegistry({refresh = false} = {}) {
+		const gen = storesGen
+		const snapshot = [...state.stores]
+		const stillAdded = (url) => state.stores.some((x) => x.url.toLowerCase() === url.toLowerCase())
 		const list = []
 		let dirty = false
-		for (const s of state.stores) {
+		for (const s of snapshot) {
+			if (!stillAdded(s.url)) continue
 			if (refresh || Date.now() - (s.syncedAt ?? 0) > 60 * 60_000) {
-				// A failed download rejects every caller waiting on this read. It is not turned
-				// into an empty store, and the flight is dropped so the next read tries again.
-				await syncStore(s.url)
-				s.syncedAt = Date.now()
-				dirty = true
+				try {
+					// A failed download rejects every caller waiting on this read. It is not turned
+					// into an empty store, and the flight is dropped so the next read tries again.
+					await syncStore(s.url)
+					if (!stillAdded(s.url)) {
+						await rm(storeDir(s.url), {recursive: true, force: true}).catch(() => {})
+						continue
+					}
+					s.syncedAt = Date.now()
+					dirty = true
+				} catch (e) {
+					if (!stillAdded(s.url)) {
+						await rm(storeDir(s.url), {recursive: true, force: true}).catch(() => {})
+						continue
+					}
+					throw e
+				}
 			}
+			if (!stillAdded(s.url)) continue
 			try {
 				const loaded = await loadStore(s.url)
+				if (!stillAdded(s.url)) continue
 				if (s.name) loaded.meta.name = s.name
 				const prev = s.meta
 				s.meta = loaded.meta
@@ -1168,11 +1229,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		}
 		// Apps that are part of the server itself (Tailscale) come first, so a store can't stand in for them.
 		if (systemApps) list.unshift({url: BUILTIN_STORE, meta: {id: 'omarchy-server', name: 'Omarchy Server'}, apps: systemApps.listings()})
+		const current = list.filter((l) => l.url === BUILTIN_STORE || l.url === IMPORTED_STORE || stillAdded(l.url))
 		// Installed apps pick up how their listing says to open them (https, an https app inside),
 		// so an app installed before its listing changed doesn't need reinstalling.
 		for (const app of state.apps) {
 			if (app.system) continue
-			const src = list.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? list.flatMap((l) => l.apps).find((x) => x.id === app.id)
+			const src = current.find((l) => !app.store || l.url === app.store)?.apps.find((x) => x.id === app.id) ?? current.flatMap((l) => l.apps).find((x) => x.id === app.id)
 			if (!src) continue
 			const requiresHttps = !!src.requiresHttps
 			const internalHttps = !!src.web?.https
@@ -1183,8 +1245,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			else delete app.internalHttps
 		}
 		if (dirty) await save()
-		registryCache = {at: Date.now(), list}
-		return list
+		if (storesGen === gen) registryCache = {at: Date.now(), list: current}
+		return current
 	}
 	// An app's listing. An installed app stays with the store it came from (two stores can list the
 	// same id with different folders and settings, and an update must never switch between them).
@@ -1840,7 +1902,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			const queued = plan.map((src) => {
 				const leftover = state.apps.find((a) => a.id === src.id && a.state === 'error')
 				if (leftover) state.apps = state.apps.filter((a) => a !== leftover)
-				const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.mcp ? {mcp: src.mcp} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
+				const app = {id: src.id, name: src.name, version: src.version, icon: src.icon, port: src.port, path: src.path, defaultUsername: src.defaultUsername, defaultPassword: src.defaultPassword, deterministicPassword: src.deterministicPassword, ...(src.requiresHttps ? {requiresHttps: true} : {}), ...(src.web?.https ? {internalHttps: true} : {}), ...(src.openPorts?.length ? {openPorts: src.openPorts} : {}), ...(src.mcp ? {mcp: src.mcp} : {}), ...(src.store ? {store: src.store} : {}), ...(src.implements?.length ? {implements: src.implements} : {}), ...(src.needs?.length ? {needs: src.needs} : {}), ...(src.folders?.length ? {folderIds: src.folders.map((f) => f.id), folders: Object.fromEntries(src.folders.filter((f) => placed.has(`${src.id}/${f.id}`)).map((f) => [f.id, placed.get(`${src.id}/${f.id}`)]))} : {}), installedAt: Date.now(), state: 'installing', permissions: needs.get(src.id) ?? [], ownSecretsOnly: true}
 				state.apps.push(app)
 				busy.set(app.id, {state: 'installing', progress: 0})
 				return {src, app}
@@ -1960,6 +2022,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			Object.assign(app, {version: src.version, name: src.name, icon: src.icon, path: src.path, requiresHttps: src.requiresHttps || undefined, internalHttps: src.web?.https || undefined})
 			if (src.mcp) app.mcp = src.mcp
 			else delete app.mcp
+			if (src.needs?.length) app.needs = src.needs
+			else delete app.needs
 			delete app.state
 			delete app.error
 		} catch (error) {
@@ -1993,11 +2057,12 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		await ready
 		const app = findInstalled(String(input?.appId ?? ''))
 		if (busy.has(app.id)) throw new RpcError('CONFLICT', `${app.name} is busy`)
+		const verb = {up: 'start', stop: 'stop', restart: 'restart'}[args[0]] ?? pending
 		busy.set(app.id, {state: pending})
 		try {
 			let pluggedIds = null
 			if (!app.system && (args[0] === 'up' || args[0] === 'restart')) pluggedIds = await writeUsbOverlay(app)
-			if (app.system) await systemApps[{up: 'start', stop: 'stop', restart: 'restart'}[args[0]]](app)
+			if (app.system) await systemApps[verb](app)
 			// `restart` leaves the running container on the old device list. Recreate so the overlay just written is what runs.
 			else if (args[0] === 'restart') await compose(app, 'up', '-d', '--force-recreate')
 			else await compose(app, ...args)
@@ -2008,6 +2073,11 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					await save()
 				}
 			}
+		} catch (error) {
+			if (error instanceof RpcError) throw error
+			console.error(`[omarchyd] ${verb} ${app.id}:`, error)
+			const detail = String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(-300)
+			throw new RpcError('BAD_GATEWAY', `${app.name ?? app.id} couldn’t ${verb}: ${detail}`)
 		} finally {
 			busy.delete(app.id)
 		}
@@ -2022,8 +2092,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 		const users = []
 		for (const other of state.apps) {
 			if (other.id === app.id) continue
-			const src = await findInRegistry(other.id).catch(() => null)
-			const needs = (src?.needs ?? []).filter((n) => provides.includes(n))
+			const otherNeeds = Array.isArray(other.needs) ? other.needs : ((await findInRegistry(other.id).catch(() => null))?.needs ?? [])
+			const needs = otherNeeds.filter((n) => provides.includes(n))
 			if (needs.some((n) => !state.apps.some((a) => a.id !== app.id && a.state !== 'error' && (a.id === n || (a.implements ?? []).includes(n))))) users.push(other.name ?? other.id)
 		}
 		if (users.length) throw new RpcError('PRECONDITION_FAILED', `${users.join(', ')} ${users.length > 1 ? 'need' : 'needs'} ${app.name ?? app.id}. Uninstall ${users.length > 1 ? 'them' : 'it'} first.`)
@@ -2072,8 +2142,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 						break
 					}
 				}
+				src ??= byId.get(a.id)
 			}
-			src ??= byId.get(a.id)
 			if (src?.version && a.version && src.version !== a.version) out.push({id: a.id, version: src.version})
 		}
 		return out
@@ -2320,7 +2390,19 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 			},
 			// "Check for new apps": download every store's latest listings now instead of waiting for the hourly check.
 			'appStore.refresh': {kind: 'mutation', run: async () => ((await registry({refresh: true})).reduce((n, s) => n + s.apps.length, 0))},
-			'appStore.repositories': {kind: 'query', run: async () => (await ready, state.stores.map(({url, meta, name}) => ({url, meta: meta ?? {id: url, name: name ?? url.split('/').pop()}})))},
+			'appStore.repositories': {
+				kind: 'query',
+				run: async () => {
+					await ready
+					const localDefault = defaultStores.find((d) => /^file:\/\//.test(d.url))
+					const localNorm = localDefault ? normalize(localDefault.url).toLowerCase() : null
+					return state.stores.map(({url, meta, name, localDefault: isLocal}) => ({
+						url,
+						meta: meta ?? {id: url, name: name ?? url.split('/').pop()},
+						...(isLocal || (localNorm && url.toLowerCase() === localNorm) ? {replaces: DEFAULT_STORES[0].url} : {}),
+					}))
+				},
+			},
 			'appStore.addRepository': {
 				kind: 'mutation',
 				run: async (input) => {
@@ -2345,7 +2427,8 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 							await rm(storeDir(url), {recursive: true, force: true})
 							throw e
 						}
-						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now()})
+						state.stores.push({url, meta: loaded.meta, syncedAt: Date.now(), ...(localDefault && url.toLowerCase() === normalize(localDefault.url).toLowerCase() ? {localDefault: true} : {})})
+						storesGen++
 						registryCache = null
 						await save()
 						return true
@@ -2361,6 +2444,7 @@ export function createApps({dataDir, home = os.homedir(), webPort = 7780, run = 
 					if (!s) throw new RpcError('NOT_FOUND', 'That store isn’t added')
 					state.stores = state.stores.filter((x) => x !== s)
 					await rm(storeDir(s.url), {recursive: true, force: true})
+					storesGen++
 					registryCache = null
 					await save()
 					return true

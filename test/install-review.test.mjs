@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 
+import {folderAllowed} from '../omarchyd/apps.mjs'
 import {cardAction} from '../web/src/assistant.ts'
-import {installNeedsReview, reviewInstallInput} from '../web/src/installReview.ts'
+import {folderPathOk, installNeedsReview, reviewInstallInput} from '../web/src/installReview.ts'
 
 const home = '/home/chris'
 const perm = (id) => ({id, label: id, detail: '', what: [], appId: 'jellyfin', appName: 'Jellyfin'})
@@ -71,4 +72,40 @@ test('the assistant reuses the store review and cancel rejects the install', asy
 	assert.match(store, /<BeforeInstall/)
 	assert.match(review, /I understand\. Allow this/)
 	assert.doesNotMatch(store, /I understand\. Allow this/)
+})
+
+test('folderPathOk rejects home itself, double slashes, and dot segments while allowing dots inside names', () => {
+	assert.equal(folderPathOk(null, home), true)
+	assert.equal(folderPathOk(undefined, home), true)
+	const cases = [
+		['/home/chris', false],
+		['/home/chris/', false],
+		['/home/chris///', false],
+		['/home/chris//media', false],
+		['/home/chris/Media/', true],
+		['/home/chris/my..folder', true],
+		['/home/chris/..', false],
+		['/home/chris/a/../b', false],
+		['/home/chris/.', false],
+		['/home/chris/.ssh', false],
+		['/home/chris/a/.git', false],
+		['/etc', false],
+		['', false],
+		['   ', false],
+	]
+	for (const [p, expected] of cases) {
+		assert.equal(folderPathOk(p, home), expected, p)
+		assert.equal(folderAllowed(p, home), expected, `folderAllowed(${p})`)
+	}
+	const folder = {appId: 'jellyfin', appName: 'Jellyfin', id: 'media', label: 'Media', detail: '', suggest: null}
+	const review = {requiredFolders: [], gpuAccess: false, folders: [folder], home}
+	assert.equal(reviewInstallInput(review, true, {'jellyfin/media': '/home/chris/'}), null)
+	assert.equal(reviewInstallInput(review, true, {'jellyfin/media': '/home/chris//media'}), null)
+	assert.deepEqual(reviewInstallInput(review, true, {'jellyfin/media': '/home/chris/my..folder'}), {folders: [{appId: 'jellyfin', id: 'media', path: '/home/chris/my..folder'}]})
+})
+
+test('store install review stays open until the install request succeeds', async () => {
+	const store = await readFile(new URL('../web/src/screens/Store.tsx', import.meta.url), 'utf8')
+	const block = store.match(/<BeforeInstall[\s\S]*?\/>/)?.[0] ?? ''
+	assert.match(block, /onSuccess:\s*\(\)\s*=>\s*setReviewing\(false\)/)
 })

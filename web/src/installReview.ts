@@ -10,9 +10,17 @@ type Placed = Record<string, string | null | undefined>
 
 export const folderKey = (f: {appId: string; id: string}) => `${f.appId}/${f.id}`
 
-// A blank choice means "inside the app". A typed path has to stay in home, and not in a hidden folder.
+// A blank choice means "inside the app". A typed path has to stay strictly inside home,
+// with no empty segments (//) and no hidden or dot segments (., .., .ssh).
 export function folderPathOk(path: string | null | undefined, home: string) {
-	return path == null || (path.startsWith(`${home}/`) && !path.slice(home.length).split('/').some((part) => part.startsWith('.')) && !path.includes('..'))
+	if (path == null) return true
+	const cleanHome = home.replace(/\/+$/, '')
+	if (!cleanHome) return false
+	const trimmed = path.trim().replace(/\/+$/, '')
+	if (!trimmed.startsWith(`${cleanHome}/`) || trimmed.includes('\0')) return false
+	const rel = trimmed.slice(cleanHome.length + 1)
+	if (!rel) return false
+	return rel.split('/').every((part) => part.length > 0 && !part.startsWith('.'))
 }
 
 // The green "nothing extra" review can install straight from Approve. Anything the person has to

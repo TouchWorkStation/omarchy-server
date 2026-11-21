@@ -11,6 +11,7 @@ import {explainProbe, openApp} from '../openApp'
 import {Icon, hasIcon} from '../icons'
 import {AppIcon, Sheet, SheetHeader, StatusPill, appStatus, bytes, haptic, isAppBusy, useToast} from '../ui'
 import {SearchField} from './Apps'
+import {remainingSuggestedStores, type StoreRepo} from '../storeSuggestions'
 
 type StoreApp = RegistryApp & {compatible?: boolean; repo?: string; unsupported?: string}
 
@@ -93,32 +94,6 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 		setSelected({app, install})
 	}
 
-	const Item = ({app}: {app: StoreApp}) => {
-		const inst = installed.get(app.id)
-		return (
-			<div className="store-item">
-				<button className="store-main" onClick={() => pick(app)}>
-					<AppIcon src={app.icon} name={app.name} size={58} />
-					<span className="t">
-						<b>{app.name}</b>
-						<span>{app.tagline}</span>
-					</span>
-				</button>
-				<span className="end">
-					{inst ? (
-						<button className="btn get" onClick={() => onOpenInstalled(inst)} aria-label={`Manage ${app.name}`}>
-							{isAppBusy(inst.state) ? <span className="spinner" style={{width: 14, height: 14}} /> : 'Open'}
-						</button>
-					) : (
-						<button className="btn get" onClick={() => pick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false || !!app.unsupported}>
-							Get
-						</button>
-					)}
-				</span>
-			</div>
-		)
-	}
-
 	return (
 		<div className="stagger">
 			<div className="page-head">
@@ -196,7 +171,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 								</div>
 								<div className="shelf">
 									{items.map((app) => (
-										<Item key={app.id} app={app} />
+										<StoreItem key={app.id} app={app} installed={installed.get(app.id)} onPick={pick} onOpenInstalled={onOpenInstalled} />
 									))}
 								</div>
 							</section>
@@ -205,7 +180,7 @@ export function Store({onOpenInstalled, onBack, onTerminal}: {onOpenInstalled: (
 				: !registry.isLoading && !(problem && !registry.data) && (
 						<div className="list-store" style={{marginTop: 4}}>
 							{shown.map((app) => (
-								<Item key={app.id} app={app} />
+								<StoreItem key={app.id} app={app} installed={installed.get(app.id)} onPick={pick} onOpenInstalled={onOpenInstalled} />
 							))}
 							{shown.length === 0 && (
 								<div className="glass empty">
@@ -245,13 +220,10 @@ const SUGGESTED_STORES = [
 		blurb: 'Google Chrome and Brave browsers that run on your server and stream to any device.',
 	},
 ]
-type Repo = {url: string; meta: {id: string; name: string}}
-const sameRepo = (a: string, b: string) => a.replace(/\.git$|\/$/, '').toLowerCase() === b.replace(/\.git$|\/$/, '').toLowerCase()
-
 function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}) {
 	const qc = useQueryClient()
 	const toast = useToast()
-	const repos = useQuery({queryKey: ['appStore.repositories'], queryFn: () => query<Repo[]>('appStore.repositories')})
+	const repos = useQuery({queryKey: ['appStore.repositories'], queryFn: () => query<StoreRepo[]>('appStore.repositories')})
 	const [url, setUrl] = useState('')
 	const [removing, setRemoving] = useState<string | null>(null)
 	const refresh = () => {
@@ -277,7 +249,7 @@ function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}
 		onError: (e) => toast((e as Error).message, true),
 	})
 	const community = repos.data ?? []
-	const suggestions = SUGGESTED_STORES.filter((s) => !(repos.data ?? []).some((r) => sameRepo(r.url, s.url)))
+	const suggestions = remainingSuggestedStores(SUGGESTED_STORES, repos.data ?? [])
 	const valid = /^https:\/\/[\w.-]+\/[\w.\-/]+$/.test(url.trim())
 	return (
 		<Sheet open onClose={onClose} label="Community app stores">
@@ -385,6 +357,41 @@ function CommunityStores({owner, onClose}: {owner: boolean; onClose: () => void}
 	)
 }
 
+function StoreItem({
+	app,
+	installed,
+	onPick,
+	onOpenInstalled,
+}: {
+	app: StoreApp
+	installed?: UserApp
+	onPick: (app: StoreApp, install?: boolean) => void
+	onOpenInstalled: (app: UserApp) => void
+}) {
+	return (
+		<div className="store-item">
+			<button className="store-main" onClick={() => onPick(app)}>
+				<AppIcon src={app.icon} name={app.name} size={58} />
+				<span className="t">
+					<b>{app.name}</b>
+					<span>{app.tagline}</span>
+				</span>
+			</button>
+			<span className="end">
+				{installed ? (
+					<button className="btn get" onClick={() => onOpenInstalled(installed)} aria-label={`Manage ${app.name}`}>
+						{isAppBusy(installed.state) ? <span className="spinner" style={{width: 14, height: 14}} /> : 'Open'}
+					</button>
+				) : (
+					<button className="btn get" onClick={() => onPick(app, true)} aria-label={`Get ${app.name}`} disabled={app.compatible === false || !!app.unsupported}>
+						Get
+					</button>
+				)}
+			</span>
+		</div>
+	)
+}
+
 function FeaturedCard({app, onPick}: {app: StoreApp; onPick: () => void}) {
 	const detail = useStoreApp(app)
 	const shot = app.gallery?.[0] ?? detail.data?.gallery?.[0]
@@ -461,13 +468,15 @@ function StoreSheet({
 					cancelLabel="Back"
 					openTerminal={openTerminal}
 					onInstall={(input) => {
-						action.mutate({
-							path: 'apps.install',
-							input: {appId: app.id, ...input},
-							adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
-							done: `Installing ${app.name}…`,
-						})
-						setReviewing(false)
+						action.mutate(
+							{
+								path: 'apps.install',
+								input: {appId: app.id, ...input},
+								adding: [...missingDeps.map((d) => all.find((a) => a.id === d)).filter((a): a is StoreApp => !!a), app].map((a) => ({id: a.id, name: a.name, icon: a.icon})),
+								done: `Installing ${app.name}…`,
+							},
+							{onSuccess: () => setReviewing(false)},
+						)
 					}}
 					onCancel={() => setReviewing(false)}
 				/>
