@@ -2,7 +2,7 @@
 // owner's assistant keys, chats, swarm computers, NAS password, or share password.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import {mkdtemp, mkdir, readFile, readdir, rm, writeFile} from 'node:fs/promises'
+import {mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile} from 'node:fs/promises'
 import {syncBuiltinESMExports} from 'node:module'
 import os from 'node:os'
 import {join} from 'node:path'
@@ -48,6 +48,9 @@ test('factory reset drops keys, chats, swarm computers, backup secrets and share
 	await writeFile(join(data, 'backups/keep.txt'), 'not a secret\n')
 	await writeFile(join(data, 'shares.json'), JSON.stringify([{name: 'Docs', path: '/Home/Documents'}]))
 	await writeFile(join(data, 'share-password'), 'share-secret')
+	await mkdir(join(data, 'clips', 'owner'), {recursive: true})
+	await writeFile(join(data, 'clips', 'owner', 'book.json'), JSON.stringify({secret: 'clip-book-secret'}))
+	await writeFile(join(data, 'clips', 'owner', 'deadbeef.blob'), 'clip-secret-bytes')
 	const d = await startOmarchyd({
 		port: 0, dataDir: data, home,
 		updaterOptions: {autoCheck: false},
@@ -95,6 +98,8 @@ test('factory reset drops keys, chats, swarm computers, backup secrets and share
 		assert.equal(await exists(join(data, 'backups/history.json')), false, 'backup history is gone')
 		assert.equal(await exists(join(data, 'share-password')), false, 'the share password is gone')
 		assert.equal(await exists(join(data, 'shares.json')), false, 'the share list is gone')
+		const clipsGone = await stat(join(data, 'clips')).then(() => false, (e) => e.code === 'ENOENT')
+		assert.equal(clipsGone, true, 'the clip book is gone')
 	} finally {
 		await d.close()
 		await rm(root, {recursive: true, force: true})
@@ -338,6 +343,8 @@ test('factory reset does not wipe accounts when an app stays installed', async (
 	const {root, data, d, call, owner} = await resetServer('omarchyd-reset-stuck-', {app})
 	const logs = capture()
 	try {
+		await mkdir(join(data, 'clips', 'owner'), {recursive: true})
+		await writeFile(join(data, 'clips', 'owner', 'book.json'), JSON.stringify({secret: 'clip-book-secret'}))
 		const reset = await call('mutation', 'system.factoryReset', {password: 'correct horse'}, owner)
 		assert.equal(reset.body.result.data, true)
 		const until = Date.now() + 3000
@@ -356,6 +363,12 @@ test('factory reset does not wipe accounts when an app stays installed', async (
 		assert.equal(saved.apps[0].id, 'stuck')
 		assert.match(logs.notes.join('\n'), /1 app remains/)
 		assert.equal(logs.notes.some((l) => l.includes('factory reset done')), false)
+		let clipsGone = false
+		for (let i = 0; i < 40 && !clipsGone; i++) {
+			clipsGone = await stat(join(data, 'clips')).then(() => false, (e) => e.code === 'ENOENT')
+			if (!clipsGone) await sleep(50)
+		}
+		assert.equal(clipsGone, true, 'clips are removed even when an account stays')
 	} finally {
 		logs.restore()
 		await d.close()

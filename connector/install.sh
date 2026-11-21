@@ -24,7 +24,7 @@ Options:
   --server <url>        Server URL (https://...)
   --ca <fingerprint>    64-char hex SHA-256 fingerprint of the server CA
   --token <code>        One-time pairing token from Machines -> Local swarm
-  --allow <abilities>   Comma-separated abilities (terminal,desktop,manage,storage,backup)
+  --allow <abilities>   Comma-separated abilities (terminal,desktop,manage,storage,backup,files)
   --source <url>        Base URL to download connector files from
   --uninstall           Remove the connector from this computer
   -h, --help            Show this help

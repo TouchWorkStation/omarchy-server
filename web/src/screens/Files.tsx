@@ -1400,6 +1400,7 @@ function ItemSheet(p: {
   const desk = useDesktop();
   const { f } = p;
   const toast = useToast();
+  const qc = useQueryClient();
   const k = kindOf(f);
   const can = (op: FileEntry["operations"][number]) =>
     f.operations.includes(op);
@@ -1471,6 +1472,20 @@ function ItemSheet(p: {
           icon: "download",
           onClick: p.onDownload,
           show: offersFile(f),
+        },
+        {
+          id: "clip",
+          label: "Clip book",
+          icon: "clipboard",
+          onClick: () => {
+            mutate("clips.addFile", { scope: "server", path: f.path })
+              .then(() => {
+                toast("Saved to the clip book");
+                qc.invalidateQueries({ queryKey: ["clips.list"] });
+              })
+              .catch((e: Error) => toast(e.message, true));
+          },
+          show: offersFile(f) && !f.path.startsWith("/Trash/"),
         },
         {
           id: "rename",

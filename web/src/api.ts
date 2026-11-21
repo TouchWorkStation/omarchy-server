@@ -63,6 +63,9 @@ const SLOW_RPC = new Set([
 	'hardware.raid.replaceDevice',
 	'hardware.raid.transitionToFailsafeRaidz',
 	'hardware.raid.scrub',
+	'clips.paste',
+	'clips.addFile',
+	'clips.fleetList',
 ])
 
 const RESTARTING_MESSAGE = 'Omarchy Server is restarting or not answering. Wait a moment and try again.'

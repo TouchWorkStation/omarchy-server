@@ -3,7 +3,7 @@
 // server's own certificate authority), so the other computer opens no ports.
 //
 // Joining: the owner makes a one-time pairing code (15 minutes, used once) with the abilities they
-// allow (watching is always on; terminal, desktop, manage and storage are optional). The connector trades
+// allow (watching is always on; terminal, desktop, manage, storage, backup and files are optional). The connector trades
 // it for its own id and key; only a hash of the key is kept here.
 //
 // Two limits on what a computer does: the abilities chosen when pairing, which the connector also
@@ -11,7 +11,7 @@
 // owner's switches here, which can only narrow those.
 //
 // Wire format on the connector's WebSocket: JSON text messages for control, and binary frames
-// starting with a 4-byte channel number for terminal and desktop bytes.
+// starting with a 4-byte channel number for terminal, desktop, and file bytes.
 import {X509Certificate, createHash, randomBytes, timingSafeEqual} from 'node:crypto'
 import {readFile} from 'node:fs/promises'
 import os from 'node:os'
@@ -25,10 +25,15 @@ import {parseResize} from './terminal.mjs'
 // backup: the computer backs up folders you choose to this server (see backups.mjs). Its restic
 // uploads through the connector's own pinned connection, and can only add backups, never delete them.
 // storage: see its drives, format extra disks, and manage pools on that computer (connector/helper.py).
-const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup']
+const ABILITIES = ['terminal', 'desktop', 'manage', 'storage', 'backup', 'files']
 const PAIR_TTL = 15 * 60_000
 // A viewer that stops reading must not queue connector frames in memory without a bound.
 const VIEWER_BUFFER_LIMIT = 1024 * 1024
+// File bytes use their own channel. Chunks stay small, and only a few are in flight, so a big
+// copy cannot fill the socket or stall a terminal on the same computer.
+const FILE_CHUNK = 64 * 1024
+const FILE_WINDOW = 4
+const FILE_MS = 10 * 60_000
 const sha = (s) => createHash('sha256').update(String(s)).digest('hex')
 const sameHash = (a, b) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
 const clip = (v, n = 120) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, n)
@@ -52,11 +57,13 @@ function closeSocket(ws, code, reason) {
 }
 // Same sentence a refused new connection gets, so an open session ends with that reason too.
 function switchedOff(name, ability) {
-	return `${ability === 'terminal' ? 'The terminal' : 'The desktop'} isn’t switched on for ${name}`
+	const what = ability === 'terminal' ? 'The terminal' : ability === 'files' ? 'Files' : 'The desktop'
+	return `${what} isn’t switched on for ${name}`
 }
 function closeLiveChannel(l, ch, reason) {
 	const channel = l.channels.get(ch)
 	if (!channel) return
+	if (channel.kind === 'file') return channel.end(new RpcError('FORBIDDEN', reason))
 	l.channels.delete(ch)
 	closeSocket(channel.ws, 1011, reason)
 	if (l.ws.readyState === l.ws.OPEN) l.ws.send(JSON.stringify({op: 'close', ch}))
@@ -280,7 +287,7 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		const l = live.get(a.id)
 		if (l) {
 			for (const [ch, channel] of [...l.channels]) {
-				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : null
+				const ability = channel.kind === 'pty' ? 'terminal' : channel.kind === 'vnc' ? 'desktop' : channel.kind === 'file' ? 'files' : null
 				if (ability && !may(a, ability)) closeLiveChannel(l, ch, switchedOff(a.name, ability))
 			}
 		}
@@ -380,7 +387,10 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 			const old = live.get(a.id)
 			if (old) {
 				old.progress = null
-				for (const ch of old.channels.values()) closeSocket(ch.ws, 1000, 'The computer reconnected')
+				for (const ch of [...old.channels.values()]) {
+					if (ch.kind === 'file') ch.end(new RpcError('BAD_GATEWAY', 'The computer reconnected'))
+					else closeSocket(ch.ws, 1000, 'The computer reconnected')
+				}
 				for (const c of old.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer reconnected')))
 				old.channels.clear()
 				old.calls.clear()
@@ -396,6 +406,11 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 						if (buf.length < 4) return
 						const id = buf.readUInt32BE(0)
 						const ch = l.channels.get(id)
+						// A file channel has no browser socket. Touching ch.ws here would throw.
+						if (ch?.kind === 'file') {
+							ch.onBinary(buf.subarray(4))
+							return
+						}
 						if (ch && ch.ws.readyState === ch.ws.OPEN) {
 							if (ch.ws.bufferedAmount > VIEWER_BUFFER_LIMIT) closeLiveChannel(l, id, 'The viewer fell behind')
 							else ch.ws.send(buf.subarray(4), {binary: true})
@@ -422,9 +437,18 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 					} else if (msg.op === 'metrics') {
 						l.metrics = cleanMetrics(msg.metrics)
 						a.metrics = l.metrics
+					} else if (msg.op === 'file' || msg.op === 'ack') {
+						const ch = l.channels.get(Number(msg.ch))
+						if (ch?.kind === 'file') ch.onControl(msg)
 					} else if (msg.op === 'closed') {
 						const ch = l.channels.get(Number(msg.ch))
-						if (ch) (l.channels.delete(Number(msg.ch)), closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason))
+						if (!ch) return
+						if (ch.kind === 'file') {
+							ch.onControl(msg)
+							return
+						}
+						l.channels.delete(Number(msg.ch))
+						closeSocket(ch.ws, msg.code === 1011 ? 1011 : 1000, msg.reason)
 					} else if (msg.op === 'progress') {
 						// A long call (a backup) saying how far it's got. A report for a call that
 						// already finished must not become the next call's progress.
@@ -450,7 +474,10 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 				if (live.get(a.id)?.ws !== ws) return
 				l.progress = null
 				live.delete(a.id)
-				for (const ch of l.channels.values()) closeSocket(ch.ws, 1000, 'The computer went offline')
+				for (const ch of [...l.channels.values()]) {
+					if (ch.kind === 'file') ch.end(new RpcError('BAD_GATEWAY', 'The computer went offline'))
+					else closeSocket(ch.ws, 1000, 'The computer went offline')
+				}
 				for (const c of l.calls.values()) (clearTimeout(c.timer), c.reject(new RpcError('BAD_GATEWAY', 'The computer went offline')))
 				a.lastSeen = now()
 				await save().catch(() => {})
@@ -464,8 +491,11 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 	function openChannel(agentId, kind, browserWs, opts = {}) {
 		const a = find(agentId)
 		const l = live.get(agentId)
-		const ability = kind === 'pty' ? 'terminal' : 'desktop'
-		if (!a || !l || !may(a, ability)) return closeSocket(browserWs, 1011, !a ? 'Unknown computer' : !l ? 'That computer is offline' : switchedOff(a.name, ability))
+		// Only a terminal or a desktop is a browser socket. A file channel is opened by the server
+		// itself (files.pull / files.push). Treating "file" as a desktop would let a browser read it.
+		const ability = kind === 'pty' ? 'terminal' : kind === 'vnc' ? 'desktop' : null
+		const why = !a ? 'Unknown computer' : !l ? 'That computer is offline' : !ability ? 'That isn’t a terminal or a desktop' : switchedOff(a.name, ability)
+		if (!a || !l || !ability || !may(a, ability)) return closeSocket(browserWs, 1011, why)
 		const ch = ++l.nextCh
 		l.channels.set(ch, {ws: browserWs, kind})
 		l.ws.send(JSON.stringify({op: 'open', ch, kind, cols: opts.cols, rows: opts.rows}))
@@ -488,6 +518,249 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		}
 		browserWs.on('close', end)
 		browserWs.on('error', end)
+	}
+
+	// A path the connector may open: relative to that computer's home folder. Empty is only "list home".
+	function safeHomePath(input, {empty = false} = {}) {
+		const raw = String(input ?? '').replace(/\\/g, '/').trim()
+		if (raw.startsWith('/') || raw.startsWith('~') || /[\u0000-\u001f\u007f]/.test(raw)) return null
+		if (raw === '') return empty ? '' : null
+		const parts = raw.split('/').filter((part) => part.length > 0)
+		if (!parts.length) return empty ? '' : null
+		for (const part of parts) {
+			if (part === '.' || part === '..' || part.length > 200) return null
+		}
+		const path = parts.join('/')
+		return path.length > 1024 ? null : path
+	}
+	function cleanFileRow(row) {
+		if (!row || typeof row !== 'object') return null
+		const name = typeof row.name === 'string' ? row.name : ''
+		if (!name || name.length > 200 || name === '.' || name === '..' || /[\u0000-\u001f\u007f/\\]/.test(name)) return null
+		const dir = row.dir === true
+		const size = !dir && Number.isSafeInteger(row.size) && row.size >= 0 ? row.size : 0
+		const mtime = Number.isSafeInteger(row.mtime) ? row.mtime : null
+		return {name, size, mtime, dir}
+	}
+	async function requireFilesAgent(id) {
+		await loaded
+		const a = find(String(id ?? ''))
+		if (!a) throw new RpcError('NOT_FOUND', 'That computer isn’t in your swarm')
+		const l = live.get(a.id)
+		if (!l) throw new RpcError('PRECONDITION_FAILED', 'That computer is offline right now')
+		if (!may(a, 'files')) throw new RpcError('FORBIDDEN', `Add ${a.name} again with Files switched on.`)
+		return {a, l}
+	}
+	// One file transfer on the connector socket. The promise only ever resolves; the caller throws
+	// session.failure, so a drop before the first await cannot become an unhandled rejection.
+	function openFileSession(l, open, writeChunk) {
+		const ch = ++l.nextCh
+		let dead = false
+		let failure = null
+		let result = null
+		let meta = null
+		let got = 0
+		let unacked = 0
+		let committed = false
+		let chain = Promise.resolve()
+		const ackWaiters = []
+		let markReady = () => {}
+		const ready = new Promise((resolve) => {
+			markReady = resolve
+		})
+		let settle = () => {}
+		const settled = new Promise((resolve) => {
+			settle = resolve
+		})
+		const timer = setTimeout(() => finish(new RpcError('BAD_GATEWAY', 'That computer didn’t answer in time')), FILE_MS)
+		timer.unref?.()
+		const wakeAcks = () => {
+			for (const wait of ackWaiters.splice(0)) wait()
+		}
+		function sendJson(obj) {
+			if (l.ws.readyState !== l.ws.OPEN) return false
+			try {
+				l.ws.send(JSON.stringify(obj))
+				return true
+			} catch {
+				return false
+			}
+		}
+		function finish(err, value) {
+			if (dead) return
+			dead = true
+			clearTimeout(timer)
+			l.channels.delete(ch)
+			failure = err ?? null
+			result = value ?? null
+			markReady()
+			wakeAcks()
+			if (err) sendJson({op: 'close', ch})
+			settle()
+		}
+		async function applyBinary(buf) {
+			if (dead) return
+			if (open.mode !== 'read') return finish(new RpcError('BAD_GATEWAY', 'That computer sent file bytes it wasn’t asked for'))
+			if (!meta || !Number.isSafeInteger(meta.size) || meta.size < 0) return finish(new RpcError('BAD_GATEWAY', 'The file started before its size arrived'))
+			if (got + buf.length > meta.size) return finish(new RpcError('BAD_GATEWAY', 'That file is larger than it said'))
+			got += buf.length
+			await writeChunk(buf)
+			if (dead) return
+			sendJson({op: 'ack', ch})
+		}
+		function applyClosed(msg) {
+			if (dead) return
+			const reason = clip(msg.reason, 200)
+			if (msg.code === 1011) return finish(new RpcError('BAD_GATEWAY', reason || 'That computer couldn’t transfer the file'))
+			if (open.mode === 'read') {
+				if (!meta || !Number.isSafeInteger(meta.size) || got !== meta.size) return finish(new RpcError('BAD_GATEWAY', reason || 'The file changed while it was being read'))
+				return finish(null, {size: meta.size, mtime: Number.isSafeInteger(meta.mtime) ? meta.mtime : null})
+			}
+			if (!committed) return finish(new RpcError('BAD_GATEWAY', reason || 'That computer closed the file early'))
+			return finish(null, {size: open.size})
+		}
+		const channel = {
+			kind: 'file',
+			end: (err) => finish(err instanceof RpcError ? err : new RpcError('BAD_GATEWAY', 'The computer went offline')),
+			onBinary(buf) {
+				chain = chain.then(() => applyBinary(buf)).catch((e) => finish(e instanceof RpcError ? e : new RpcError('BAD_GATEWAY', 'Couldn’t transfer that file')))
+			},
+			onControl(msg) {
+				if (msg.op === 'file') {
+					meta = msg
+					markReady()
+					return
+				}
+				if (msg.op === 'ack') {
+					unacked = Math.max(0, unacked - 1)
+					wakeAcks()
+					return
+				}
+				if (msg.op === 'closed') chain = chain.then(() => applyClosed(msg)).catch((e) => finish(e instanceof RpcError ? e : new RpcError('BAD_GATEWAY', 'Couldn’t transfer that file')))
+			},
+		}
+		l.channels.set(ch, channel)
+		if (!sendJson({op: 'open', ch, ...open})) finish(new RpcError('BAD_GATEWAY', 'The computer went offline'))
+		return {
+			get failure() {
+				return failure
+			},
+			get result() {
+				return result
+			},
+			get meta() {
+				return meta
+			},
+			ready,
+			settled,
+			end: channel.end,
+			async waitWindow() {
+				while (unacked >= FILE_WINDOW && !dead) await new Promise((resolve) => ackWaiters.push(resolve))
+			},
+			async waitDrained() {
+				while (unacked > 0 && !dead) await new Promise((resolve) => ackWaiters.push(resolve))
+			},
+			noteSent() {
+				unacked += 1
+			},
+			sendFrame(payload) {
+				if (l.ws.readyState !== l.ws.OPEN) return false
+				const frame = Buffer.alloc(4 + payload.length)
+				frame.writeUInt32BE(ch, 0)
+				payload.copy(frame, 4)
+				try {
+					l.ws.send(frame)
+					return true
+				} catch {
+					return false
+				}
+			},
+			sendJson,
+			commit() {
+				committed = true
+				return sendJson({op: 'commit', ch})
+			},
+		}
+	}
+	async function statFile(id, path) {
+		const rel = safeHomePath(path)
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		const {a} = await requireFilesAgent(id)
+		const row = cleanFileRow(await call(a.id, 'files-stat', {path: rel}))
+		if (!row) throw new RpcError('BAD_GATEWAY', 'That computer’s answer wasn’t a file')
+		return row
+	}
+	async function listFiles(id, path) {
+		const rel = safeHomePath(path ?? '', {empty: true})
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		const {a} = await requireFilesAgent(id)
+		const data = await call(a.id, 'files-list', {path: rel})
+		const entries = Array.isArray(data?.entries) ? data.entries.slice(0, 200).map(cleanFileRow).filter(Boolean) : []
+		return {path: rel, entries, truncated: data?.truncated === true}
+	}
+	async function pullFile(id, path, writeChunk) {
+		const rel = safeHomePath(path)
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		if (typeof writeChunk !== 'function') throw new RpcError('BAD_REQUEST', 'Nowhere to write that file')
+		const {l} = await requireFilesAgent(id)
+		const session = openFileSession(l, {kind: 'file', mode: 'read', path: rel}, writeChunk)
+		await session.ready
+		if (session.failure) throw session.failure
+		const size = session.meta?.size
+		if (!Number.isSafeInteger(size) || size < 0) {
+			session.end(new RpcError('BAD_GATEWAY', 'That computer didn’t say how big the file is'))
+			throw session.failure
+		}
+		await session.settled
+		if (session.failure) throw session.failure
+		return session.result
+	}
+	async function pushFile(id, path, size, readChunk) {
+		if (!Number.isSafeInteger(size) || size < 0) throw new RpcError('BAD_REQUEST', 'That file’s size isn’t usable')
+		const rel = safeHomePath(path)
+		if (rel == null) throw new RpcError('BAD_REQUEST', 'Use a path inside that computer’s home folder')
+		if (typeof readChunk !== 'function') throw new RpcError('BAD_REQUEST', 'Nowhere to read that file')
+		const {l} = await requireFilesAgent(id)
+		const session = openFileSession(l, {kind: 'file', mode: 'write', path: rel, size}, async () => {})
+		await session.ready
+		if (session.failure) throw session.failure
+		if (session.meta?.ready !== true) {
+			session.end(new RpcError('BAD_GATEWAY', 'That computer didn’t open the file'))
+			throw session.failure
+		}
+		let sent = 0
+		while (sent < size) {
+			if (session.failure) throw session.failure
+			await session.waitWindow()
+			if (session.failure) throw session.failure
+			let chunk
+			try {
+				chunk = await readChunk(Math.min(FILE_CHUNK, size - sent))
+			} catch {
+				session.end(new RpcError('BAD_GATEWAY', 'Couldn’t read that file'))
+				throw session.failure
+			}
+			const payload = Buffer.isBuffer(chunk) ? chunk : chunk instanceof Uint8Array ? Buffer.from(chunk) : null
+			if (!payload || payload.length === 0 || payload.length > Math.min(FILE_CHUNK, size - sent)) {
+				session.end(new RpcError('BAD_GATEWAY', 'The file arrived short'))
+				throw session.failure
+			}
+			session.noteSent()
+			if (!session.sendFrame(payload)) {
+				session.end(new RpcError('BAD_GATEWAY', 'The computer went offline'))
+				throw session.failure
+			}
+			sent += payload.length
+		}
+		await session.waitDrained()
+		if (session.failure) throw session.failure
+		if (!session.commit()) {
+			session.end(new RpcError('BAD_GATEWAY', 'The computer went offline'))
+			throw session.failure
+		}
+		await session.settled
+		if (session.failure) throw session.failure
+		return session.result
 	}
 
 	// For backups.mjs: the computers that may back up, and calls to their connector's backup side.
@@ -513,7 +786,10 @@ export function createConnector({dataDir, tlsDir, plugins = null, source = async
 		},
 	}
 
+	const files = {stat: statFile, list: listFiles, pull: pullFile, push: pushFile}
+
 	return {
+		files,
 		backup,
 		procedures: {
 			'swarm.list': {kind: 'query', run: list},

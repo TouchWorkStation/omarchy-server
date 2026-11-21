@@ -304,10 +304,17 @@ export const ALLOWED = {
 	'hardware.raid.replaceDevice': 'mutation',
 	'hardware.raid.transitionToFailsafeRaidz': 'mutation',
 	'hardware.raid.scrub': 'mutation',
+	'clips.list': 'query',
+	'clips.addText': 'mutation',
+	'clips.addStats': 'mutation',
+	'clips.addFile': 'mutation',
+	'clips.remove': 'mutation',
+	'clips.paste': 'mutation',
+	'clips.fleetList': 'query',
 }
 
 // Long-running mutations: omarchyd answers when the operation finishes.
-export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve'])
+export const SLOW = new Set(['unraid.connect', 'unraid.scan', 'backups.configure', 'backups.shares', 'backups.restoreApp', 'backups.connectExisting', 'backups.snapshots', 'backups.computerSnapshots', 'backups.setComputer', 'backups.computerFolders', 'storage.growSystem', 'system.replaceCertificate', 'system.desktopSignIn', 'system.desktopShare', 'omarchy.removeTheme', 'storage.disks', 'storage.createPool', 'storage.addToPool', 'storage.importPool', 'storage.forgetPool', 'files.addShare', 'files.removeShare', 'files.copy', 'files.unarchive', 'files.getThumbnail', 'files.move', 'files.delete', 'files.emptyTrash', 'files.search', 'files.list', 'apps.install', 'apps.update', 'apps.uninstall', 'appStore.registry', 'appStore.app', 'appStore.addRepository', 'appStore.refresh', 'omarchy.plugins', 'omarchy.installPlugin', 'files.updateShare', 'files.setSharePassword', 'apps.logs', 'swarm.action', 'system.update', 'system.logs', 'machines.create', 'machines.uninstall', 'machines.snapshot', 'machines.revertSnapshot', 'machines.deleteSnapshot', 'machines.resizeDisk', 'machines.addDisk', 'machines.restart', 'machines.updateCloudInit', 'machines.details', 'machines.node', 'wifi.connect', 'wifi.networks', 'system.setHostname', 'hardware.internalStorage.getDevices', 'hardware.raid.addDevice', 'hardware.raid.addMirror', 'hardware.raid.addAccelerator', 'hardware.raid.replaceDevice', 'hardware.raid.transitionToFailsafeRaidz', 'storage.unmount', 'storage.mount', 'storage.format', 'swarm.storage.disks', 'swarm.storage.unmount', 'swarm.storage.mount', 'swarm.storage.format', 'swarm.storage.pools', 'swarm.storage.importable', 'swarm.storage.createPool', 'swarm.storage.addToPool', 'swarm.storage.importPool', 'swarm.storage.forgetPool', 'swarm.storage.scrub', 'assistant.approve', 'clips.paste', 'clips.addFile', 'clips.fleetList'])
 export const timeoutFor = (path) => (SLOW.has(path) ? 30 * 60 * 1000 : 20_000)
 
 // An IPv6 address in a URL needs brackets; req.hostname and URL.hostname may already have them.
@@ -1217,6 +1224,113 @@ export function createApp({store, staticDir, fetchImpl = fetch, secureCookies = 
 				return res.status(upstream.status).json({error: {code: 'UPLOAD_FAILED', message}})
 			}
 			res.json({ok: true, path: body.path ?? path})
+		} catch (error) {
+			sendError(res, error)
+		}
+	})
+
+	// Clip book bytes. Text and screenshots are larger than the JSON body limit, so they travel as
+	// a raw body the same way an upload does. A 401 from omarchyd means the browser session is stale:
+	// answer 409 so the page does not treat it as a sign-out.
+	function clipFailure(status, body, fallback) {
+		const message = typeof body?.error?.message === 'string' ? body.error.message : fallback
+		const code = typeof body?.error?.data?.code === 'string' ? body.error.data.code : 'ERROR'
+		return {status, message, code}
+	}
+	const clipPost = (kind) => async (req, res) => {
+		try {
+			if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
+			const auth = await browserAuth(req.sid)
+			const url = new URL(`${getClient().baseUrl}/api/clips/${kind}`)
+			if (kind === 'text') {
+				url.searchParams.set('where', req.query.where === 'desktop' ? 'desktop' : 'terminal')
+				if (req.query.cut === '1') url.searchParams.set('cut', '1')
+			}
+			if (typeof req.query.label === 'string') url.searchParams.set('label', req.query.label.slice(0, 80))
+			const {Readable} = await import('node:stream')
+			const upstream = await fetchImpl(url, {
+				method: 'POST',
+				headers: {
+					authorization: `Bearer ${auth.token}`,
+					cookie: auth.cookie,
+					'content-type': 'application/octet-stream',
+					...(req.headers['content-length'] ? {'content-length': req.headers['content-length']} : {}),
+				},
+				body: Readable.toWeb(req),
+				duplex: 'half',
+				signal: AbortSignal.timeout(12 * 60 * 60 * 1000),
+			})
+			const text = await upstream.text()
+			let body = {}
+			try {
+				body = JSON.parse(text)
+			} catch {
+				body = {}
+			}
+			if (upstream.status === 401) {
+				await store.updateSession(req.sid, {console: null})
+				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
+			}
+			if (!upstream.ok) {
+				const fail = clipFailure(upstream.status, body, 'Couldn’t save that clip')
+				return res.status(fail.status).json({error: {code: fail.code, message: fail.message}})
+			}
+			res.json(body)
+		} catch (error) {
+			sendError(res, error)
+		}
+	}
+	api.post('/clips/text', clipPost('text'))
+	api.post('/clips/image', clipPost('image'))
+	api.get('/clips/item', async (req, res) => {
+		try {
+			if (!store.getSession(req.sid)) return res.status(401).json({error: {code: 'UNAUTHORIZED', message: 'Signed out'}})
+			const id = req.query.id
+			if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) return res.status(400).json({error: {code: 'BAD_REQUEST', message: 'That clip isn’t in the book'}})
+			const auth = await browserAuth(req.sid)
+			const token = await fileUrlToken(req.sid)
+			const url = new URL(`${getClient().baseUrl}/api/clips/item`)
+			url.searchParams.set('token', token)
+			url.searchParams.set('id', id)
+			const upstream = await fetchImpl(url, {
+				headers: {cookie: auth.cookie},
+				signal: AbortSignal.timeout(6 * 60 * 60 * 1000),
+			})
+			if (upstream.status === 401) {
+				forgetUrlToken(req.sid)
+				await upstream.body?.cancel?.().catch(() => {})
+				await store.updateSession(req.sid, {console: null})
+				return res.status(409).json({error: {code: 'CONSOLE_SESSION_REQUIRED', message: 'Sign out and back in to use this'}})
+			}
+			if (!upstream.ok) {
+				const text = await upstream.text()
+				let body = {}
+				try {
+					body = JSON.parse(text)
+				} catch {
+					body = {}
+				}
+				const fail = clipFailure(upstream.status, body, 'Couldn’t open that clip')
+				return res.status(fail.status).json({error: {code: fail.code, message: fail.message}})
+			}
+			res.status(upstream.status)
+			for (const h of ['content-type', 'content-length', 'content-disposition']) {
+				const v = upstream.headers.get(h)
+				if (v) res.setHeader(h, v)
+			}
+			res.setHeader('Cache-Control', 'private, no-store')
+			res.setHeader('X-Content-Type-Options', 'nosniff')
+			// HEAD must not wait for the bytes. omarchyd serves this route as GET, so the body is cancelled.
+			if (req.method === 'HEAD') {
+				await upstream.body?.cancel?.().catch(() => {})
+				return res.end()
+			}
+			if (!upstream.body) return res.end()
+			const {Readable} = await import('node:stream')
+			const body = Readable.fromWeb(upstream.body)
+			req.on('close', () => body.destroy())
+			body.on('error', () => res.destroy())
+			body.pipe(res)
 		} catch (error) {
 			sendError(res, error)
 		}

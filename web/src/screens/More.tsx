@@ -345,7 +345,7 @@ export function Appearance({prefs, setPrefs, wallpaper}: {prefs: Prefs; setPrefs
 	)
 }
 
-export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; onSettings: () => void}) {
+export function More({prefs, setPrefs, onSignedOut, onSettings, onClips}: {prefs: Prefs; setPrefs: (p: Prefs) => void; onSignedOut: () => void; onSettings: () => void; onClips?: () => void}) {
 	const boot = useBootstrap()
 	const user = useUser()
 	const confirm = useConfirm()
@@ -413,6 +413,7 @@ export function More({prefs, setPrefs, onSignedOut, onSettings}: {prefs: Prefs; 
 					]}
 				/>
 				<div className="glass group" style={{'--inset': '62px'} as CSSProperties}>
+					{onClips && <Row icon="clipboard" color="var(--teal)" label="Clip book" onClick={onClips} />}
 					<Row icon="settings" color="#8e8e93" label="Settings" onClick={onSettings} />
 					<Row icon="open" color="var(--blue)" label="Open Omarchy Server" href={boot.server?.url} />
 					<Row icon="restart" color="var(--peach)" label="Restart server" onClick={() => power('restart')} />

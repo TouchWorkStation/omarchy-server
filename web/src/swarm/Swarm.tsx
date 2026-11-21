@@ -17,7 +17,7 @@ import {Ring, Row, Sheet, SheetHeader, StatChip, StatusPill, Switch, bytes, dura
 const Console = lazy(() => import('../Console').then((m) => ({default: m.Console})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
 
-type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean}
+type Abilities = {terminal: boolean; desktop: boolean; manage: boolean; storage: boolean; backup: boolean; files: boolean}
 type Ability = keyof Abilities
 export type Agent = {
 	id: string
@@ -65,6 +65,7 @@ const ABILITY: Record<Ability, {label: string; icon: IconName; what: string}> = 
 	manage: {label: 'Manage', icon: 'settings', what: 'Omarchy plugins (verified only) and themes, updates, restart'},
 	storage: {label: 'Storage', icon: 'disk', what: 'See its drives, format extra disks, and manage pools on that computer'},
 	backup: {label: 'Backups', icon: 'history', what: 'Back up folders you choose to this server, on a schedule (Settings › Backups). It can add backups, never delete them.'},
+	files: {label: 'Files', icon: 'folder', what: 'Read and write the home folder of the person who installed the connector. The connector’s own keys stay off limits. A computer that’s already paired has to be added again with this switched on.'},
 }
 const may = (a: Agent, k: Ability) => a.allowed[k] && a.on[k]
 const pct = (u?: {total: number; used: number}) => (u && u.total ? Math.round((100 * u.used) / u.total) : null)
@@ -501,7 +502,7 @@ function AgentPlugins({a, onClose}: {a: Agent; onClose: () => void}) {
 function AddComputer({before, onClose, onJoined}: {before: string[]; onClose: () => void; onJoined: (id: string) => void}) {
 	const [beforeIds] = useState(before)
 	// Storage can format disks there, so it's a choice you make; backups are on by default.
-	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true})
+	const [allow, setAllow] = useState<Abilities>({terminal: true, desktop: true, manage: true, storage: false, backup: true, files: false})
 	const [pairing, setPairing] = useState<Pairing | null>(null)
 	const [host, setHost] = useState('')
 	const [copied, setCopied] = useState('')

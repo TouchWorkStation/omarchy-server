@@ -15,6 +15,9 @@ server can't widen):
   backup    back up the folders in your home folder that you choose on the server, on its schedule,
             encrypted (restic), to the server. It can only add backups there, never delete them.
             Restores go into a new ~/Restored folder, never over your files.
+  files     read and write files in your home folder, for the clip book. Off unless you allow it
+            when pairing. It does not follow a path out of your home folder, and it will not read
+            or write this connector’s own configuration or data (its key and certificate).
 
 Standard library only, so it runs on any distribution with Python 3.8+.
 """
@@ -34,6 +37,7 @@ import shutil
 import signal
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -45,6 +49,11 @@ import urllib.parse
 import urllib.request
 
 VERSION = "1"
+ABILITY_NAMES = ("terminal", "desktop", "manage", "storage", "backup", "files")
+# A file channel sends this much, then waits until the server has that many chunks. The socket
+# read loop stays free to take acks, so a large file cannot stall the terminal or the desktop.
+FILE_CHUNK = 64 * 1024
+FILE_WINDOW = 4
 CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "omarchy-connector")
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 CA_FILE = os.path.join(CONFIG_DIR, "server-ca.crt")
@@ -1176,6 +1185,376 @@ class Screen(Channel):
 
 
 # ---------------------------------------------------------------------------------------------
+# Files: a channel for the clip book. Paths stay inside the home folder. The connector's own
+# configuration and data (its key and the server certificate) are not part of that folder here,
+# even though a terminal could still read them. A symlink is followed only when the target stays
+# inside the home folder, and the opened file is checked again so a swapped link cannot leave.
+_PART = re.compile(r"^[^\x00-\x1f\\/]{1,200}$")
+
+
+def _roots(home, config, data):
+    return (
+        os.path.realpath(home or os.path.expanduser("~")),
+        os.path.realpath(config or CONFIG_DIR),
+        os.path.realpath(data or DATA_DIR),
+    )
+
+
+def _under(path, root):
+    path = os.path.realpath(path)
+    return path == root or path.startswith(root + os.sep)
+
+
+def _blocked(path, config, data):
+    return _under(path, config) or _under(path, data)
+
+
+def split_home_path(rel, allow_empty=False):
+    """The relative path the server asked for, or a RuntimeError the person can read."""
+    rel = str("" if rel is None else rel).strip()
+    if rel.startswith("/") or rel.startswith("~") or "\\" in rel or "\x00" in rel:
+        raise RuntimeError("Use a path inside your home folder")
+    if rel == "":
+        if allow_empty:
+            return []
+        raise RuntimeError("Name the file")
+    parts = [p for p in rel.split("/") if p]
+    if not parts:
+        raise RuntimeError("Name the file")
+    for part in parts:
+        if part in (".", "..") or not _PART.match(part):
+            raise RuntimeError(f"“{part[:60]}” isn’t a path in your home folder")
+    if len("/".join(parts)) > 1024:
+        raise RuntimeError("That path is too long")
+    return parts
+
+
+def _fd_real(fd):
+    return os.path.realpath(f"/proc/self/fd/{fd}")
+
+
+def resolve_home(rel, want, home=None, config=None, data=None):
+    """Open a file or directory under home. want is 'file', 'dir', or 'any'. Caller closes the fd."""
+    home, config, data = _roots(home, config, data)
+    parts = split_home_path(rel, allow_empty=(want == "dir" and str(rel or "").strip() == ""))
+    cur = home
+    try:
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            nxt = os.path.join(cur, part)
+            try:
+                lst = os.lstat(nxt)
+            except OSError as e:
+                raise RuntimeError("That file isn’t in your home folder") from e
+            if stat.S_ISLNK(lst.st_mode):
+                try:
+                    target = os.path.realpath(nxt)
+                except OSError as e:
+                    raise RuntimeError(f"“{part[:60]}” leads outside your home folder") from e
+                if not _under(target, home) or _blocked(target, config, data):
+                    raise RuntimeError(f"“{part[:60]}” leads outside your home folder")
+                cur = target
+                if last:
+                    break
+                if not os.path.isdir(cur):
+                    raise RuntimeError(f"“{part[:60]}” isn’t a folder")
+                continue
+            cur = nxt
+            if last:
+                break
+            if not stat.S_ISDIR(lst.st_mode):
+                raise RuntimeError(f"“{part[:60]}” isn’t a folder")
+        if not _under(cur, home) or _blocked(cur, config, data):
+            raise RuntimeError("That path isn’t in your home folder")
+        # O_NONBLOCK so a fifo swapped in after the stat cannot stall this thread.
+        if want == "dir" or (want == "any" and os.path.isdir(cur) and not os.path.islink(cur)):
+            fd = os.open(cur, os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK)
+        else:
+            try:
+                kind = os.lstat(cur)
+            except OSError as e:
+                raise RuntimeError("That file isn’t in your home folder") from e
+            if not stat.S_ISREG(kind.st_mode):
+                raise RuntimeError("That isn’t a file")
+            fd = os.open(cur, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            real = _fd_real(fd)
+            st = os.fstat(fd)
+            if not _under(real, home) or _blocked(real, config, data):
+                raise RuntimeError("That path isn’t in your home folder")
+            if want == "file" and not stat.S_ISREG(st.st_mode):
+                raise RuntimeError("That isn’t a file")
+            if want == "dir" and not stat.S_ISDIR(st.st_mode):
+                raise RuntimeError("That isn’t a folder")
+            if want == "any" and not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+                raise RuntimeError("That isn’t a file")
+        except Exception:
+            os.close(fd)
+            raise
+        return fd, st, real, (parts[-1] if parts else "")
+    except RuntimeError:
+        raise
+    except OSError as e:
+        raise RuntimeError("That file isn’t in your home folder") from e
+
+
+def files_stat(args, home=None, config=None, data=None):
+    rel = (args or {}).get("path")
+    fd, st, _real, name = resolve_home(rel, "any", home, config, data)
+    os.close(fd)
+    return {"name": name, "size": st.st_size if stat.S_ISREG(st.st_mode) else 0, "mtime": int(st.st_mtime * 1000), "dir": stat.S_ISDIR(st.st_mode)}
+
+
+def files_list(args, home=None, config=None, data=None):
+    rel = (args or {}).get("path") or ""
+    home_r, config_r, data_r = _roots(home, config, data)
+    fd, _st, real, _name = resolve_home(rel, "dir", home, config, data)
+    os.close(fd)
+    entries, truncated = [], False
+    try:
+        names = sorted(os.listdir(real), key=str.lower)
+    except OSError as e:
+        raise RuntimeError("That folder isn’t in your home folder") from e
+    for name in names:
+        if len(entries) >= 200:
+            truncated = True
+            break
+        if not _PART.match(name):
+            continue
+        full = os.path.join(real, name)
+        try:
+            target = os.path.realpath(full)
+            s = os.stat(full)
+        except OSError:
+            continue
+        if not _under(target, home_r) or _blocked(target, config_r, data_r):
+            continue
+        entries.append({"name": name, "size": s.st_size if stat.S_ISREG(s.st_mode) else 0, "mtime": int(s.st_mtime * 1000), "dir": stat.S_ISDIR(s.st_mode)})
+    shown = rel.strip().strip("/")
+    return {"path": shown, "entries": entries, "truncated": truncated}
+
+
+def prepare_write(rel, size, home=None, config=None, data=None):
+    """A temporary file in the destination folder. Nothing is replaced: the name must be free."""
+    if type(size) is not int or size < 0 or size > 2**62:
+        raise RuntimeError("That file’s size isn’t usable")
+    parts = split_home_path(rel)
+    parent, name = "/".join(parts[:-1]), parts[-1]
+    dirfd, _st, _real, _name = resolve_home(parent, "dir", home, config, data)
+    tmp = ".incoming." + base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+    fd = None
+    try:
+        try:
+            os.lstat(name, dir_fd=dirfd)
+        except FileNotFoundError:
+            pass
+        else:
+            raise RuntimeError("A file with that name is already there")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd)
+        os.fchmod(fd, 0o600)
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp, dir_fd=dirfd)
+            except OSError:
+                pass
+        try:
+            os.close(dirfd)
+        except OSError:
+            pass
+        raise
+    return {"dirfd": dirfd, "fd": fd, "tmp": tmp, "name": name, "size": size}
+
+
+def commit_write(prep):
+    os.fsync(prep["fd"])
+    os.close(prep["fd"])
+    prep["fd"] = None
+    try:
+        os.link(prep["tmp"], prep["name"], src_dir_fd=prep["dirfd"], dst_dir_fd=prep["dirfd"])
+    except OSError as e:
+        abort_write(prep)
+        if e.errno == 17:  # EEXIST
+            raise RuntimeError("A file with that name is already there") from e
+        raise RuntimeError("Couldn’t save that file") from e
+    os.unlink(prep["tmp"], dir_fd=prep["dirfd"])
+    os.fsync(prep["dirfd"])
+    os.close(prep["dirfd"])
+    prep["dirfd"] = None
+
+
+def abort_write(prep):
+    if not prep:
+        return
+    fd, prep["fd"] = prep.get("fd"), None
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    dirfd = prep.get("dirfd")
+    if dirfd is not None and prep.get("tmp"):
+        try:
+            os.unlink(prep["tmp"], dir_fd=dirfd)
+        except OSError:
+            pass
+    if dirfd is not None:
+        prep["dirfd"] = None
+        try:
+            os.close(dirfd)
+        except OSError:
+            pass
+
+
+class FileRead(Channel):
+    """Send a home-folder file in chunks, pausing until the server has caught up."""
+
+    def __init__(self, conn, ch, rel, home=None, config=None, data=None):
+        super().__init__(conn, ch)
+        fd, st, _real, _name = resolve_home(rel, "file", home, config, data)
+        self.fd, self.left, self.pending = fd, st.st_size, 0
+        self.cv = threading.Condition()
+        self.conn.send({"op": "file", "ch": ch, "size": st.st_size, "mtime": int(st.st_mtime * 1000)})
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def write(self, _data):
+        return
+
+    def ack(self, n=1):
+        with self.cv:
+            try:
+                n = int(n or 1)
+            except (TypeError, ValueError):
+                n = 1
+            self.pending = max(0, self.pending - max(1, n))
+            self.cv.notify_all()
+
+    def pump(self):
+        try:
+            while not self.closed and self.left:
+                timed_out = False
+                with self.cv:
+                    waited = 0
+                    while self.pending >= FILE_WINDOW and not self.closed:
+                        if not self.cv.wait(timeout=5):
+                            waited += 5
+                            if waited >= 60:
+                                timed_out = True
+                                break
+                        else:
+                            waited = 0
+                    if self.closed:
+                        return
+                    if not timed_out:
+                        self.pending += 1
+                if timed_out:
+                    self.ended("The server stopped reading", 1011)
+                    return
+                try:
+                    data = os.read(self.fd, min(FILE_CHUNK, self.left))
+                except OSError:
+                    self.ended("Couldn’t read that file", 1011)
+                    return
+                if not data:
+                    break
+                self.left -= len(data)
+                self.out(data)
+            if not self.closed:
+                self.ended("" if self.left == 0 else "The file changed while it was being read", 1000 if self.left == 0 else 1011)
+        finally:
+            if not self.closed:
+                self.ended("Couldn’t read that file", 1011)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        with self.cv:
+            self.cv.notify_all()
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+class FileWrite(Channel):
+    """Receive a file into a temporary name, then link it into place. An existing file is left alone."""
+
+    def __init__(self, conn, ch, rel, size, home=None, config=None, data=None):
+        super().__init__(conn, ch)
+        self.prep = prepare_write(rel, size if type(size) is int else -1, home, config, data)
+        self.got, self.expect, self.committing = 0, size, False
+        self.lock = threading.Lock()
+        try:
+            self.conn.send({"op": "file", "ch": ch, "ready": True})
+        except Exception:
+            abort_write(self.prep)
+            self.prep = None
+            raise
+
+    def write(self, data):
+        if not data:
+            return
+        with self.lock:
+            if self.closed or self.committing or not self.prep:
+                return
+            if len(data) > 1024 * 1024 or self.got + len(data) > self.expect:
+                self._fail("That file is larger than it said")
+                return
+            try:
+                view = memoryview(data)
+                while len(view):
+                    wrote = os.write(self.prep["fd"], view)
+                    if wrote <= 0:
+                        raise OSError("short write")
+                    view = view[wrote:]
+            except OSError:
+                self._fail("Couldn’t write that file")
+                return
+            self.got += len(data)
+        self.conn.send({"op": "ack", "ch": self.ch})
+
+    def commit(self):
+        threading.Thread(target=self._commit, daemon=True).start()
+
+    def _commit(self):
+        with self.lock:
+            if self.closed or self.committing or not self.prep:
+                return
+            self.committing = True
+            if self.got != self.expect:
+                self._fail("The file arrived short")
+                return
+            prep, self.prep = self.prep, None
+        try:
+            commit_write(prep)
+        except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
+            self.conn.send({"op": "closed", "ch": self.ch, "code": 1011, "reason": str(e)[:200]})
+            self.closed = True
+            return
+        self.ended("")
+
+    def _fail(self, reason):
+        # Caller holds self.lock.
+        prep, self.prep = self.prep, None
+        self.closed = True
+        abort_write(prep)
+        self.conn.send({"op": "closed", "ch": self.ch, "code": 1011, "reason": reason[:200]})
+
+    def close(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            prep, self.prep = self.prep, None
+        abort_write(prep)
+
+
+# ---------------------------------------------------------------------------------------------
 # Manage: the only things the server can ask for (there is no "run this command").
 PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 REPO = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -1717,6 +2096,7 @@ def backup_restore(conn, call_id, args, cfg):
     return {"folder": target}
 
 
+FILES_ACTIONS = {"files-stat": lambda args: files_stat(args), "files-list": lambda args: files_list(args)}
 BACKUP_ACTIONS = {"backup-folders": lambda conn, cid, args, cfg: backup_folders(args), "backup-run": backup_run, "backup-restore": backup_restore}
 
 
@@ -1819,6 +2199,20 @@ class Connection:
         if op == "open":
             ch = int(msg.get("ch", 0))
             kind = msg.get("kind")
+            if kind == "file":
+                if not self.allowed.get("files"):
+                    return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": "This computer doesn’t allow files"})
+                try:
+                    mode = msg.get("mode")
+                    if mode == "read":
+                        self.channels[ch] = FileRead(self, ch, msg.get("path"))
+                    elif mode == "write":
+                        self.channels[ch] = FileWrite(self, ch, msg.get("path"), msg.get("size"))
+                    else:
+                        raise RuntimeError("Say whether to read or write the file")
+                except Exception as e:  # noqa: BLE001 - said back to the person, in plain words
+                    self.send({"op": "closed", "ch": ch, "code": 1011, "reason": str(e)[:200]})
+                return
             ability = "terminal" if kind == "pty" else "desktop" if kind == "vnc" else None
             if not ability or not self.allowed.get(ability):
                 return self.send({"op": "closed", "ch": ch, "code": 1011, "reason": f"This computer doesn’t allow the {ability or 'that'}"})
@@ -1836,6 +2230,14 @@ class Connection:
             ch = self.channels.get(int(msg.get("ch", 0)))
             if isinstance(ch, Shell):
                 ch.resize(msg.get("cols"), msg.get("rows"))
+        elif op == "ack":
+            ch = self.channels.get(int(msg.get("ch", 0)))
+            if isinstance(ch, FileRead):
+                ch.ack(msg.get("n"))
+        elif op == "commit":
+            ch = self.channels.get(int(msg.get("ch", 0)))
+            if isinstance(ch, FileWrite):
+                ch.commit()
         elif op == "close":
             ch_id = int(msg.get("ch", 0))
             lock, tokens = self._ch_state()
@@ -1861,6 +2263,11 @@ class Connection:
     def call(self, msg):
         name = msg.get("name")
         try:
+            if name in FILES_ACTIONS:
+                if not self.allowed.get("files"):
+                    raise RuntimeError("This computer doesn’t allow files")
+                data = FILES_ACTIONS[name](msg.get("args") or {})
+                return self.send({"op": "result", "id": msg.get("id"), "ok": True, "data": data})
             if name in BACKUP_ACTIONS:
                 if not self.allowed.get("backup"):
                     raise RuntimeError("This computer doesn’t allow backups")
@@ -1953,7 +2360,7 @@ def main(argv=None):
             print("Use: agent.py enroll SERVER TOKEN [ABILITIES]", file=sys.stderr)
             raise SystemExit(2)
         server, token = args[1], args[2]
-        abilities = {k: k in args[3].split(",") for k in ("terminal", "desktop", "manage", "storage", "backup")} if len(args) > 3 else {}
+        abilities = {k: k in args[3].split(",") for k in ABILITY_NAMES} if len(args) > 3 else {}
         r = enroll(server, token, abilities)
         os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
         cfg = {"server": server, "id": r["id"], "key": r["key"], "abilities": abilities}

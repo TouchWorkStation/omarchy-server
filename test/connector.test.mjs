@@ -150,11 +150,11 @@ describe('local swarm', {skip: !hasPython && 'python3 is needed'}, () => {
 		assert.equal(name, os.hostname())
 		const cfg = JSON.parse(await readFile(join(agentHome, '.config/omarchy-connector/config.json'), 'utf8'))
 		assert.equal((await stat(join(agentHome, '.config/omarchy-connector/config.json'))).mode & 0o777, 0o600)
-		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true, storage: false, backup: false})
+		assert.deepEqual(cfg.abilities, {terminal: true, desktop: false, manage: true, storage: false, backup: false, files: false})
 		// The same code again: refused.
 		await assert.rejects(runAgent(['enroll', server(), p.token, 'terminal']), /isn’t valid any more|already used|expired/)
 		const [a] = await q('swarm.list')
-		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true, storage: false, backup: false})
+		assert.deepEqual(a.allowed, {terminal: true, desktop: false, manage: true, storage: false, backup: false, files: false})
 		assert.equal(a.online, false)
 	})
 

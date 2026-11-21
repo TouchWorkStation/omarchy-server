@@ -14,6 +14,7 @@ import {createPortal} from 'react-dom'
 import * as RFBModule from '@novnc/novnc/lib/rfb.js'
 
 import {mutate, type Machine} from './api'
+import {clipImage, clipText} from './clips'
 import {consoleShouldTakeFocus} from './consoleFocus'
 import {BTN, bindConsoleWheel, consoleDisconnectAction, handleConsoleWheel, mouseButtonFromEvent, pasteKeySequence, pointToFb, readConsoleMetrics, resolveSuperKey, screenshotFilename, touchReleaseAction, type Pt, type SuperKey} from './consoleHelpers'
 import {Icon} from './icons'
@@ -183,6 +184,7 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 				if (!text) return
 				remoteClip.current = text
 				if (window.isSecureContext && document.hasFocus()) navigator.clipboard?.writeText(text).catch(() => {})
+				clipText(text, 'desktop').catch((err: Error) => toast(err.message, true))
 			})
 			r.addEventListener('connect', () => {
 				connects += 1
@@ -355,6 +357,19 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 		remoteClip.current = clean
 		r.clipboardPasteFrom(clean)
 	}
+	useEffect(() => {
+		const onClipPaste = (e: Event) => {
+			const text = (e as CustomEvent<{text?: string}>).detail?.text
+			if (!text) return
+			const r = rfbRef.current
+			if (!r) return
+			const clean = text.replace(/\r\n?/g, '\n')
+			remoteClip.current = clean
+			r.clipboardPasteFrom(clean)
+		}
+		window.addEventListener('omarchy-clip-paste', onClipPaste)
+		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+	}, [])
 	const syncClipboard = () => {
 		if (!window.isSecureContext || !navigator.clipboard?.readText || !document.hasFocus()) return
 		navigator.clipboard.readText().then(pushClipboard, () => {})
@@ -495,6 +510,14 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 			a.click()
 			window.setTimeout(() => URL.revokeObjectURL(a.href), 2000)
 			toast('Screenshot saved')
+		}, 'image/png')
+	}
+	const clipShot = () => {
+		const canvas = canvasHost.current?.querySelector('canvas')
+		if (!canvas) return
+		canvas.toBlob((blob) => {
+			if (!blob) return
+			clipImage(blob).then(() => toast('Saved to the clip book'), (err: Error) => toast(err.message, true))
 		}, 'image/png')
 	}
 	const OMARCHY_COMBOS: {label: string; keys: number[]}[] = [
@@ -1179,6 +1202,9 @@ export function Console({machine, onClose, embedded, windowId}: {machine: Machin
 					</button>
 					<button className="ct-btn icon" disabled={!live} onClick={screenshot} title="Save a screenshot" aria-label="Save a screenshot">
 						<Icon name="image" size={17} />
+					</button>
+					<button className="ct-btn icon" disabled={!live} onClick={clipShot} title="Save a screenshot to the clip book" aria-label="Save a screenshot to the clip book">
+						<Icon name="clipboard" size={17} />
 					</button>
 					<button className="ct-btn icon" onClick={toggleFullscreen} title={fullscreen ? 'Exit full screen' : 'Full screen'} aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}>
 						<Icon name={fullscreen ? 'fullscreen-exit' : 'fullscreen'} size={17} />

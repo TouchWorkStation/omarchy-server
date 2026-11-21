@@ -2,6 +2,7 @@
 // (~/.local/share/Trash) that Omarchy's own file manager uses, so browser and desktop agree.
 // Every path is resolved and checked to stay inside those folders, symlinks included.
 import {createReadStream, createWriteStream} from 'node:fs'
+import {Readable} from 'node:stream'
 import {cp, link, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises'
 import {basename, dirname, extname, join, resolve as pathResolve, sep} from 'node:path'
 import {pipeline} from 'node:stream/promises'
@@ -539,7 +540,41 @@ export function createFiles({home, dataDir, io} = {}) {
 		return endJson(res, 200, {path: await toVirtual(target)})
 	}
 
+	async function describe(virtual) {
+		const {real} = await resolve(virtual)
+		const st = await stat(real)
+		if (!st.isFile()) throw new RpcError('BAD_REQUEST', 'Choose a file')
+		return {name: basename(virtual), path: virtual, size: st.size, mtimeMs: Math.trunc(st.mtimeMs)}
+	}
+	async function openRead(virtual) {
+		const info = await describe(virtual)
+		const {real} = await resolve(virtual)
+		return {...info, stream: createReadStream(real)}
+	}
+	// A new file in a folder the person can already use. The bytes land in a temporary name, then
+	// the same claim an upload uses. keep-both is the default, so a paste does not replace a file.
+	async function saveNew(dirVirtual, name, source, collision = 'keep-both') {
+		if (!validName(name)) throw new RpcError('BAD_REQUEST', '[invalid-name]')
+		const {real: dir} = await resolve(dirVirtual)
+		const st = await stat(dir)
+		if (!st.isDirectory()) throw new RpcError('BAD_REQUEST', '[not-a-directory]')
+		const tmp = join(dir, `.upload.${randomBytes(6).toString('hex')}`)
+		try {
+			const body = Buffer.isBuffer(source) ? Readable.from(source) : source
+			await pipeline(body, createWriteStream(tmp, {flags: 'wx', mode: 0o644}))
+			const target = await claimUpload(tmp, join(dir, name), collision)
+			return toVirtual(target)
+		} catch (error) {
+			await rm(tmp, {force: true}).catch(() => {})
+			throw error
+		}
+	}
+
 	return {
+		describe,
+		openRead,
+		saveNew,
+		copy: (input) => moveOrCopy(input, true),
 		procedures: {
 			'files.list': {kind: 'query', run: guard((i) => list(i))},
 			'files.search': {kind: 'query', run: guard((i) => search(i ?? {}))},

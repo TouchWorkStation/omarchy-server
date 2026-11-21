@@ -20,6 +20,7 @@ import {fileUrl, localGitDir} from './local-source.mjs'
 import {createMachines} from './machines.mjs'
 import {createOmarchyTheme} from './omarchy-theme.mjs'
 import {createOmarchyPlugins} from './omarchy-plugins.mjs'
+import {createClips} from './clips.mjs'
 import {createConnector} from './connector.mjs'
 import {createStorage} from './storage.mjs'
 import {createUsb, listHostUsb} from './usb.mjs'
@@ -126,6 +127,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		},
 	})
 
+	// Assigned after the connector exists. Factory reset closes over this binding.
+	let clips
 	const ownerOnly = (auth, what = 'change the desktop’s theme') => {
 		if (accounts.getUser(auth.userId)?.role === 'member') throw new RpcError('FORBIDDEN', `Only the server’s owner can ${what}`)
 	}
@@ -269,6 +272,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 					if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
 					await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
 					await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+					// A clip can be a password or a key. Drop every book even when an app or a machine stays.
+					await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
 					const agents = await connector.procedures['swarm.list'].run().catch((e) => {
 						console.error('[omarchyd] reset swarm', e.message)
 						return []
@@ -442,6 +447,39 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const omarchyPlugins = createOmarchyPlugins({home, theme: omarchyTheme, ...pluginOptions})
 	// Local swarm: other Linux computers joined through the connector (see connector.mjs).
 	const connector = createConnector({dataDir, tlsDir, plugins: omarchyPlugins, source: () => updater.source(), webPort})
+	clips = createClips({
+		dataDir,
+		files,
+		fleet: connector.files,
+		readers: {
+			server: () => sampler.get(),
+			machine: async (id) => {
+				try {
+					const list = await machines.procedures['machines.list'].run()
+					const found = Array.isArray(list) ? list.find((m) => m.id === id) : null
+					if (!found?.name) return null
+					const stats = await machines.procedures['machines.stats'].run({id})
+					return {name: found.name, stats}
+				} catch {
+					return null
+				}
+			},
+			swarm: async (id) => {
+				try {
+					const list = await connector.procedures['swarm.list'].run()
+					const found = Array.isArray(list) ? list.find((a) => a.id === id) : null
+					if (!found?.name) return null
+					return {name: found.name, stats: found.metrics}
+				} catch {
+					return null
+				}
+			},
+		},
+		roleOf: (userId) => accounts.getUser(userId)?.role,
+		authenticate: (req) => accounts.authenticate(req),
+		urlUser: (token, req) => accounts.checkUrlToken(token, req),
+	})
+	Object.assign(procedures, clips.procedures)
 	let signedInAt = 0
 	// After a sign-in from the web, lock the desktop again once nobody is viewing it (Settings →
 	// Security), so the screen isn't left signed in at the server itself. A short wait lets a page
@@ -709,6 +747,9 @@ WantedBy=graphical-session.target
 				if (!accounts.checkUrlToken(url.searchParams.get('token'), req)) return sendJson(res, 401, {error: 'unauthorized'})
 				return await files.serveFile(req, res, url, fileKind)
 			}
+			if (url.pathname === '/api/clips/text' && req.method === 'POST') return await clips.httpText(req, res, url)
+			if (url.pathname === '/api/clips/image' && req.method === 'POST') return await clips.httpImage(req, res, url)
+			if (url.pathname === '/api/clips/item' && req.method === 'GET') return await clips.httpItem(req, res, url)
 			sendJson(res, 404, {error: 'not found'})
 		} catch (error) {
 			if (!res.headersSent) sendError(res, error)

@@ -24,6 +24,7 @@ import {closeAssistantView, openAssistantView, resetAssistantTurn, useAssistantT
 import {AssistantLookContext, cleanLook, DEFAULT_LOOK, type AssistantLook} from './character/AssistantCharacter'
 import {AssistantCharacterWidget} from './character/widgets'
 
+const Clips = lazy(() => import('./screens/Clips').then((m) => ({default: m.Clips})))
 const Files = lazy(() => import('./screens/Files').then((m) => ({default: m.Files})))
 const Machines = lazy(() => import('./screens/Machines').then((m) => ({default: m.Machines})))
 const More = lazy(() => import('./screens/More').then((m) => ({default: m.More})))
@@ -40,7 +41,7 @@ function ScreenFallback() {
 	)
 }
 
-type Tab = 'home' | 'apps' | 'files' | 'machines' | 'more' | 'settings' | 'store'
+type Tab = 'home' | 'apps' | 'files' | 'machines' | 'more' | 'settings' | 'store' | 'clips'
 // `tone`: the palette colour each tab's icon takes in the themed looks (the same as on the desktop).
 const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: string}[] = [
 	{id: 'home', label: 'Home', icon: 'home', active: 'home-filled', tone: 'var(--accent)'},
@@ -51,7 +52,7 @@ const TABS: {id: Tab; label: string; icon: IconName; active: IconName; tone: str
 ]
 const tabFromHash = (): Tab => {
 	const h = location.hash.replace('#/', '') as Tab
-	return h === 'settings' || h === 'store' || TABS.some((t) => t.id === h) ? h : 'home'
+	return h === 'settings' || h === 'store' || h === 'clips' || TABS.some((t) => t.id === h) ? h : 'home'
 }
 
 export function App() {
@@ -248,7 +249,8 @@ function Shell({boot, prefs, setPrefs, onSignedOut, reopenAssistant}: {boot: Boo
 						{tab === 'files' && <Files />}
 						{tab === 'store' && <Store onOpenInstalled={(a) => setAppId(a.id)} onBack={() => history.back()} onTerminal={openTerminal && ((input) => openTerminal(undefined, input))} />}
 						{tab === 'machines' && <Machines />}
-						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} />}
+						{tab === 'more' && <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => go('settings')} onClips={() => go('clips')} />}
+						{tab === 'clips' && <Clips onBack={() => history.back()} />}
 						{tab === 'settings' && <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={() => history.back()} />}
 					</main>
 				</Suspense>

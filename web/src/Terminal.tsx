@@ -7,6 +7,7 @@ import {createPortal} from 'react-dom'
 import {Terminal as XTerm} from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
+import {clipText} from './clips'
 import {Icon} from './icons'
 import {SEQ, applyTerminalModifiers} from './terminalKeys'
 import {AppIcon, haptic, useConfirm, usePortalRoot, useScreenLock, useToast} from './ui'
@@ -129,7 +130,13 @@ export function TerminalScreen({
 			const selected = term.getSelection()
 			if (selected) {
 				e.preventDefault()
-				copyText(selected).then(() => toast('Copied'), () => toast('Couldn’t copy', true))
+				copyText(selected).then(
+					() => {
+						toast('Copied')
+						clipText(selected, 'terminal').catch((err: Error) => toast(err.message, true))
+					},
+					() => toast('Couldn’t copy', true),
+				)
 				term.clearSelection()
 				term.focus()
 				return
@@ -145,6 +152,14 @@ export function TerminalScreen({
 			)
 		}
 		el.addEventListener('contextmenu', onContextMenu)
+		const onClip = (e: ClipboardEvent) => {
+			const selected = term.getSelection()
+			const target = e.target
+			if (!selected || !(target instanceof Node) || !el.contains(target)) return
+			clipText(selected, 'terminal', e.type === 'cut').catch((err: Error) => toast(err.message, true))
+		}
+		document.addEventListener('copy', onClip)
+		document.addEventListener('cut', onClip)
 
 		// -- Size: fill the window at the normal text size --------------------------------------
 		// A character cell at the normal text size (measured at whatever size is showing now).
@@ -408,9 +423,20 @@ export function TerminalScreen({
 			ta?.removeEventListener('blur', onBlur)
 			wsRef.current?.close()
 			el.removeEventListener('contextmenu', onContextMenu)
+			document.removeEventListener('copy', onClip)
+			document.removeEventListener('cut', onClip)
 			term.dispose()
 		}
 	}, [app, agent?.id, attempt])
+
+	useEffect(() => {
+		const onClipPaste = (e: Event) => {
+			const text = (e as CustomEvent<{text?: string}>).detail?.text
+			if (text) termRef.current?.paste(text)
+		}
+		window.addEventListener('omarchy-clip-paste', onClipPaste)
+		return () => window.removeEventListener('omarchy-clip-paste', onClipPaste)
+	}, [])
 
 	const sendSeq = (seq: string) => {
 		haptic(5)

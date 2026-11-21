@@ -39,6 +39,7 @@ const Files = lazy(() => import('../screens/Files').then((m) => ({default: m.Fil
 const ShareSheet = lazy(() => import('../screens/Files').then((m) => ({default: m.ShareSheet})))
 const Store = lazy(() => import('../screens/Store').then((m) => ({default: m.Store})))
 const MachinesDesktop = lazy(() => import('../machines/Desktop').then((m) => ({default: m.MachinesDesktop})))
+const Clips = lazy(() => import('../screens/Clips').then((m) => ({default: m.Clips})))
 const More = lazy(() => import('../screens/More').then((m) => ({default: m.More})))
 const Settings = lazy(() => import('../screens/Settings').then((m) => ({default: m.Settings})))
 const TerminalScreen = lazy(() => import('../Terminal').then((m) => ({default: m.TerminalScreen})))
@@ -55,7 +56,7 @@ function WinFallback() {
 }
 
 // ---- model ---------------------------------------------------------------------------------
-type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'app'
+type Kind = 'files' | 'apps' | 'store' | 'terminal' | 'machines' | 'system' | 'settings' | 'personalize' | 'assistant' | 'console' | 'clips' | 'app'
 type Payload = {appId?: string; machineId?: string; path?: string; tab?: string; term?: {id: string; name?: string; icon?: string}; input?: string}
 type Snap = 'max' | 'left' | 'right' | null
 type Rect = {x: number; y: number; w: number; h: number}
@@ -80,6 +81,7 @@ export const SYS: Record<SysKind, {title: string; icon?: IconName; bg?: string; 
 	settings: {title: 'Settings', icon: 'settings', bg: 'linear-gradient(150deg,#cbd5e1,#475569 70%)', tone: 'var(--fg)', w: 760, h: 720},
 	personalize: {title: 'Desktop & Dock', icon: 'palette', bg: 'linear-gradient(150deg,#f9a8d4,#be185d 70%)', tone: 'var(--pink)', w: 880, h: 720},
 	assistant: {title: 'Assistant', icon: 'sparkle', bg: 'linear-gradient(150deg,#c4b5fd,#7c3aed 70%)', tone: 'var(--mauve)', w: 720, h: 640},
+	clips: {title: 'Clip book', icon: 'clipboard', bg: 'linear-gradient(150deg,#5eead4,#0f766e 70%)', tone: 'var(--teal)', w: 760, h: 720},
 }
 const isSys = (k: string): k is SysKind => Object.hasOwn(SYS, k)
 const keyOf = (kind: Kind, p?: Payload) => (kind === 'app' ? `app:${p?.appId}` : kind === 'console' ? `console:${p?.machineId}` : kind)
@@ -2681,7 +2683,7 @@ const WindowContent = memo(
 				case 'machines':
 					return <MachinesDesktop />
 				case 'system':
-					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} />
+					return <More prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onSettings={() => desk.open('settings')} onClips={() => desk.open('clips')} />
 				case 'settings':
 					return <Settings prefs={prefs} setPrefs={setPrefs} onSignedOut={onSignedOut} onBack={close} />
 				case 'personalize':
@@ -2702,6 +2704,8 @@ const WindowContent = memo(
 					return owner ? <TerminalScreen embedded app={win.payload?.term} input={win.payload?.input} onClose={close} /> : <div className="win-empty">Only the server’s owner can open a terminal.</div>
 				case 'console':
 					return <ConsoleWindow machineId={win.payload!.machineId!} windowId={win.id} onClose={close} />
+				case 'clips':
+					return <Clips />
 				default:
 					return null
 			}
