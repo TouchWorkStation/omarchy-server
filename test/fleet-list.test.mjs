@@ -58,6 +58,17 @@ test('the fleet list is online names, then offline names', () => {
 	assert.equal(fleetAbility(members[0], 'apps').granted, true)
 })
 
+test('fleetList keeps a container hostId when it runs on a joined computer', () => {
+	const members = fleetList({
+		server: {name: 'Den'},
+		computers: [computerFleetInput({id: 'kitchen', name: 'Kitchen', online: true})],
+		guests: [],
+		containers: [containerFleetInput({id: 'edge', name: 'edge', state: 'running', hostId: 'kitchen'})],
+	})
+	const c = members.find((m) => m.id === 'edge')
+	assert.equal(c?.hostId, 'kitchen')
+})
+
 test('fleetList includes containers hosted on this server', () => {
 	const members = fleetList({
 		server: {name: 'Den'},

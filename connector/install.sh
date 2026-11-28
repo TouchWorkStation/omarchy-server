@@ -373,6 +373,14 @@ if has vms && [ "$USER_ENROLL_ONLY" != 1 ] && [ "$MAC" != 1 ]; then
 	rm -f "$tmp.vm-helper.py"
 fi
 
+if [ "$USER_ENROLL_ONLY" != 1 ] && [ "$MAC" != 1 ] && [ "$OPENRC" != 1 ]; then
+	say "Installing the container helper"
+	fetch_connector "$(connector_url lxc-helper.py)" "$tmp.lxc-helper.py" || die "Couldn't download the container helper."
+	python_ok "$tmp.lxc-helper.py" || die "The downloaded container helper didn't check out."
+	install -m 700 "$tmp.lxc-helper.py" "$DIR/lxc-helper.py"
+	rm -f "$tmp.lxc-helper.py"
+fi
+
 # Linger before the pairing code is used. A noninteractive sudo failure must leave that code unused.
 # Alpine OpenRC has no loginctl linger; the system service below is what keeps it running.
 if [ "$MAC" != 1 ] && [ "$OPENRC" != 1 ] && [ "$USER_ENROLL_ONLY" != 1 ]; then

@@ -43,6 +43,8 @@ import {createSampler} from './stats.mjs'
 import {createOsInfo} from './os-info.mjs'
 import {WebSocketServer} from 'ws'
 import {viewerBackpressure} from './backpressure.mjs'
+import {readNixCache, writeNixCache} from './nix-cache.mjs'
+import {writeCacheFragment} from './nixos-config.mjs'
 
 export const OMARCHYD_VERSION = '0.9.108'
 // Written by install.sh when the owner turns on unattended boot: the disk then unlocks itself at boot.
@@ -105,10 +107,12 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const containers = createContainers({
 		reservedPorts: [port, webPort],
 		backupsDir: join(dataDir, 'container-backups'),
+		dataDir,
 		files,
 		connector: {
 			pair: (input) => connector.procedures['swarm.pair'].run(input),
 			list: () => connector.procedures['swarm.list'].run(),
+			call: (id, name, args, timeout) => connector.call(id, name, args, timeout),
 			caCertificate: () => connector.caCertificate(),
 		},
 		...containerOptions,
@@ -494,6 +498,23 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 				alwaysHttps: (await readPolicy(tlsDir)).alwaysHttps,
 				lockAfterRemote: security.lockAfterRemote !== false,
 			}),
+		},
+		'nix.cache': {kind: 'query', run: () => readNixCache(dataDir)},
+		'nix.setCache': {
+			kind: 'mutation',
+			run: async (input, {auth}) => {
+				ownerOnly(auth, 'change the Nix binary cache')
+				const state = await writeNixCache(dataDir, input ?? {})
+				const configsRoot = join(dataDir, 'nixos-configs')
+				try {
+					for (const entryId of await readdir(configsRoot)) {
+						await writeCacheFragment(dataDir, entryId, state)
+					}
+				} catch (e) {
+					if (e?.code !== 'ENOENT') throw e
+				}
+				return state
+			},
 		},
 		'system.setSecurity': {
 			kind: 'mutation',

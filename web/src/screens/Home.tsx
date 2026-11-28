@@ -6,7 +6,7 @@ import {queryProblem, useBrowserOnline} from '../connection'
 import {useApps, useBattery, useBootstrap, useCpu, useDisk, useGpus, useMachines, useMemory, useTemp, useUptime, useUser} from '../data'
 import {computerSample, fleetRings, samplePercent, serverSample, type FleetRings, type GaugeKind} from '../fleet/aggregate'
 import {containerState, useContainers, useContainerStatus} from '../containers/Containers'
-import {computerFleetInput, containerFleetInput, fleetList, guestFleetInput, type FleetMember} from '../fleet/list'
+import {computerFleetInput, containerFleetInput, fleetList, guestFleetInput, SERVER_FLEET_ID, type FleetMember} from '../fleet/list'
 import {openFleetMember} from '../fleet/openMember'
 import {usePins} from '../fleet/PinButton'
 import {pinKey, type DashboardPin} from '../fleet/pins'
@@ -136,6 +136,11 @@ export function Home({onOpenApp}: {onOpenApp: (app: UserApp) => void; go: (tab: 
 						id: c.name,
 						name: c.name,
 						state: containerState(c),
+						hostId: c.hostId,
+						hostName:
+							c.hostId && c.hostId !== SERVER_FLEET_ID
+								? (swarm.data ?? []).find((a) => a.id === c.hostId)?.name
+								: undefined,
 						connector: !!containerAgent(swarm.data ?? [], c.name),
 					}),
 				),

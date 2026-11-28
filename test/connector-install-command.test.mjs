@@ -83,6 +83,8 @@ test('the installer fetches connector files from this server with its own certif
 	assert.match(script, /--cacert "\$CONF\/server-ca\.crt"/)
 	assert.match(script, /fetch_connector "\$\(connector_url agent\.py\)"/)
 	assert.match(script, /fetch_connector "\$\(connector_url helper\.py\)"/)
+	assert.match(script, /fetch_connector "\$\(connector_url vm-helper\.py\)"/)
+	assert.match(script, /fetch_connector "\$\(connector_url lxc-helper\.py\)"/)
 })
 
 test('Windows: a PowerShell command from GitHub, or from this server with the certificate pinned by the installer', async () => {

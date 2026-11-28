@@ -287,6 +287,19 @@
       "sizeMb": 420,
       "adminGroup": "sudo",
       "firmware": "efi"
+    },
+    {
+      "id": "modc-nixos-24.11-amd64",
+      "familyId": "nixos",
+      "nixos": true,
+      "name": "NixOS",
+      "version": "24.11",
+      "arch": "amd64",
+      "kind": "cloud",
+      "url": "https://github.com/MyOwnDataCenter/app-store/releases/download/nixos-v24.11.0/modc-nixos-24.11-amd64.qcow2",
+      "sha256": "49065f7e818867275fa4a01a1aecf5deaf8e77c39cdd8cde5cbd7a2ca22afb78",
+      "sizeMb": 590,
+      "adminGroup": "wheel"
     }
   ]
 }

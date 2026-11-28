@@ -31,6 +31,8 @@ import {RpcError} from './rpc.mjs'
 import {hostdevXml, parseUsbLive} from './usb.mjs'
 import {stoppedMessage} from './exec-error.mjs'
 import {checkLink, fileNameFor, listDownloads, startDownload} from './download.mjs'
+import {readNixCache} from './nix-cache.mjs'
+import {configDir, ensureConfigDir, readConfiguration, validateNixosConfig, writeCacheFragment, writeConfiguration} from './nixos-config.mjs'
 
 export const CATALOG_URL = 'https://raw.githubusercontent.com/MyOwnDataCenter/app-store/main/machines/catalog.json'
 const BUNDLED_CATALOG = fileURLToPath(new URL('./machine-catalog.json', import.meta.url))
@@ -54,6 +56,15 @@ function execP(cmd, args, {input, cwd, timeout = 120_000} = {}) {
 }
 
 const xml = (s) => String(s).replace(/[<>&'"]/g, (c) => ({'<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;'})[c])
+const NIXOS_CONFIG_SHARE_TARGET = 'modc-nixos-config'
+export function nixosConfigFilesystemXml(sourceDir) {
+	return `<filesystem type='mount' accessmode='passthrough'>
+  <driver type='virtio-9p' wrpolicy='immediate'/>
+  <source dir='${xml(sourceDir)}'/>
+  <target dir='${NIXOS_CONFIG_SHARE_TARGET}'/>
+  <readonly/>
+</filesystem>`
+}
 // XML 1.0 Char. Tab, LF, and CR are allowed; other controls make libvirt reject the domain.
 function xmlChars(s) {
 	for (const ch of String(s)) {
@@ -469,10 +480,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 	const CPU_TYPES = ['host', 'host-model', 'max', 'qemu64']
 	// The list carries the start of each machine's notes, so they can be searched; the full text is in its details.
 	const LIST_NOTES_MAX = 500
-	const NICS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
-	const CACHES = ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe']
-	const BUSES = ['virtio', 'sata', 'scsi', 'ide']
-	function domainXml(m, kvm, uuid = '') {
+const NICS = ['virtio', 'e1000e', 'e1000', 'rtl8139']
+const CACHES = ['default', 'none', 'writeback', 'writethrough', 'directsync', 'unsafe']
+const BUSES = ['virtio', 'sata', 'scsi', 'ide']
+function domainXml(m, kvm, uuid = '') {
 		const dir = join(vmsDir, m.id)
 		const layout = m.layout ?? layoutFor('cloud', dir)
 		const o = m.options ?? {}
@@ -539,7 +550,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
     <graphics type='vnc' socket='${xml(join(dir, 'vnc.sock'))}'/>
     <video><model type='${arm && layout.video !== 'none' ? 'virtio' : layout.video}'/></video>${o.tablet === false ? '' : "\n    <input type='tablet' bus='usb'/>"}${o.agent ? "\n    <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>" : ''}
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
-    ${(m.usbDevices ?? []).map((d) => hostdevXml(d)).join('\n    ')}
+    ${(m.usbDevices ?? []).map((d) => hostdevXml(d)).join('\n    ')}${m.nixos ? `\n    ${nixosConfigFilesystemXml(configDir(dataDir, m.id))}` : ''}
   </devices>
 </domain>
 `
@@ -555,6 +566,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 		}
 	}
 	async function define(m) {
+		if (m.nixos) await ensureConfigDir(dataDir, m.id)
 		if (hostOf(m) !== 'server') {
 			const status = readVmStatus(await remoteCall(hostOf(m), 'vm-status', {}))
 			await remoteCall(hostOf(m), 'vm-define', {guestId: m.id, spec: defineSpec(m, status)})
@@ -707,6 +719,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				portForwards: forwardsFor(m, state),
 				...(b?.progress !== undefined ? {installProgress: b.progress} : {}),
 				...(state === 'error' && m.errorMessage ? {errorMessage: m.errorMessage} : {}),
+				...(m.nixos ? {nixos: true} : {}),
 			}
 		})
 		if (persist) await save().catch(() => {})
@@ -755,12 +768,31 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			boot: m.boot ?? [layout.disks.find((d) => d.device === 'disk')?.id ?? 'disk0'],
 			disks,
 			portForwards: (m.portForwards ?? []).map((f) => ({protocol: f.protocol, hostPort: f.hostPort, guestPort: f.guestPort})),
+			...(m.nixos
+				? {
+						filesystems: [{source: configDir(dataDir, m.id), target: NIXOS_CONFIG_SHARE_TARGET, readonly: true}],
+					}
+				: {}),
 		}
 	}
 	function layoutBasenames(kind, img) {
 		const layout = layoutFor(kind, '', img)
 		for (const d of layout.disks) if (d.file) d.file = basename(d.file)
 		return layout
+	}
+	async function recordNixosOnCreate(input, img, id) {
+		const nixos = img?.nixos === true || img?.familyId === 'nixos'
+		if (input.nixosConfig && !nixos) throw new RpcError('BAD_REQUEST', 'NixOS configuration is only for NixOS images.')
+		if (nixos && input.nixosConfig) {
+			const checked = validateNixosConfig(input.nixosConfig)
+			if (!checked.ok) throw new RpcError('BAD_REQUEST', checked.error)
+			if (checked.config.trim()) {
+				await writeConfiguration(dataDir, id, checked.config)
+				const cache = await readNixCache(dataDir)
+				await writeCacheFragment(dataDir, id, cache)
+			}
+		}
+		return nixos
 	}
 	async function hostCall(hostId, guestId, name, args) {
 		const timeout = name === 'vm-fetch' || name === 'vm-disk-create' ? 30 * 60_000 : name === 'vm-status' ? 30_000 : 120_000
@@ -838,6 +870,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			let id
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
+			const nixos = await recordNixosOnCreate(input, img, id)
 			const layout = layoutBasenames(kind === 'cloud' ? 'cloud' : kind === 'windows' ? 'windows' : 'iso', img)
 			if (kind === 'omarchy' || kind === 'windows' || kind === 'manual') {
 				layout.disks.splice(1, 0, {id: 'cd0', file: `image:${img.id}`, device: 'cdrom', bus: 'sata', format: 'raw'})
@@ -860,6 +893,7 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 				layout,
 				...(kind === 'omarchy' || kind === 'windows' || kind === 'manual' ? {boot: ['disk0', 'cd0']} : {}),
 			})
+			if (nixos) m.nixos = true
 			if (kind === 'cloud' || kind === 'omarchy') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
@@ -1001,8 +1035,10 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			let id
 			do id = randomBytes(4).toString('hex')
 			while (machines.some((m) => m.id === id))
+			const nixos = await recordNixosOnCreate(input, img, id)
 			const dir = join(vmsDir, id)
 			const m = normalize({id, name, osId, cores, memoryGb, memoryMb: memoryGb * 1024, diskSizeGb, portForwards: [], createdAt: Date.now(), state: 'installing', options: {agent: true}, layout: layoutFor(kind === 'cloud' ? 'cloud' : kind === 'windows' || local?.platform === 'windows' ? 'windows' : 'iso', dir, img)})
+			if (nixos) m.nixos = true
 			if (kind === 'cloud' || kind === 'omarchy') m.cloudInit = {username, hostname: hostnameFor(name, id), sshKeys: []}
 			machines.push(m)
 			try {
@@ -1927,7 +1963,36 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			snapshots: m.snapshots ?? [],
 			tasks: (m.tasks ?? []).slice(0, 50),
 			guestIps,
+			...(m.nixos ? {nixos: true} : {}),
 		}
+	}
+
+	async function nixosConfig(input = {}) {
+		await ready
+		const m = find(input.id)
+		if (!m.nixos) throw new RpcError('BAD_REQUEST', 'That machine isn’t a NixOS guest.')
+		return readConfiguration(dataDir, m.id)
+	}
+	async function setNixosConfig(input = {}) {
+		await ready
+		const m = find(input.id)
+		if (!m.nixos) throw new RpcError('BAD_REQUEST', 'That machine isn’t a NixOS guest.')
+		const checked = validateNixosConfig(input.config ?? '')
+		if (!checked.ok) throw new RpcError('BAD_REQUEST', checked.error)
+		try {
+			await writeConfiguration(dataDir, m.id, checked.config)
+		} catch (error) {
+			throw new RpcError('BAD_REQUEST', String(error?.message ?? error))
+		}
+		const cache = await readNixCache(dataDir)
+		await writeCacheFragment(dataDir, m.id, cache)
+		return readConfiguration(dataDir, m.id)
+	}
+	async function applyNixosConfig(input = {}, ctx) {
+		if (input.config !== undefined && input.config !== null) {
+			await setNixosConfig({id: input.id, config: input.config})
+		}
+		return lifecycle((d) => ['reboot', d], 'restarting')(input, ctx)
 	}
 
 	async function updateHardware(input = {}, ctx) {
@@ -2875,6 +2940,9 @@ export function createMachines({dataDir, catalogUrl = CATALOG_URL, fetchImpl = f
 			'machines.clone': {kind: 'mutation', run: clone},
 			'machines.monitor': {kind: 'mutation', run: monitor},
 			'machines.installConnector': {kind: 'mutation', run: installConnector},
+			'machines.nixosConfig': {kind: 'query', run: nixosConfig},
+			'machines.setNixosConfig': {kind: 'mutation', run: setNixosConfig},
+			'machines.applyNixosConfig': {kind: 'mutation', run: applyNixosConfig},
 		},
 	}
 }

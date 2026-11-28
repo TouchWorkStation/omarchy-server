@@ -8,6 +8,7 @@ import {isOwner} from './isOwner'
 import {defaultCores, defaultMemoryGb, diskRange, hostMaxMemoryGb, machineUsernameHint, machineUsernameOk, nextDiskGb} from './machineForm'
 import {Icon} from './icons'
 import {osLook} from './osLook'
+import {NIXOS_EXAMPLE_VM} from './nixos/example'
 import {Field, Sheet, SheetHeader, bytes, haptic} from './ui'
 
 // Per-OS starting specs and floors.
@@ -277,7 +278,9 @@ function ConfigureForm({os, hostArch, host, onBack, onDone, threads, memory, max
 	const [password, setPassword] = useState('')
 	const [licenseKey, setLicenseKey] = useState('')
 	const [error, setError] = useState('')
+	const [nixosConfig, setNixosConfig] = useState('')
 
+	const nixosImage = os.familyId === 'nixos' || !!os.nixos
 	const needsPassword = os.requiresCredentials && !os.manualSetup
 	const windows = os.platform === 'windows'
 	const usernameOk = !os.requiresCredentials || machineUsernameOk(username, windows)
@@ -301,6 +304,7 @@ function ConfigureForm({os, hostArch, host, onBack, onDone, threads, memory, max
 					...(host.id !== 'server' ? {hostId: host.id} : {}),
 					...(os.requiresCredentials ? {username: username.trim(), ...(needsPassword ? {password} : {})} : {}),
 					...(os.requiresLicenseKey ? {licenseKey: licenseKey.trim().toUpperCase()} : {}),
+					...(nixosImage && nixosConfig.trim() ? {nixosConfig} : {}),
 				},
 				done: `${name.trim()} is being created`,
 			})
@@ -387,6 +391,28 @@ function ConfigureForm({os, hostArch, host, onBack, onDone, threads, memory, max
 						onChange={(e) => setLicenseKey(e.target.value)}
 					/>
 				)}
+				{nixosImage ? (
+					<div className="field" style={{marginBottom: 16}}>
+						<label htmlFor="vm-nixos-config">NixOS configuration</label>
+						<textarea
+							id="vm-nixos-config"
+							className="mono"
+							rows={12}
+							value={nixosConfig}
+							spellCheck={false}
+							autoCapitalize="off"
+							autoCorrect="off"
+							disabled={action.isPending}
+							onChange={(e) => setNixosConfig(e.target.value)}
+						/>
+						<div style={{display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8}}>
+							<button type="button" className="btn small" disabled={action.isPending} onClick={() => setNixosConfig(NIXOS_EXAMPLE_VM)}>
+								Use example
+							</button>
+						</div>
+						<span className="hint">Optional. Saved on this server and mounted into the VM; the guest applies it on boot.</span>
+					</div>
+				) : null}
 				{(() => {
 					const note = os.manualSetup
 						? 'This ISO boots its own installer. When the machine is running, open Desktop and install it there; afterwards it starts from its own disk.'

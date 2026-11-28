@@ -49,6 +49,7 @@ export type ContainerFleetInput = {
 	name: string
 	state: string
 	hostId?: string
+	hostName?: string
 	connector?: boolean
 }
 
@@ -133,7 +134,7 @@ export function guestFleetInput(row: GuestFleetInput): GuestFleetInput {
 }
 
 export function containerFleetInput(row: ContainerFleetInput): ContainerFleetInput {
-	return {id: row.id, name: row.name, state: row.state, hostId: row.hostId, connector: !!row.connector}
+	return {id: row.id, name: row.name, state: row.state, hostId: row.hostId, hostName: row.hostName, connector: !!row.connector}
 }
 
 export function fleetList(input: {
@@ -179,6 +180,10 @@ export function fleetList(input: {
 	})
 	const containers: FleetMember[] = (input.containers ?? []).map((row) => {
 		const online = row.state === 'running'
+		const onHost =
+			row.hostId && row.hostId !== SERVER_FLEET_ID && row.hostName?.trim()
+				? `Container · on ${row.hostName.trim()} · ${containerStatusWord(row.state)}`
+				: `Container · ${containerStatusWord(row.state)}`
 		return {
 			id: row.id,
 			kind: 'container',
@@ -186,7 +191,7 @@ export function fleetList(input: {
 			online,
 			entrypoint: false,
 			hostId: row.hostId || SERVER_FLEET_ID,
-			meta: `Container · ${containerStatusWord(row.state)}`,
+			meta: onHost,
 			abilities: containerAbilities(row),
 		}
 	})

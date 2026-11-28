@@ -65,6 +65,7 @@ const SLOW_RPC = new Set([
 	'machines.resizeDisk',
 	'machines.addDisk',
 	'machines.restart',
+	'machines.applyNixosConfig',
 	'machines.backup',
 	'machines.restoreBackup',
 	'machines.clone',
@@ -399,6 +400,7 @@ export type Machine = {
 	errorMessage?: string
 	networkMode?: 'nat' | 'bridged'
 	portForwards?: PortForward[]
+	nixos?: boolean
 }
 
 // This server's own Omarchy desktop, shown in the same viewer as a machine's screen.
@@ -435,6 +437,7 @@ export type OsImage = {
 	evaluation?: boolean
 	manualSetup?: boolean
 	requiresLicenseKey?: boolean
+	nixos?: boolean
 }
 export type MachineCapabilities = {hostArchitecture: 'amd64' | 'arm64'; libvirtAvailable: boolean; kvmAvailable: boolean; performanceWarning?: string}
 export type ActiveSession = {

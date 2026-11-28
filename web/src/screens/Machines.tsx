@@ -1,12 +1,12 @@
 import {lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode} from 'react'
 import {flushSync} from 'react-dom'
 
-import {SERVER_DESKTOP, type Machine, type UserApp} from '../api'
+import {mutate, query, SERVER_DESKTOP, type Machine, type UserApp} from '../api'
 import {queryProblem, useBrowserOnline} from '../connection'
 import {useDesktop} from '../desktop/Desktop'
 import {useBootstrap, useMachines, useUser} from '../data'
 import {isOwner} from '../isOwner'
-import {useMachineDetails} from '../machines/api'
+import {useMachineAction, useMachineDetails} from '../machines/api'
 import {PortForwarding} from '../machines/PortForwarding'
 import {VmView} from '../machines/pveDetail'
 import {BackupsPanel, CloudInitPanel, HardwarePanel, HistoryPanel, MonitorPanel, OptionsPanel, PANELS, SnapshotsPanel, SummaryPanel, usePowerActions, type PanelId} from '../machines/panels'
@@ -20,6 +20,7 @@ import {OPEN_FLEET, takePendingFleet, type FleetOpen} from '../fleet/openMember'
 import {openStore} from '../fleet/openStore'
 import {GuestLive} from '../fleet/GuestLive'
 import {MachineShell, MachineTabs, type MachineTab} from '../fleet/MachineTabs'
+import {NixosConfigPanel} from '../nixos/NixosConfigPanel'
 import {PinButton} from '../fleet/PinButton'
 import {ServerSheet} from '../fleet/ServerSheet'
 import {containerState, ContainerDetail, ContainerSheet, useContainers, useContainerStatus} from '../containers/Containers'
@@ -212,6 +213,8 @@ export function Machines({onOpenApp, onTerminal, windowId, prefs, setPrefs}: {on
 						id: c.name,
 						name: c.name,
 						state: containerState(c),
+						hostId: c.hostId,
+						hostName: c.hostId && c.hostId !== SERVER_FLEET_ID ? agents.find((a) => a.id === c.hostId)?.name : undefined,
 						connector: !!containerAgent(agents, c.name),
 					}),
 				),
@@ -510,6 +513,7 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 	const details = useMachineDetails(m.id)
 	const d = details.data
 	const power = usePowerActions({id: m.id, name: m.name, state: m.state, protected: m.protected})!
+	const machineAction = useMachineAction()
 	const busy = status.kind === 'busy' || power.pending
 	const os = osLook(m.osId)
 	// A machine that isn't running opens on Power, where Start is.
@@ -613,6 +617,31 @@ function MachineSheet({machine: m, onClose, onConsole, bare}: {machine: Machine;
 					...(sections.storage ? [{id: 'storage', label: 'Storage', body: sections.storage}] : []),
 					...(sections.backups ? [{id: 'backups', label: 'Backups', body: d ? <BackupsPanel d={d} /> : sections.backups}] : []),
 					{id: 'power', label: 'Power', body: powerBody},
+					...(m.nixos
+						? [
+								{
+									id: 'config',
+									label: 'Config',
+									body: (
+										<NixosConfigPanel
+											id={m.id}
+											kind="vm"
+											busy={busy || machineAction.isPending}
+											running={m.state === 'running'}
+											onApply={() =>
+												machineAction.mutate({
+													path: 'machines.applyNixosConfig',
+													input: {id: m.id},
+													done: 'Restarting so the guest picks up the configuration',
+												})
+											}
+											readConfig={() => query<{config: string; present: boolean}>('machines.nixosConfig', {id: m.id})}
+											saveConfig={(config) => mutate('machines.setNixosConfig', {id: m.id, config})}
+										/>
+									),
+								},
+							]
+						: []),
 					...(sections.manage ? [{id: 'manage', label: 'Manage', body: sections.manage}] : []),
 					...hostTabs.map((p) => ({id: p.id, label: p.label, body: panel(p.id)})),
 				]

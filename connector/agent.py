@@ -3144,6 +3144,7 @@ def supported_abilities(abilities, windows=None, mac=None, lxc=None):
 ACTIONS = {"plugin-install": plugin_install, "plugin-remove": plugin_remove, "theme-set": theme_set, "reboot": reboot, "shutdown": shutdown, "suspend": suspend}
 HELPER = "/usr/local/libexec/omarchy-connector/helper.py"
 VM_HELPER = os.path.join(DATA_DIR, "vm-helper.py")
+LXC_HELPER = os.path.join(DATA_DIR, "lxc-helper.py")
 
 
 def helper(verb, *args):
@@ -3394,6 +3395,75 @@ def vm_call(name, args, allowed, spawn=None, stdin=None, progress=None):
         raise RuntimeError((str(e) or "VM helper failed")[:300])
     err_rest = _take_progress(err, progress)
     out_rest = _take_progress(out, progress)
+    if err_rest.strip():
+        raise RuntimeError(err_rest.strip().split("\n")[-1][:300])
+    return (out_rest or "").strip()
+
+
+# System containers (Incus per-user on this computer). No separate ability flag.
+LXC_ACTIONS = {
+    "lxc-status": "status",
+    "lxc-list": "list",
+    "lxc-launch": "launch",
+    "lxc-start": "start",
+    "lxc-stop": "stop",
+    "lxc-restart": "restart",
+    "lxc-force-stop": "force-stop",
+    "lxc-delete": "delete",
+    "lxc-write-config": "write-config",
+    "lxc-read-config": "read-config",
+}
+_LXC_POSITIONALS = {
+    "status": (),
+    "list": (),
+    "launch": (),
+    "start": ("name",),
+    "stop": ("name",),
+    "restart": ("name",),
+    "force-stop": ("name",),
+    "delete": ("name",),
+    "write-config": (),
+    "read-config": ("name",),
+}
+_LXC_JSON = frozenset(("launch", "write-config"))
+
+
+def _lxc_spawn(argv, stdin=None):
+    verb = argv[2] if len(argv) > 2 else ""
+    timeout = 30 * 60 if verb == "launch" else 2 * 60
+    if isinstance(stdin, bytes):
+        stdin = stdin.decode("utf-8")
+    r = subprocess.run(argv, input="" if stdin is None else stdin, capture_output=True, text=True, timeout=timeout)
+    err, out = r.stderr or "", r.stdout or ""
+    if r.returncode and not err.strip():
+        err = (out.strip() or "LXC helper failed")
+    return err, out
+
+
+def lxc_call(name, args, spawn=None, stdin=None):
+    verb = LXC_ACTIONS.get(name)
+    if not verb:
+        raise RuntimeError("Unknown action")
+    args = dict(args or {})
+    positionals = []
+    for key in _LXC_POSITIONALS[verb]:
+        if key not in args or args[key] is None or args[key] == "":
+            raise RuntimeError("Unknown action")
+        positionals.append(_vm_arg(args.pop(key)))
+    body = stdin
+    if body is None and verb in _LXC_JSON:
+        body = args
+        if not isinstance(body, dict):
+            raise RuntimeError("Unknown action")
+        body = json.dumps(body)
+    argv = [sys.executable, LXC_HELPER, verb, *positionals]
+    run = spawn or _lxc_spawn
+    try:
+        err, out = run(argv, stdin=body)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as e:
+        raise RuntimeError((str(e) or "LXC helper failed")[:300])
+    err_rest = _take_progress(err, None)
+    out_rest = _take_progress(out, None)
     if err_rest.strip():
         raise RuntimeError(err_rest.strip().split("\n")[-1][:300])
     return (out_rest or "").strip()
@@ -4518,6 +4588,8 @@ class Connection:
                     allowed=self.allowed,
                     progress=lambda p: self.send({"op": "progress", "id": msg.get("id"), "percent": p, "step": "download"}),
                 )
+            elif name in LXC_ACTIONS or str(name).startswith("lxc-"):
+                data = lxc_call(name, msg.get("args") or {})
             elif name in STORAGE_ACTIONS or str(name).startswith("storage-"):
                 if not self.allowed.get("storage"):
                     raise RuntimeError("This computer doesn’t allow Storage")

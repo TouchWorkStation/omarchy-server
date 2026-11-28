@@ -40,7 +40,12 @@ exit 0`,
 		'curl',
 		`out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
 echo "curl $*" >>"$FAKE_LOG"
-case "$*" in *ca.crt*) printf '%s' "$FAKE_PEM" >"$out" ;; *vm-helper.py*) cp "$FAKE_VM_HELPER" "$out" ;; *agent.py*) cp "$FAKE_AGENT" "$out" ;; esac`,
+case "$*" in
+	*ca.crt*) printf '%s' "$FAKE_PEM" >"$out" ;;
+	*lxc-helper.py*) cp "$FAKE_LXC_HELPER" "$out" ;;
+	*vm-helper.py*) cp "$FAKE_VM_HELPER" "$out" ;;
+	*agent.py*) cp "$FAKE_AGENT" "$out" ;;
+esac`,
 	)
 	if (python3) {
 		await put(
@@ -63,6 +68,7 @@ function install(home, bin, args, extra = {}) {
 			FAKE_PEM: PEM,
 			FAKE_AGENT: AGENT,
 			FAKE_VM_HELPER: fileURLToPath(new URL('../connector/vm-helper.py', import.meta.url)),
+			FAKE_LXC_HELPER: fileURLToPath(new URL('../connector/lxc-helper.py', import.meta.url)),
 			FAKE_SUDO_FAILS: extra.FAKE_SUDO_FAILS,
 			OMARCHY_CONNECTOR_NONINTERACTIVE: extra.OMARCHY_CONNECTOR_NONINTERACTIVE,
 			FAKE_UNIT: extra.FAKE_UNIT,
