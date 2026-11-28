@@ -11,7 +11,7 @@ import {movedGithubUrl} from './moved.mjs'
 import {writeAtomic} from './atomic.mjs'
 import {execFile} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {readFile} from 'node:fs/promises'
+import {readFile, stat} from 'node:fs/promises'
 import {join} from 'node:path'
 
 import {RpcError} from './rpc.mjs'
@@ -261,8 +261,15 @@ export function createUpdater({
 		return reasons
 	}
 
+	// Testing a development build: an "update-hold" file in the data folder stops updates from
+	// replacing it. Remove the file to update normally again.
+	const holdFile = dataDir ? join(dataDir, 'update-hold') : null
+	const held = async () => !!holdFile && !!(await stat(holdFile).catch(() => null))
+	const HELD = 'Updates are paused on this server while a development build is tested. To update again, remove ~/.local/share/omarchy-server/omarchyd/update-hold.'
+
 	async function check({force = false} = {}) {
 		await ready
+		if (await held()) return {available: false, held: true, version: currentVersion, name: `MODC ${currentVersion}`, releaseNotes: HELD}
 		if (!force && cache && Date.now() - cache.at < 10_000) return cache.value
 		// A remote without a raw URL is read from a fetched copy. Fetch it again for each check,
 		// or a version published after the first check is never seen.
@@ -297,6 +304,8 @@ export function createUpdater({
 	}
 
 	async function update() {
+		// Before anything else: the busy flag below must be claimed with no wait in between.
+		if (await held()) throw new RpcError('PRECONDITION_FAILED', HELD)
 		await ready
 		if (busy) throw new RpcError('CONFLICT', 'An update is already running')
 		// Claim it before the first await, so a second request in the meantime is refused too.

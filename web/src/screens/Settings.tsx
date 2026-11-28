@@ -16,6 +16,7 @@ import {StoragePage} from './Storage'
 import {OmarchyThemes} from '../OmarchyThemes'
 import {UnraidPage} from '../unraid'
 import {OidcSheet} from './Oidc'
+import {ConnectPage, connectSummary, useConnectStatus} from './Connect'
 import {WhatsNewSheet, allReleases} from '../WhatsNew'
 import {clearTotpSetupQuery} from './twoFactorQuery'
 import {MIN_PASSWORD_LENGTH, PASSWORD_SHEET_SUBTITLE, browserName, updateFinished, updateStartFailure} from './settingsHelpers'
@@ -106,10 +107,10 @@ export function Settings({
 	const save = useSave()
 	const [sheet, setSheet] = useState<SheetId>(null)
 	const inWindow = useContext(InWindow)
-	type Page = 'main' | 'appearance' | 'storage' | 'unraid' | 'omarchy-themes' | 'assistant'
+	type Page = 'main' | 'appearance' | 'storage' | 'unraid' | 'omarchy-themes' | 'assistant' | 'connect'
 	const [page, setPage] = useState<Page>(() => {
 		const saved = safeSession.get('omarchy-server:settings-page')
-		return saved === 'appearance' || saved === 'storage' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' ? saved : 'main'
+		return saved === 'appearance' || saved === 'storage' || saved === 'unraid' || saved === 'omarchy-themes' || saved === 'assistant' || saved === 'connect' ? saved : 'main'
 	})
 	const openPage = (p: Page) => {
 		haptic(5)
@@ -123,6 +124,7 @@ export function Settings({
 
 	const twoFactor = useQ<boolean>('user.is2faEnabled')
 	const oidc = useQ<{clientCount: number}>('oidc.status', undefined, {enabled: owner})
+	const connect = useConnectStatus(owner && page === 'main')
 	// Starts after a restart or power cut with nobody signed in (headless servers).
 	const bootStart = useQ<{startsAtBoot: boolean | null; diskLock?: {encrypted: boolean; unlocksItself: boolean} | null}>('system.bootStart', undefined, {enabled: owner})
 	const diskWaits = !!bootStart.data?.diskLock?.encrypted && !bootStart.data.diskLock.unlocksItself
@@ -183,6 +185,7 @@ export function Settings({
 		save.mutate({path: 'user.revokeOtherSessions', done: 'Other devices signed out', refresh: ['user.listSessions']})
 	}
 	if (page === 'unraid' && owner) return <UnraidPage onBack={() => openPage('main')} />
+	if (page === 'connect' && owner) return <ConnectPage onBack={() => openPage('main')} />
 	if (page === 'assistant') return <AssistantPage onBack={() => openPage('main')} />
 	// Drives, pools, drive health and sleep on the host server (also under Machines › the server).
 	if (page === 'storage' && owner) return <StoragePage onBack={() => openPage('main')} target="host" />
@@ -268,6 +271,7 @@ export function Settings({
 					<Row icon="info" color="var(--blue)" label="Restore tutorials" sub="Show the notes you have dismissed" onClick={() => setPrefs({...prefs, dismissedTutorials: []})} />
 					{owner && <Row icon="disk" color="var(--teal)" label="Storage" sub="Drives, pools, drive health and sleep" onClick={() => openPage('storage')} />}
 					{owner && <Row icon="move" color="var(--orange, #f59e0b)" label="Move from Unraid" onClick={() => openPage('unraid')} />}
+					{owner && <Row icon="link" color="var(--accent)" label="MODC Connect" sub="Link this server to myowndatacenter.com" value={connectSummary(connect.data)} onClick={() => openPage('connect')} />}
 				</div>
 			</div>
 

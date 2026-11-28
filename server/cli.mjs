@@ -22,6 +22,7 @@ try {
 			host: {type: 'string'},
 			data: {type: 'string'},
 			'app-hosts': {type: 'string'},
+			'remote-port': {type: 'string'},
 			help: {type: 'boolean', short: 'h'},
 		},
 	})
@@ -42,6 +43,7 @@ if (values.help) {
   --host       Address to bind (default 0.0.0.0, env HOST)
   --data       Where config and device sessions live (default ~/.config/omarchy-server, env OMARCHY_SERVER_DATA)
   --app-hosts  App subdomain pattern, e.g. "{app}-touch.example.com" ("off" or "" to clear, env TOUCH_APP_HOSTS)
+  --remote-port  Remote-access listener for cloudflared on 127.0.0.1 (default 7781, "off" for none, env OMARCHY_REMOTE_PORT)
   -h, --help   Show this help
 
 Environment:
@@ -115,6 +117,25 @@ server.listen(port, host, () => {
 	console.log('')
 })
 app.attachConsole(httpServer)
+
+// MODC Connect remote ingress: 127.0.0.1 only, plain HTTP, for cloudflared. Every request on it must
+// pass the remote-access gate (Cloudflare Access token, remote access on); the listener above, for
+// this network, is unchanged.
+const rawRemote = values['remote-port'] ?? process.env.OMARCHY_REMOTE_PORT ?? '7781'
+let remoteServer = null
+if (String(rawRemote).trim().toLowerCase() !== 'off') {
+	let remotePort
+	try {
+		remotePort = parsePort(rawRemote, undefined, {flag: '--remote-port', env: 'OMARCHY_REMOTE_PORT', fallback: 7781})
+	} catch (error) {
+		console.error(`[omarchy-server] ${error.message}`)
+		process.exit(1)
+	}
+	remoteServer = http.createServer(app)
+	app.attachRemote(remoteServer)
+	remoteServer.on('error', (error) => console.error(`[omarchy-server] remote-access listener: ${error.message} (remote access through it is unavailable; everything else works)`))
+	remoteServer.listen(remotePort, '127.0.0.1', () => console.log(`  Remote    http://127.0.0.1:${remotePort} (cloudflared only; Access-protected)`))
+}
 server.on('error', (error) => {
 	console.error(`[omarchy-server] ${error.message}`)
 	process.exit(1)
@@ -127,6 +148,8 @@ function stop() {
 	stopping = true
 	setTimeout(() => process.exit(0), 5000).unref()
 	server.close(() => process.exit(0))
+	remoteServer?.close()
+	remoteServer?.closeAllConnections?.()
 	app.closeAll()
 	httpServer.closeIdleConnections?.()
 	setTimeout(() => server.destroyConnections(), 1000).unref()

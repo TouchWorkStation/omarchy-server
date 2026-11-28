@@ -17,11 +17,12 @@ import {join} from 'node:path'
 import express from 'express'
 import WebSocket, {WebSocketServer} from 'ws'
 
-import {dualProtocolServer, wantsUpgrade} from '../omarchyd/tls.mjs'
+import {dualProtocolServer, fromLocalProxy, wantsUpgrade} from '../omarchyd/tls.mjs'
 import {linkProxy} from '../omarchyd/proxy-link.mjs'
 import {viewerBackpressure} from '../omarchyd/backpressure.mjs'
 import {createBackendClient, BackendError} from './backend.mjs'
 import {hashId, newSessionId} from './store.mjs'
+import {createRemoteGate} from './remote-gate.mjs'
 import {createQuickTransfer, cleanUploadName, PORTAL_JS, portalHtml} from './quick-transfer.mjs'
 
 export const VERSION = '0.9.108'
@@ -357,6 +358,21 @@ export const ALLOWED = {
 	'tailscale.login': 'mutation',
 	'tailscale.logout': 'mutation',
 	'tailscale.ping': 'mutation',
+	// MODC Connect: pairing with myowndatacenter.com and its check-ins. Owner only, checked in omarchyd.
+	// The answers never carry the polling secret or the device credential.
+	'connect.status': 'query',
+	'connect.pair': 'mutation',
+	'connect.cancel': 'mutation',
+	'connect.dismiss': 'mutation',
+	'connect.disconnect': 'mutation',
+	'connect.checkNow': 'mutation',
+	'connect.tunnel.enable': 'mutation',
+	'connect.tunnel.disable': 'mutation',
+	'connect.tunnel.check': 'mutation',
+	'connect.tunnel.install': 'mutation',
+	'connect.remote.disable': 'mutation',
+	'connect.remote.allow': 'mutation',
+	'connect.remote.check': 'mutation',
 	// This server as an OpenID Connect provider. Owner only, checked in omarchyd.
 	'oidc.status': 'query',
 	'oidc.setConfig': 'mutation',
@@ -442,6 +458,33 @@ function hostOf(origin) {
 		return null
 	}
 }
+
+// Forwarding headers: x-forwarded-*, forwarded, x-real-ip and Cloudflare's cf-* (cf-connecting-ip,
+// cf-visitor, …). Removed from any request that didn't come from this machine.
+const FORWARDING = /^(x-forwarded-|forwarded$|x-real-ip$|cf-|true-client-ip$)/
+export function stripForwarding(req) {
+	if (fromLocalProxy(req)) return false
+	let dropped = false
+	for (const k of Object.keys(req.headers)) {
+		if (FORWARDING.test(k)) {
+			delete req.headers[k]
+			dropped = true
+		}
+	}
+	return dropped
+}
+// Came from outside through MODC Connect: on the remote-ingress listener (always, whatever the headers),
+// or from a proxy on this machine that says it is Cloudflare. Forwarding headers from anywhere else
+// were already removed (stripForwarding), so nothing on the network can claim this.
+export const viaTunnel = (req) => req.socket?.__modcRemote === true || (fromLocalProxy(req) && !!(req.headers['cf-connecting-ip'] || req.headers['cf-access-jwt-assertion'] || req.headers['cf-ray']))
+// A cookie header without the MODC session cookie.
+const withoutSessionCookie = (header) =>
+	String(header ?? '')
+		.split(';')
+		.filter((c) => c.split('=')[0].trim() !== 'omarchy_server_sid')
+		.join(';')
+// The scheme a trusted local proxy says the browser used, or '' (no proxy, or not trusted).
+export const forwardedProto = (req) => (fromLocalProxy(req) ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() : '')
 
 function parseCookies(header = '') {
 	const out = {}
@@ -532,10 +575,206 @@ export function normalizeAppHosts(input) {
 	return p
 }
 
-export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0'}) {
+export function createApp({store, staticDir, connectorDir = staticDir ? join(staticDir, '..', 'connector') : '', fetchImpl = fetch, secureCookies = false, tls = null, relayPortBase = Number(process.env.TOUCH_APP_PORT_BASE ?? 7800), relayHost = process.env.HOST ?? '0.0.0.0', remoteGate = null, ssoCheckMs = 15_000}) {
 	const app = express()
 	app.disable('x-powered-by')
 	app.set('trust proxy', 'loopback')
+	// Reverse-proxy headers are only believed from a proxy on this machine (cloudflared, Tailscale
+	// Serve). From anyone else they are dropped before anything reads them, so no one on the network
+	// can claim to be https, another host or another address.
+	app.use((req, _res, next) => {
+		stripForwarding(req)
+		next()
+	})
+
+	// ---- Remote access (MODC Connect): every remote request passes the gate first. -------------------
+	// The gate's settings come from omarchyd. Not reachable, or not set: remote access stays shut.
+	const gate =
+		remoteGate ??
+		createRemoteGate({
+			fetchConfig: async () => {
+				const base = getClient()?.baseUrl
+				if (!base) return null
+				const r = await fetchImpl(`${base}/internal/remote-gate`, {signal: AbortSignal.timeout(5000)})
+				return r.ok ? r.json() : null
+			},
+		})
+	gate.start?.()
+	app.remoteGate = gate
+	// Everything that came in remotely, so it can all be cut the moment remote access goes off.
+	const remoteSockets = new Set()
+	const trackRemote = (socket) => {
+		if (!socket || remoteSockets.has(socket)) return
+		remoteSockets.add(socket)
+		socket.once('close', () => remoteSockets.delete(socket))
+	}
+	gate.onClose(() => {
+		for (const sock of remoteSockets) sock.destroy()
+		remoteSockets.clear()
+		// Signed-in remote browsers are signed out; sessions at home are untouched.
+		for (const {key, session} of store.sessionEntries?.() ?? []) if (session?.remote) store.deleteSessionByKey(key).catch(() => {})
+	})
+	// A remote request: the gate says yes or no. A yes only means Cloudflare Access let this browser
+	// through; it still signs in to My Own Data Center as usual. A session made remotely only works for
+	// the same Access identity; a different one (or a session made at home) doesn't come along.
+	async function passGate(req) {
+		trackRemote(req.socket)
+		// Everything on the remote listener reached Cloudflare over https, whatever cloudflared sends.
+		if (req.socket?.__modcRemote) req.headers['x-forwarded-proto'] = 'https'
+		const g = await gate.check(req)
+		if (!g.ok) return g
+		req.remote = g.claims
+		req.remoteMode = g.mode
+		const sid = parseCookies(req.headers.cookie)[COOKIE]
+		const session = sid ? store.getSession(sid) : null
+		// SSO only: nothing but a website (SSO) session made remotely counts. Access mode: a remote session
+		// made by the same Access identity.
+		const bound = g.mode === 'modc_sso' ? !!(session?.remote && session.sso?.ref) : !!(session?.remote && session.remoteSub && session.remoteSub === g.claims?.sub)
+		if (sid && !bound) req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+		else if (sid && session?.sso?.ref) {
+			// A website (SSO) session: checked with myowndatacenter.com (cached at most 30 s; 10 s before
+			// changes and live connections). Not active, or can't tell: not signed in.
+			const live = req.headers.upgrade || /text\/event-stream/.test(String(req.headers.accept ?? ''))
+			const v = await ssoCall('check', {ref: session.sso.ref, maxAgeMs: live || (req.method !== 'GET' && req.method !== 'HEAD') ? 10_000 : 30_000})
+			if (!v.active) {
+				req.headers.cookie = withoutSessionCookie(req.headers.cookie)
+				if (!v.transient) endSsoSession(sid, session)
+			} else {
+				if (live) ssoLive.set(req.socket, {sid, ref: session.sso.ref})
+				req.ssoSession = true
+			}
+		}
+		return g
+	}
+	app.passGate = passGate
+	// SSO only, signed out: what the sign-in page itself needs, and nothing else.
+	const SSO_PUBLIC = new Set(['/', '/index.html', '/modc/auth/start', '/modc/auth/callback', '/api/bootstrap', '/manifest.webmanifest', '/sw.js', '/favicon.ico', '/favicon-32.png', '/favicon-64.png', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/icon-512-maskable.png', '/modc-logo.png'])
+	const ssoPublic = (req) => (req.method === 'GET' || req.method === 'HEAD') && (SSO_PUBLIC.has(req.path) || /^\/assets\/[\w.-]+$/.test(req.path))
+	// SSO only (v2): without a valid website session, only the sign-in entry points and the sign-in page's
+	// own files. Everything else, and remote password sign-in, is refused. Shared by the live gate and the
+	// self-test probe below.
+	const ssoRefusal = (req, signedIn) => {
+		if (!signedIn && !ssoPublic(req)) return {status: 401, code: 'UNAUTHORIZED', message: 'Sign in with myowndatacenter.com'}
+		if (req.path === '/api/auth/login') return {status: 403, code: 'FORBIDDEN', message: 'Remote sign-in uses myowndatacenter.com'}
+		return null
+	}
+	const sendSsoRefusal = (res, r) => res.status(r.status).set('Cache-Control', 'no-store').set('x-modc-gate', 'sso_only').json({error: {code: r.code, message: r.message}})
+	// Self-test of the v2 boundary while v1 (Cloudflare Access) is still the active protection: a request
+	// marked "x-modc-probe: sso_only" is judged by the SSO-only rules against the live settings, signed out,
+	// and answered synthetically — refused, or 204 where the sign-in page would load. It never reaches a
+	// handler, never uses a session and never grants anything; the active protection is unchanged.
+	app.use(async (req, res, next) => {
+		if (req.headers['x-modc-probe'] !== 'sso_only' || !viaTunnel(req)) return next()
+		res.set('Cache-Control', 'no-store').set('x-modc-probe', 'sso_only')
+		if (req.socket?.__modcRemote) req.headers['x-forwarded-proto'] = 'https'
+		const g = await gate.check(req, {as: 'modc_sso'}).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF'}))
+		if (!g.ok) return res.status(g.status).json({error: {code: g.code}})
+		const r = ssoRefusal(req, false)
+		return r ? sendSsoRefusal(res, r) : res.status(204).end()
+	})
+
+	// ---- MODC Connect single sign-on (omarchyd/connect-sso.mjs does the website side) ---------------
+	const ssoCall = async (step, body) => {
+		try {
+			const base = getClient()?.baseUrl
+			if (!base) return {error: 'no_backend'}
+			const r = await fetchImpl(`${base}/internal/sso/${step}`, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body), signal: AbortSignal.timeout(25_000)})
+			return r.ok ? await r.json() : {error: `http_${r.status}`}
+		} catch {
+			return {error: 'unreachable', transient: true}
+		}
+	}
+	function endSsoSession(sid, session) {
+		store.deleteSession(sid).catch(() => {})
+		if (session?.console) getClient()?.mutation('user.logout', undefined, {token: session.console.token, cookie: session.console.cookie}).catch(() => {})
+	}
+	// Terminals, desktops and live streams of SSO sessions: checked again every 15 s; cut when not active.
+	const ssoLive = new Map()
+	const ssoTimer = setInterval(async () => {
+		for (const [sock, {sid, ref}] of ssoLive) {
+			if (sock.destroyed) {
+				ssoLive.delete(sock)
+				continue
+			}
+			const v = await ssoCall('check', {ref, maxAgeMs: 30_000})
+			if (!v.active) {
+				ssoLive.delete(sock)
+				sock.destroy()
+				if (!v.transient) endSsoSession(sid, store.getSession(sid))
+			}
+		}
+	}, ssoCheckMs)
+	ssoTimer.unref?.()
+	const host = (req) =>
+		String(req.headers.host ?? '')
+			.toLowerCase()
+			.replace(/:\d+$/, '')
+	const SSO_TX = '__Host-modc_sso'
+	const ssoPage = (title, body) =>
+		`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui;background:#111;color:#eee;max-width:32em;margin:15vh auto;padding:0 1em"><h1 style="font-size:1.3em">${title}</h1><p>${body}</p>`
+	// Only through the tunnel, after the gate (Cloudflare Access) let the browser in.
+	app.get('/modc/auth/start', async (req, res) => {
+		res.set('Cache-Control', 'no-store')
+		if (!viaTunnel(req)) return res.status(404).type('text/plain').send('Not found')
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, message: 'Remote access isn’t available right now.'}))
+		if (!g.ok) return res.status(g.status).type('text/plain').send(g.message)
+		const r = await ssoCall('start', {hostname: host(req)})
+		if (typeof r.url !== 'string' || !r.url.startsWith('https://myowndatacenter.com/connect/authorize?') || typeof r.tx !== 'string') {
+			return res.status(503).type('html').send(ssoPage('Not available right now', 'Signing in with myowndatacenter.com isn’t available right now. <a href="/" style="color:#9cf">Sign in with your MODC password</a> instead.'))
+		}
+		res.append('Set-Cookie', `${SSO_TX}=${r.tx}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`)
+		res.redirect(302, r.url)
+	})
+	app.get('/modc/auth/callback', async (req, res) => {
+		res.set('Cache-Control', 'no-store')
+		if (!viaTunnel(req)) return res.status(404).type('text/plain').send('Not found')
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, message: 'Remote access isn’t available right now.'}))
+		if (!g.ok) return res.status(g.status).type('text/plain').send(g.message)
+		const tx = parseCookies(req.headers.cookie)[SSO_TX]
+		res.append('Set-Cookie', `${SSO_TX}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`)
+		const fail = () => res.status(400).type('html').send(ssoPage('Sign-in didn’t complete', 'Nothing was signed in. <a href="/modc/auth/start" style="color:#9cf">Start again</a> or <a href="/" style="color:#9cf">use your MODC password</a>.'))
+		if (!tx || typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return fail()
+		const r = await ssoCall('finish', {tx, code: req.query.code, state: req.query.state, hostname: host(req)})
+		if (typeof r.ref !== 'string' || !r.native?.accessToken) return fail()
+		// A fresh local session: whatever session ID this browser had is dropped, never adopted.
+		const old = parseCookies(req.headers.cookie)[COOKIE]
+		if (old) await store.deleteSession(old).catch(() => {})
+		const backend = getClient()
+		const userAgent = req.headers['user-agent']
+		const session = {
+			mode: 'native',
+			accountId: r.native.accountId,
+			accessToken: r.native.accessToken,
+			accessExpiresAt: r.native.accessExpiresAt,
+			deviceToken: r.native.deviceToken,
+			client: 'modc-sso',
+			console: await openConsoleSession(backend, null, userAgent, r.native.accessToken).catch(() => null),
+			remote: true,
+			remoteSub: req.remote?.sub ?? null,
+			remoteEmail: req.remote?.email ?? null,
+			sso: {ref: r.ref, expiresAt: r.expiresAt},
+		}
+		const sid = newSessionId()
+		const t = Date.now()
+		await store.putSession(sid, {...session, createdAt: t, lastSeenAt: t, userAgent: String(userAgent ?? '').slice(0, 200)})
+		rememberSid(sid)
+		setCookie(res, sid, Math.max(60, Math.ceil((r.expiresAt - t) / 1000)))
+		// Same-site page, then home (a cookie set during a cross-site redirect chain isn't sent at once).
+		res.type('html').send('<!doctype html><meta http-equiv="refresh" content="0;url=/"><title>Signed in</title>')
+	})
+	app.use(async (req, res, next) => {
+		if (!viaTunnel(req)) return next()
+		const g = await passGate(req).catch(() => ({ok: false, status: 503, code: 'REMOTE_OFF', message: 'Remote access isn’t available right now.'}))
+		const refusal = g.ok && g.mode === 'modc_sso' ? ssoRefusal(req, !!req.ssoSession) : null
+		if (refusal) return sendSsoRefusal(res, refusal)
+		if (g.ok) return next()
+		res.set('Cache-Control', 'no-store')
+		if (req.path.startsWith('/api/')) return res.status(g.status).json({error: {code: g.code, message: g.message}})
+		res.status(g.status).type('text/plain').send(g.message)
+	})
+	// Computers joining the local swarm, and their backups, are for this network only: not through the
+	// tunnel (a browser behind Cloudflare Access never needs them).
+	app.use(['/connector', '/api/connector'], (req, res, next) => (viaTunnel(req) ? res.status(404).type('text/plain').send('Not found') : next()))
 	// This server's certificate authority, for devices to trust its https:// pages (public by nature).
 	app.get('/api/tls/ca.crt', (_req, res) => {
 		const ca = tls?.ca()
@@ -598,6 +837,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			'Content-Security-Policy': `default-src 'self'; img-src * data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ws: wss:; ${frameSrc}frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
 			'Referrer-Policy': 'no-referrer',
 			'X-Content-Type-Options': 'nosniff',
+			// Through the tunnel the address is always https: browsers remember that (not for subdomains).
+			...(viaTunnel(req) ? {'Strict-Transport-Security': 'max-age=31536000'} : {}),
 		})
 		next()
 	})
@@ -886,8 +1127,13 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			server: null,
 			accounts: [],
 			session: session ? {accountId: session.accountId, mode: session.mode, console: !!session.console} : null,
+			// Through the tunnel: offer "Continue with myowndatacenter.com" (the only way, in SSO-only mode).
+			sso: viaTunnel(req) && (!!req.remote || req.remoteMode === 'modc_sso'),
+			ssoOnly: req.remoteMode === 'modc_sso',
 		}
 		if (!backend) return res.json(out)
+		// SSO only and signed out: no accounts, version or server details, just the way in.
+		if (req.remoteMode === 'modc_sso' && !session) return res.json({...out, server: {url: `https://${req.hostname}`, host: req.hostname, reachable: true}})
 		// When Touch runs on the server itself it talks to 127.0.0.1; the phone must
 		// use the address it reached us on instead.
 		const upstream = new URL(backend.baseUrl)
@@ -1144,6 +1390,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	})
 
 	api.get('/account-avatar', async (req, res) => {
+		// Who has an account here is for signed-in people only (the sign-in page shows no avatars).
+		if (!store.getSession(req.sid)) return res.status(401).end()
 		const backend = getClient()
 		const path = String(req.query.path ?? '')
 		if (!backend || !/^\/api\/accounts\/[\w.\-/]+$/.test(path) || path.includes('..')) return res.status(404).end()
@@ -1160,19 +1408,51 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	})
 
 	// ---- Auth ----------------------------------------------------------------
+	// Sign-in limits. Per address: 10 tries in 5 minutes (req.ip is the browser's own address, also
+	// through a trusted local proxy). From outside this network (through a proxy on this machine, such
+	// as the MODC Connect tunnel), also: 10 wrong passwords for one account in 15 minutes, and 50 wrong
+	// passwords from everyone in 5 minutes. Those two count only remote failures, so someone on the
+	// internet can't lock the owner out at home.
 	const attempts = new Map()
+	const accountFailures = new Map()
+	let remoteFailures = []
+	const LOGIN_WINDOW_MS = 5 * 60 * 1000
+	const ACCOUNT_WINDOW_MS = 15 * 60 * 1000
+	const viaProxy = (req) => fromLocalProxy(req) && !!(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'])
+	const tooMany = (res, until) =>
+		res
+			.set('Retry-After', String(Math.max(1, Math.ceil((until - Date.now()) / 1000))))
+			.status(429)
+			.json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
+	const prune = (map, windowMs, now) => {
+		if (map.size < 5000) return
+		for (const [k, v] of map) if (!v.length || now - v[v.length - 1] > windowMs) map.delete(k)
+	}
 	api.post('/auth/login', catchSave(async (req, res) => {
 		const backend = getClient()
 		if (!backend) return res.status(409).json({error: {code: 'NOT_CONFIGURED', message: 'Connect to your server first'}})
 		const ip = req.ip ?? 'unknown'
 		const now = Date.now()
-		const LOGIN_WINDOW_MS = 5 * 60 * 1000
+		const remote = viaProxy(req)
+		const accountKey = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase().slice(0, 200) : ''
+		prune(attempts, LOGIN_WINDOW_MS, now)
+		prune(accountFailures, ACCOUNT_WINDOW_MS, now)
 		const recent = (attempts.get(ip) ?? []).filter((t) => now - t < LOGIN_WINDOW_MS)
-		if (recent.length >= 10) {
-			const retryAfter = Math.max(1, Math.ceil((recent[0] + LOGIN_WINDOW_MS - now) / 1000))
-			return res.set('Retry-After', String(retryAfter)).status(429).json({error: {code: 'TOO_MANY_REQUESTS', message: 'Too many attempts. Wait a few minutes.'}})
+		if (recent.length >= 10) return tooMany(res, recent[0] + LOGIN_WINDOW_MS)
+		if (remote) {
+			remoteFailures = remoteFailures.filter((t) => now - t < LOGIN_WINDOW_MS)
+			if (remoteFailures.length >= 50) return tooMany(res, remoteFailures[0] + LOGIN_WINDOW_MS)
+			const acct = (accountFailures.get(accountKey) ?? []).filter((t) => now - t < ACCOUNT_WINDOW_MS)
+			if (accountKey && acct.length >= 10) return tooMany(res, acct[0] + ACCOUNT_WINDOW_MS)
 		}
 		attempts.set(ip, [...recent, now])
+		res.on('finish', () => {
+			if (!remote) return
+			if (res.statusCode === 401) {
+				remoteFailures.push(Date.now())
+				if (accountKey) accountFailures.set(accountKey, [...(accountFailures.get(accountKey) ?? []).filter((t) => Date.now() - t < ACCOUNT_WINDOW_MS), Date.now()])
+			} else if (res.statusCode === 200 && accountKey) accountFailures.delete(accountKey)
+		})
 
 		const {password, totpToken, username} = req.body ?? {}
 		if (typeof username !== 'string' || !username.trim() || typeof password !== 'string' || !password) {
@@ -1227,7 +1507,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		}
 		attempts.delete(ip)
 		const sid = newSessionId()
-		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200)})
+		await store.putSession(sid, {...session, createdAt: now, lastSeenAt: now, userAgent: String(userAgent ?? '').slice(0, 200), ...(req.remote ? {remote: true, remoteSub: req.remote.sub, remoteEmail: req.remote.email} : {})})
 		rememberSid(sid)
 		setCookie(res, sid, SESSION_MAX_AGE_S)
 		shareAppSession(req, res, session)
@@ -1236,6 +1516,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 
 	api.post('/auth/logout', catchSave(async (req, res) => {
 		const session = store.getSession(req.sid)
+		// A website (SSO) session: revoked on myowndatacenter.com too.
+		if (session?.sso?.ref) await ssoCall('logout', {ref: session.sso.ref})
 		if (session?.console) {
 			await getClient()
 				?.mutation('user.logout', undefined, {token: session.console.token, cookie: session.console.cookie})
@@ -2083,7 +2365,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				for (const [key, entry] of appSessions) if (entry.exp <= nowMs) appSessions.delete(key)
 				appSessions.set(id, {sid: t.sid, appId: app.id, exp: nowMs + 12 * 60 * 60 * 1000})
 				const r = url.searchParams.get('r') ?? '/'
-				const secure = req.headers['x-forwarded-proto'] === 'https' && isLoopback(String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, ''))
+				const secure = forwardedProto(req) === 'https'
 				res.writeHead(302, {
 					location: r.startsWith('/') && !r.startsWith('//') ? r : '/',
 					'set-cookie': `${APP_COOKIE}=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${secure ? '; Secure' : ''}`,
@@ -2111,7 +2393,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						if (to.port === String(relay.targetPort) && (to.hostname === hostname || isLoopback(to.hostname) || to.hostname === serverHost)) {
 							// Back to the address the browser used: its scheme and its host, port and all (an
 							// app address behind a TLS proxy has no port, and \`to.host = …\` would keep the old one).
-							const proto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() || (req.socket.encrypted ? 'https' : 'http')
+							const proto = forwardedProto(req) || (req.socket.encrypted ? 'https' : 'http')
 							headers.location = `${proto === 'https' ? 'https' : 'http'}://${req.headers.host}${to.pathname}${to.search}${to.hash}`
 						}
 					} catch {
@@ -2328,6 +2610,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		const r = typeof req.query.r === 'string' && req.query.r.startsWith('/') && !req.query.r.startsWith('//') ? req.query.r : '/'
 		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return res.status(400).type('text/plain').send('Bad app')
 		if (!store.getSession(req.sid)) return res.redirect(302, '/')
+		// An app's own port isn't reachable through the tunnel: never send the browser there.
+		if (viaTunnel(req)) return res.status(409).type('text/plain').send('Opening apps remotely needs app addresses')
 		try {
 			const {ticket, port} = await authedCall(req, 'apps.accessTicket', 'mutation', {appId: id, view: req.query.view === '1'})
 			const h = bracketHost(req.hostname)
@@ -2408,9 +2692,19 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 	// reconnect), and stop the app relays.
 	const consoles = new Set()
 	app.closeAll = () => {
+		gate.stop?.()
+		clearInterval(ssoTimer)
 		for (const wss of consoles) for (const c of wss.clients) c.close(1001, 'server restarting')
 		for (const r of relays.values()) r.server?.close?.()
 		for (const r of relays.values()) r.server?.destroyConnections?.()
+	}
+	// The remote-ingress listener (127.0.0.1, for cloudflared): every connection on it is remote,
+	// whatever it sends, so the gate always applies.
+	app.attachRemote = (server) => {
+		server.on('connection', (socket) => {
+			socket.__modcRemote = true
+		})
+		app.attachConsole(server)
 	}
 	app.attachConsole = (server) => {
 		const wss = new WebSocketServer({noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false})
@@ -2419,12 +2713,21 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 			// A browser that resets the connection while we are still checking its session or asking omarchyd
 			// would otherwise raise an unhandled 'error' on its socket and end this process.
 			socket.on('error', () => {})
-			if (app.relayUpgrade(req, socket, head)) return
+			// Upgrades skip Express: drop untrusted forwarding headers here too.
+			stripForwarding(req)
+			// App relays (by host) are reached only after the remote gate below.
 			const refuse = (status) => {
 				if (socket.destroyed) return
 				socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`)
 				socket.destroy()
 			}
+			// Remote WebSockets pass the same gate as remote pages, before anything else.
+			if (viaTunnel(req)) {
+				const g = await passGate(req).catch(() => ({ok: false, status: 503}))
+				if (!g.ok) return refuse(g.status === 421 ? '421 Misdirected Request' : g.status === 403 ? '403 Forbidden' : '503 Service Unavailable')
+				if (g.mode === 'modc_sso' && !req.ssoSession) return refuse('401 Unauthorized')
+			}
+			if (app.relayUpgrade(req, socket, head)) return
 			// Until the upgrade completes nothing else watches the browser's socket: if the tab goes away
 			// first, drop the connection to omarchyd too. The returned function stops watching.
 			const dropWithBrowser = (upstream) => {
@@ -2442,6 +2745,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				// A connector on another computer: no browser session; it signs in with its own key,
 				// which omarchyd checks. Passed straight through.
 				if (url.pathname === '/connector/ws') {
+					if (viaTunnel(req)) return refuse('404 Not Found')
 					const target = new URL(getClient().baseUrl)
 					target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
 					target.pathname = '/connector/ws'
@@ -2478,7 +2782,7 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 				if (origin) {
 					try {
 						const ou = new URL(origin)
-						const expectedProto = req.socket?.encrypted || req.headers['x-forwarded-proto'] === 'https' ? 'https:' : 'http:'
+						const expectedProto = req.socket?.encrypted || forwardedProto(req) === 'https' ? 'https:' : 'http:'
 						originOk = ou.host === req.headers.host && ou.protocol === expectedProto
 					} catch {}
 				}
@@ -2583,9 +2887,21 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 						} catch {}
 						let proxyKeyTimer = null
 						let unregisterActive = () => {}
+						// Cloudflare (and many proxies) close a WebSocket after ~100 s with nothing sent either
+						// way. A ping every 30 s keeps an idle terminal or console open through MODC Connect.
+						const keepOpen = setInterval(() => {
+							if (client.readyState === WebSocket.OPEN) {
+								try {
+									client.ping()
+								} catch {}
+							}
+						}, 30_000)
+						keepOpen.unref?.()
+						client.once('close', () => clearInterval(keepOpen))
 						// Remote screens: slow the source down while this browser catches up (see backpressure.mjs).
 						const behind = viewerBackpressure(client, upstream, () => closeBoth(1011, 'The viewer fell behind'))
 						const closeBoth = (code, reason) => {
+							clearInterval(keepOpen)
 							behind.stop()
 							unregisterActive()
 							if (proxyKeyTimer) {
@@ -2821,6 +3137,8 @@ export function createApp({store, staticDir, connectorDir = staticDir ? join(sta
 		try {
 			if (Object.hasOwn(LOCAL, path)) return res.json({data: (await LOCAL[path](req, res, input)) ?? null})
 			const data = await authedCall(req, path, kind, input)
+			// Remote access switched (here or after a check): the gate learns it now, not in 10 s.
+			if (path.startsWith('connect.')) gate.refresh().catch(() => {})
 			res.json({data: data ?? null})
 		} catch (error) {
 			if (error instanceof BackendError && error.code === 'UNAUTHORIZED' && !store.getSession(req.sid)) setCookie(res, '', 0)

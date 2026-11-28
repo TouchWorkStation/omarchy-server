@@ -240,10 +240,18 @@ export async function writePolicy(dir = defaultTlsDir(), patch = {}) {
 
 // Should this plain-http request be sent to https:// instead? Only a browser opening a page
 // (never an app's own API client, a download or a websocket), and only when it's turned on.
+// A connection from this machine (127.0.0.0/8, ::1): the only place a trusted reverse proxy
+// (cloudflared, Tailscale Serve, a local nginx) can be. Forwarding headers from anywhere else are ignored.
+export function fromLocalProxy(req) {
+	const a = String(req?.socket?.remoteAddress ?? '').replace(/^::ffff:/, '')
+	return a === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a)
+}
+
 export function wantsUpgrade(req, policy, ctx) {
 	if (!policy?.alwaysHttps || !ctx || req.socket?.encrypted) return false
-	// Behind a proxy that already handles https (remote access): it decides, not us.
-	if (req.headers['x-forwarded-proto']) return false
+	// Behind a proxy on this machine that already handles https (Cloudflare Tunnel, Tailscale Serve):
+	// it decides, not us. Only a proxy on this machine is believed; anyone else could just send the header.
+	if (req.headers['x-forwarded-proto'] && fromLocalProxy(req)) return false
 	if (req.method !== 'GET' && req.method !== 'HEAD') return false
 	const mode = req.headers['sec-fetch-mode']
 	if (mode) return mode === 'navigate'

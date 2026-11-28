@@ -383,6 +383,27 @@ export async function openAccounts(dataDir, {create = true} = {}) {
 			await save()
 			return {accountId: user.userId, ...issueAccess(user.userId, sessionId), deviceToken}
 		},
+		// MODC Connect single sign-on: a native session for an account the website already vouched for
+		// (connect-sso.mjs checks the website, the device and the pinned owner account first).
+		async loginNativeFor(userId, client) {
+			const user = userById(userId)
+			if (!user) throw new RpcError('UNAUTHORIZED', 'No such account')
+			prune()
+			const sessionId = token('s_')
+			const deviceToken = token('dt_')
+			state.devices[deviceToken] = {userId: user.userId, sessionId, client: String(client).slice(0, 60), createdAt: now(), expiresAt: now() + DEVICE_TTL}
+			await save()
+			return {accountId: user.userId, ...issueAccess(user.userId, sessionId), deviceToken}
+		},
+		// End one native session by its device token (SSO session expired or revoked).
+		async logoutDevice(deviceToken) {
+			const d = typeof deviceToken === 'string' ? state.devices[deviceToken] : null
+			if (!d) return
+			for (const [k, v] of Object.entries(state.devices)) if (v.sessionId === d.sessionId) delete state.devices[k]
+			for (const [k, v] of access) if (v.sessionId === d.sessionId) access.delete(k)
+			for (const [k, v] of Object.entries(state.browsers)) if (v.sessionId === d.sessionId) delete state.browsers[k]
+			await save()
+		},
 		async refresh(deviceToken) {
 			const d = typeof deviceToken === 'string' ? state.devices[deviceToken] : null
 			if (!d || d.expiresAt < now()) throw new RpcError('UNAUTHORIZED', 'Invalid native session')

@@ -73,7 +73,7 @@ describe('certificate authority', () => {
 		assert.deepEqual(await readPolicy(dir), {alwaysHttps: false})
 		await writePolicy(dir, {alwaysHttps: true})
 		const on = await readPolicy(dir)
-		const req = (headers, method = 'GET', encrypted = false) => ({method, headers, socket: {encrypted}})
+		const req = (headers, method = 'GET', encrypted = false, remoteAddress = '127.0.0.1') => ({method, headers, socket: {encrypted, remoteAddress}})
 		const ctx = {}
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}), on, ctx), true)
 		assert.equal(wantsUpgrade(req({accept: 'text/html,*/*'}), on, ctx), true)
@@ -82,6 +82,9 @@ describe('certificate authority', () => {
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}, 'POST'), on, ctx), false)
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}, 'GET', true), on, ctx), false, 'already secure')
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate', 'x-forwarded-proto': 'https'}), on, ctx), false, 'behind a remote-access proxy')
+		// Only a proxy on this machine is believed: anyone on the network could send the header.
+		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate', 'x-forwarded-proto': 'https'}, 'GET', false, '192.168.1.50'), on, ctx), true, 'a forged header from the network')
+		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate', 'x-forwarded-proto': 'https'}, 'GET', false, '::ffff:127.0.0.1'), on, ctx), false)
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}), on, null), false, 'no certificate, no redirect')
 		assert.equal(wantsUpgrade(req({'sec-fetch-mode': 'navigate'}), {alwaysHttps: false}, ctx), false, 'off by default')
 	})

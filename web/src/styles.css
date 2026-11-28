@@ -9447,7 +9447,7 @@ html[data-shape='square'] :is(.win.active, .sheet, .temp-dialog) {
 }
 .installer-manual summary {
 	cursor: pointer;
-	color: var(--muted, inherit);
+	color: var(--muted);
 	font-size: 0.9em;
 }
 .installer-copy {
@@ -11954,6 +11954,166 @@ input.temp-unit-box.fallback:checked {
 	flex: 1 1 200px;
 	min-width: 0;
 }
+
+/* ---- Settings › MODC Connect ------------------------------------------------------------------ */
+.connect-intro {
+	font-size: 14px;
+	margin: 0 4px 16px;
+	line-height: 1.45;
+}
+.connect-card {
+	display: flex;
+	gap: 12px;
+	align-items: flex-start;
+	padding: 14px 16px;
+	margin-bottom: 16px;
+	border-radius: var(--r-lg);
+}
+.connect-card > svg {
+	flex: none;
+	color: var(--accent);
+}
+.connect-card.warn > svg {
+	color: var(--peach);
+}
+.connect-card > div {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+.connect-card span {
+	font-size: 13.5px;
+	color: var(--muted);
+}
+.connect-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 8px;
+}
+.connect-form {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 14px 16px 16px;
+}
+.connect-pair {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 16px 20px;
+	padding: 18px;
+	margin-bottom: 18px;
+	border-radius: var(--r-lg);
+}
+.connect-pair-code {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+.connect-code {
+	all: unset;
+	cursor: pointer;
+	font-size: clamp(30px, 9vw, 44px);
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	line-height: 1.1;
+	overflow-wrap: anywhere;
+	color: var(--fg);
+}
+.connect-code:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 4px;
+	border-radius: 6px;
+}
+.connect-timer {
+	font-size: 14px;
+	font-variant-numeric: tabular-nums;
+	color: var(--muted);
+}
+.connect-timer.low {
+	color: var(--red);
+}
+.connect-pair-qr {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	text-align: center;
+}
+.connect-qr {
+	width: 132px;
+	height: 132px;
+	border-radius: 10px;
+	display: block;
+}
+.connect-steps {
+	grid-column: 1 / -1;
+	margin: 0;
+	padding-left: 22px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	font-size: 14.5px;
+	line-height: 1.4;
+}
+.connect-steps a {
+	color: var(--accent);
+	overflow-wrap: anywhere;
+}
+.connect-wait {
+	grid-column: 1 / -1;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0;
+	font-size: 13.5px;
+	color: var(--muted);
+}
+.connect-pair > .connect-actions {
+	grid-column: 1 / -1;
+	margin-top: 0;
+}
+.connect-id {
+	font-size: 12px;
+	max-width: 46vw;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	display: inline-block;
+	vertical-align: middle;
+}
+.connect-disconnect {
+	margin-top: 18px;
+	color: var(--red);
+}
+@media (max-width: 420px) {
+	.connect-pair {
+		grid-template-columns: 1fr;
+	}
+	.connect-pair-qr {
+		order: 3;
+	}
+	.connect-qr {
+		width: 168px;
+		height: 168px;
+	}
+}
+.connect-note {
+	font-size: 13px;
+	margin: -6px 4px 16px;
+	line-height: 1.45;
+}
+.connect-page .row .btn.small {
+	flex: none;
+	white-space: nowrap;
+}
+.connect-host {
+	font-size: 12.5px;
+	overflow-wrap: anywhere;
+}
 .hypr-view {
 	position: relative;
 	display: flex;
@@ -12223,6 +12383,13 @@ input.temp-unit-box.fallback:checked {
 .rail-pill-btn.close:hover {
 	background: #ef4444;
 	color: #fff;
+}
+.connect-card.critical {
+	border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+	background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.connect-card.critical > svg {
+	color: var(--red);
 }
 
 /* Terminal: press and hold → Paste (phones) */

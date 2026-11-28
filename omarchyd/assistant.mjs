@@ -270,6 +270,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		let timedOut = false
 		let idle = null
 		let total = null
+		let ping = null
 		const cutOff = () => {
 			timedOut = true
 			ac.abort()
@@ -284,6 +285,16 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 			if (ac.signal.aborted) return
 			req.socket?.setNoDelay(true)
 			res.writeHead(200, {'content-type': 'text/event-stream', 'cache-control': 'no-store'})
+			// A comment line every 20 s while the model thinks: proxies (Cloudflare closes after ~100 s
+			// of silence) keep the stream open. The page skips blocks with no event.
+			ping = setInterval(() => {
+				if (!res.writableEnded && !res.destroyed) {
+					try {
+						res.write(': ping\n\n')
+					} catch {}
+				}
+			}, 20_000)
+			ping.unref?.()
 			const emit = ({event, data}) => {
 				watchIdle()
 				if (res.writableEnded || res.destroyed) return
@@ -328,6 +339,7 @@ export function createAssistant({dataDir, accounts, now, runProcedure, fetchImpl
 		} finally {
 			clearTimeout(idle)
 			clearTimeout(total)
+			clearInterval(ping)
 			if (lock) turning.delete(lock)
 			if (res.headersSent && !res.writableEnded && !res.destroyed) {
 				try {

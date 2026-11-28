@@ -33,6 +33,7 @@ import {createTerminalSessions, createTmux} from './terminal.mjs'
 import {createUpdater} from './updater.mjs'
 import {createSystemApps} from './system-apps.mjs'
 import {createTailscale} from './tailscale.mjs'
+import {createConnect} from './connect.mjs'
 import {createOidc} from './oidc.mjs'
 import {createHyprland} from './hyprland.mjs'
 import {authorityInfo, readPolicy, rotateAuthority, tlsContext, writePolicy} from './tls.mjs'
@@ -48,7 +49,7 @@ export const OMARCHYD_VERSION = '0.9.108'
 // Written by install.sh when the owner turns on unattended boot: the disk then unlocks itself at boot.
 export const UNATTENDED_BOOT_CONF = '/etc/mkinitcpio.conf.d/zz-modc-unattended.conf'
 
-export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, containerOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
+export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, tlsDir: sharedTlsDir = null, home = os.homedir(), webPort = 7780, machineOptions = {}, containerOptions = {}, appOptions = {}, storageOptions = {}, updaterOptions = {}, pluginOptions = {}, themeOptions = {}, assistantOptions = {}, usbOptions = {}, backupOptions = {}, unraidOptions = {}, tailscaleOptions = {}, oidcOptions = {}, connectOptions = {}, hyprlandOptions = {}, terminalTmux = process.env.NODE_TEST_CONTEXT ? null : undefined, desktopVncPort = 5900, viewerStallMs = undefined, desktopVncSocket = join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'omarchy-server', 'desktop-vnc.sock')}) {
 	const sourceDir = localGitDir('OMARCHY_SERVER_SOURCE', process.env.OMARCHY_SERVER_SOURCE)
 	const storeDir = localGitDir('OMARCHY_SERVER_APP_STORE', process.env.OMARCHY_SERVER_APP_STORE)
 	const appDir = fileURLToPath(new URL('..', import.meta.url))
@@ -153,6 +154,9 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 	const backups = createBackups({dataDir, home, files, apps, swarm: {agents: () => connector.backup.agents(), call: (...a) => connector.backup.call(...a), progress: (id) => connector.backup.progress(id)}, ...backupOptions})
 	// Move from Unraid: its shares, containers and VMs, brought over SSH.
 	const unraid = createUnraid({dataDir, files, apps, machines, storage, ...unraidOptions})
+	// MODC Connect: this installation paired with the owner's myowndatacenter.com account. Only check-ins
+	// for now; it opens nothing. Tests never reach the website unless they pass their own fetch.
+	const connect = createConnect({dataDir, accounts, version: OMARCHYD_VERSION, ...(process.env.NODE_TEST_CONTEXT ? {autoStart: false, fetchImpl: async () => Promise.reject(Object.assign(new Error('offline in tests'), {code: 'ENOTFOUND'})), tunnelOptions: {unitDir: join(dataDir, 'test-units'), systemPaths: [], sh: async () => ({ok: false, code: 1, out: '', err: ''})}, ssoOptions: {post: async () => Promise.reject(new Error('offline in tests'))}} : {}), ...connectOptions})
 	const usb = createUsb({
 		enumerate: () => listHostUsb(usbOptions),
 		guests: {
@@ -418,6 +422,8 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 						if (appsRemain) console.error(`[omarchyd] ${appsLeft} ${appsLeft === 1 ? 'app remains' : 'apps remain'}`)
 						if (machinesRemain) console.error(`[omarchyd] ${machinesLeft} ${machinesLeft === 1 ? 'machine remains' : 'machines remain'}`)
 						await assistant.keys.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
+						// The next owner must not inherit this server's myowndatacenter.com device key.
+						await connect.reset().catch(() => console.error('[omarchyd] reset MODC Connect'))
 						await assistant.conversations.reset().catch((e) => console.error('[omarchyd] reset assistant', e.message))
 						// A clip can be a password or a key. Drop every book even when an app or a machine stays.
 						await clips?.resetAll().catch((e) => console.error('[omarchyd] reset clips', e.message))
@@ -623,6 +629,7 @@ export async function startOmarchyd({port = 2021, host = '127.0.0.1', dataDir, t
 		...Object.fromEntries(Object.entries(backups.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage backups'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(unraid.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'move from Unraid'), p.run(input))}])),
 		...Object.fromEntries(Object.entries(tailscale.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage Tailscale'), p.run(input))}])),
+		...Object.fromEntries(Object.entries(connect.procedures).map(([name, p]) => [name, {kind: p.kind, run: (input, {auth}) => (ownerOnly(auth, 'manage MODC Connect'), p.run(input))}])),
 		...Object.fromEntries(
 			Object.entries(oidc.procedures).map(([name, p]) => [
 				name,
@@ -1086,6 +1093,43 @@ WantedBy=graphical-session.target
 				return await backups.handleUpload(req, res, agentId, url.pathname.slice('/connector/backup/'.length))
 			}
 			// A connector updating itself from this server (authenticated with its own key).
+			// The web server's remote-access gate reads its settings here: non-secret values only, and only
+			// for a caller on this machine.
+			// The web server's single-sign-on steps (connect-sso.mjs), on this machine only. Nothing secret
+			// comes back except, after a verified website sign-in, the owner's local session.
+			if (url.pathname.startsWith('/internal/sso/') && req.method === 'POST') {
+				const a = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+				const step = url.pathname.slice('/internal/sso/'.length)
+				if ((a !== '::1' && !/^127\./.test(a)) || !['start', 'finish', 'check', 'logout'].includes(step)) {
+					res.writeHead(404).end()
+					return
+				}
+				const chunks = []
+				let size = 0
+				for await (const c of req) {
+					size += c.length
+					if (size > 4096) break
+					chunks.push(c)
+				}
+				let input = {}
+				try {
+					input = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+				} catch {}
+				const out = await connect.sso[step](input && typeof input === 'object' ? input : {}).catch(() => ({error: 'failed'}))
+				res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})
+				res.end(JSON.stringify(out))
+				return
+			}
+			if (url.pathname === '/internal/remote-gate' && req.method === 'GET') {
+				const a = String(req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+				if (a !== '::1' && !/^127\./.test(a)) {
+					res.writeHead(404).end()
+					return
+				}
+				res.writeHead(200, {'content-type': 'application/json', 'cache-control': 'no-store'})
+				res.end(JSON.stringify(connect.remoteGate()))
+				return
+			}
 			if (url.pathname === '/connector/agent.py' && req.method === 'GET') {
 				const agent = await connector.authenticateAgent(req)
 				if (!agent) return sendJson(res, 401, {error: 'unauthorized'})
@@ -1541,7 +1585,7 @@ WantedBy=graphical-session.target
 		}
 	}, 20_000).unref?.()
 
-	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), revokeAllHyprStreams(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
+	return {url: `http://${host}:${server.address().port}`, accounts, terminals, hyprland, close: () => (sampler.stop(), connect.close(), apps.close(), backups.close(), unraid.close(), updater.stop(), connector.close(), revokeAllHyprStreams(), hyprland.close(), assistant.chatgpt.close(), terminals.close(), new Promise((r) => server.close(r)))}
 }
 
 // The "always use the secure address" choice made while omarchyd kept its own certificate folder.
